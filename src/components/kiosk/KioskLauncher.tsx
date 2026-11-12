@@ -8,6 +8,7 @@ import { Gamepad2, Settings, Trophy } from "lucide-react";
 import { BrandHeader, KioskCredits, PinDialog } from "@/components/kiosk/kiosk-ui";
 import { loadKioskConfig, storedPin } from "@/lib/kiosk/kiosk-api";
 import { EVENT_BRAND } from "@/lib/kiosk/event-brand";
+import { formatMinutes } from "@/lib/kiosk/kiosk-score";
 import { KIOSK_TRACKS, type KioskConfig } from "@/lib/kiosk/kiosk-types";
 import { withBasePath } from "@/lib/base-path";
 
@@ -29,7 +30,7 @@ export const KioskLauncher: React.FC = () => {
   };
 
   const summary = config
-    ? `${config.limitMode === "laps" ? `${config.laps} giri` : `${config.minutes} minuti`} · ${KIOSK_TRACKS.find((t) => t.id === config.trackId)?.label ?? config.trackId}`
+    ? `${config.limitMode === "laps" ? `${config.laps} ${config.laps === 1 ? "giro" : "giri"}` : formatMinutes(config.minutes)} · ${KIOSK_TRACKS.find((t) => t.id === config.trackId)?.label ?? config.trackId}`
     : "…";
 
   return (

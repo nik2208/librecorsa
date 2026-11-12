@@ -11,14 +11,26 @@ import type { KioskLeaderboard } from "@/lib/kiosk/kiosk-types";
 
 export const RED = EVENT_BRAND.red;
 
-/** The official logo when it is in public/kiosk/brand/, else its name as a text placeholder */
+/**
+ * The official logo when it is in public/kiosk/brand/, else its name as a text placeholder. The text shows until the
+ * picture has loaded (a static page's <img> can fail before React is there to see it, leaving a broken image)
+ */
 export const BrandMark: React.FC<{ kind: "sponsor" | "event"; className?: string; textClassName?: string }> = ({ kind, className, textClassName }) => {
-  const [failed, setFailed] = useState(false);
-  const src = kind === "sponsor" ? BRAND_FILES.sponsorLogo : BRAND_FILES.eventLogo;
+  const src = withBasePath(kind === "sponsor" ? BRAND_FILES.sponsorLogo : BRAND_FILES.eventLogo);
   const text = kind === "sponsor" ? EVENT_BRAND.sponsor : EVENT_BRAND.eventShort;
-  if (failed) return <span className={textClassName}>{text}</span>;
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    let live = true;
+    const img = new Image();
+    img.onload = () => live && setLoaded(true);
+    img.src = src;
+    return () => {
+      live = false;
+    };
+  }, [src]);
+  if (!loaded) return <span className={textClassName}>{text}</span>;
   // eslint-disable-next-line @next/next/no-img-element -- a static export with no image optimiser
-  return <img src={withBasePath(src)} alt={text} className={className} onError={() => setFailed(true)} draggable={false} />;
+  return <img src={src} alt={text} className={className} draggable={false} />;
 };
 
 /** Sponsor × event, with the dates and the venue */

@@ -72,3 +72,11 @@ export function formatClock(ms: number, roundUp = false): string {
   const s = totalS % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
 }
+
+/** "5 minuti", "1 minuto", "2:30 minuti", "30 secondi" */
+export function formatMinutes(min: number): string {
+  if (min < 1) return `${Math.round(min * 60)} secondi`;
+  const whole = Math.floor(min);
+  const secs = Math.round((min - whole) * 60);
+  return secs ? `${whole}:${String(secs).padStart(2, "0")} minuti` : `${whole} ${whole === 1 ? "minuto" : "minuti"}`;
+}

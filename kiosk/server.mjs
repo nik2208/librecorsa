@@ -537,7 +537,7 @@ async function serveStatic(req, res, url) {
     return res.end();
   }
   // Next's static export: /kiosk/admin is kiosk/admin.html (or a folder's index.html)
-  const candidates = rel.endsWith("/") ? [path.join(base, "index.html")] : [base, `${base}.html`, path.join(base, "index.html")];
+  const candidates = rel.endsWith("/") ? [path.join(base, "index.html"), `${base.replace(/[\\/]+$/, "")}.html`] : [base, `${base}.html`, path.join(base, "index.html")];
   for (const file of candidates) {
     const stat = await fileAt(file);
     if (!stat) continue;

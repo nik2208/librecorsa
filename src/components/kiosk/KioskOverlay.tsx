@@ -10,7 +10,7 @@ import { nameProblem } from "@/lib/net/name-filter";
 import { sanitizeDriverName } from "@/lib/settings/player-settings";
 import type { KioskSimApi } from "@/lib/kiosk/kiosk-bridge";
 import { fetchLeaderboard, newClientId, submitKioskResult, type ConfigSource } from "@/lib/kiosk/kiosk-api";
-import { formatClock, formatLapTime, lapScoreMs, scoreSession, type KioskScore } from "@/lib/kiosk/kiosk-score";
+import { formatClock, formatLapTime, formatMinutes, lapScoreMs, scoreSession, type KioskScore } from "@/lib/kiosk/kiosk-score";
 import { KIOSK_CAR_ID, rankingModeFor, type KioskConfig, type KioskLap, type KioskLeaderboard, type KioskResultInput } from "@/lib/kiosk/kiosk-types";
 import { EVENT_BRAND } from "@/lib/kiosk/event-brand";
 import { BrandHeader, KioskButton, KioskCredits, LeaderboardTable, OnScreenKeyboard, PinDialog, useGamepadPress, useStaffGesture } from "@/components/kiosk/kiosk-ui";
@@ -64,12 +64,6 @@ const rulesText = (c: KioskConfig): { headline: string; detail: string } =>
         detail: `Somma dei tempi sul giro${c.maxMinutes > 0 ? `, entro ${formatMinutes(c.maxMinutes)} al massimo` : ""}. Il cronometro parte sulla linea del traguardo.`,
       };
 
-function formatMinutes(min: number): string {
-  if (min < 1) return `${Math.round(min * 60)} secondi`;
-  const whole = Math.floor(min);
-  const secs = Math.round((min - whole) * 60);
-  return secs ? `${whole}:${String(secs).padStart(2, "0")} minuti` : `${whole} ${whole === 1 ? "minuto" : "minuti"}`;
-}
 
 export interface KioskOverlayProps {
   api: KioskSimApi;
