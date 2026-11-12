@@ -16,6 +16,7 @@ import { formatLapTime } from "@/lib/kiosk/kiosk-score";
 import type { BuiltTrackData } from "@/lib/track-data";
 import { trackColliders } from "@/lib/sim/track-colliders";
 import { createGroundHit } from "@/lib/sim/f12026-car/TrackColliderQuery";
+import { SegmentOccluder } from "@/lib/render/segment-occluder";
 
 interface Fonts {
   display: string;
@@ -295,8 +296,68 @@ function edgeHeight(sample: BuiltTrackData["samples"][number], side: 1 | -1): nu
 }
 
 /** Where the boards go: outside the barrier line on straights, sides taking turns, never over another part of the lap */
-function boardSpots(root: THREE.Object3D, track: BuiltTrackData, kinds: number): BoardSpot[] {
+/** Further out each board may go when the scan blocks it where the barrier line puts it (m, tried in turn) */
+const BOARD_RETRY_OUT_M = [0, 3, 6];
+/** Where a visitor sees a board from: the centreline this far before it, at a driver's eye height (m) */
+const BOARD_VIEW_BACK_M = 60;
+const BOARD_VIEW_HEIGHT_M = 1.2;
+
+/**
+ * The circuit's solid scenery (walls, stands, buildings, terrain) indexed for sight lines (segment-occluder.ts): no
+ * hidden collider, nothing see-through (fences, foliage) and none of the boards themselves
+ */
+function solidSceneryOccluder(root: THREE.Object3D): SegmentOccluder {
+  const meshes: THREE.Object3D[] = [];
+  root.traverseVisible((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    if (materials.every((m) => !m.transparent && m.alphaTest === 0 && !m.alphaHash)) meshes.push(mesh);
+  });
+  const occluder = new SegmentOccluder();
+  const build = occluder.build(meshes);
+  while (!build.next().done) {
+    // Built at once: the circuit is still behind its loading screen
+  }
+  return occluder;
+}
+
+/** Whether the segment a → b crosses the solid scenery */
+function segmentBlocked(occluder: SegmentOccluder, a: THREE.Vector3, b: THREE.Vector3, dir: THREE.Vector3, marginM: number): boolean {
+  dir.subVectors(b, a);
+  const length = dir.length();
+  if (length <= marginM) return false;
+  return occluder.blocked(a, dir.divideScalar(length), length - marginM);
+}
+
+/**
+ * Whether a board stands clear: its outline and diagonals cross no wall, stand or building, and a driver coming down
+ * the track sees at least two of its centre and ends
+ */
+function boardClear(occluder: SegmentOccluder, track: BuiltTrackData, s: number, foot: THREE.Vector3, yaw: number): boolean {
+  const across = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+  const bottom = foot.y + BOARD_LIFT_M;
+  const corner = (u: number, v: number) =>
+    foot.clone().addScaledVector(across, (u * BOARD_W) / 2).setY(bottom + v * BOARD_H);
+  const [bl, br, tl, tr] = [corner(-1, 0), corner(1, 0), corner(-1, 1), corner(1, 1)];
+  const dir = new THREE.Vector3();
+  for (const [a, b] of [[bl, br], [tl, tr], [bl, tl], [br, tr], [bl, tr], [br, tl]] as const) {
+    if (segmentBlocked(occluder, a, b, dir, 0)) return false;
+  }
+  const back = track.getSampleAtDistance((((s - BOARD_VIEW_BACK_M) % track.totalLengthM) + track.totalLengthM) % track.totalLengthM);
+  const eye = back.position.clone().setY(back.position.y + BOARD_VIEW_HEIGHT_M);
+  const targets = [corner(0, 0.5), corner(-0.8, 0.5), corner(0.8, 0.5)];
+  const hidden = targets.filter((t) => segmentBlocked(occluder, eye, t, dir, 0.3)).length;
+  return hidden < 2;
+}
+
+/**
+ * Where the boards go: outside the barrier line on straights, sides taking turns, never over another part of the lap,
+ * and (with the scan's solid scenery to check against) never through a wall or stand or out of a driver's sight
+ */
+function boardSpots(root: THREE.Object3D, track: BuiltTrackData, kinds: number, occluder: SegmentOccluder | null): { spots: BoardSpot[]; dropped: number } {
   const spots: BoardSpot[] = [];
+  let dropped = 0;
   const ground = trackColliders(root).ground;
   const hit = createGroundHit();
   const right = new THREE.Vector3();
@@ -308,31 +369,41 @@ function boardSpots(root: THREE.Object3D, track: BuiltTrackData, kinds: number):
   for (const sample of track.samples) {
     if (sample.s < nextS || sample.s > track.totalLengthM - START_CLEAR_BEFORE_M) continue;
     if (Math.abs(sample.curvature) > STRAIGHT_MAX_CURVATURE) continue;
-    nextS = sample.s + BOARD_SPACING_M;
     right.set(sample.binormal.x, 0, sample.binormal.z);
     if (right.lengthSq() < 1e-6) continue;
     right.normalize();
     const wall = side > 0 ? sample.wallRightM : sample.wallLeftM;
-    const lateral = Math.max(wall ?? sample.width / 2 + 3, sample.width / 2 + 1) + BOARD_CLEARANCE_M;
-    const position = sample.position.clone().addScaledVector(right, side * lateral);
-    // Not on (or right beside) another part of the lap: a hairpin's other leg, a parallel straight
-    const near = track.projectWorldToTrack(position.x, position.z, sample.s);
-    const lapGap = Math.min(Math.abs(near.s - sample.s), track.totalLengthM - Math.abs(near.s - sample.s));
-    if (lapGap > 30 && Math.abs(near.lateralOffset) < near.sample.width / 2 + BOARD_CLEARANCE_M + 2) {
-      side = side > 0 ? -1 : 1;
-      continue;
-    }
-    // Its foot on the ground: the physics ground where it reaches, else the edge of the lateral profile
-    const guess = edgeHeight(sample, side);
-    const onCollider = !!ground && ground.query(position.x, position.z, guess + 20, hit) && Math.abs(hit.height - guess) < 4;
-    position.y = onCollider ? hit.height : guess;
-    // Facing the track, turned a little towards the cars coming
+    const base = Math.max(wall ?? sample.width / 2 + 3, sample.width / 2 + 1) + BOARD_CLEARANCE_M;
     along.set(sample.tangent.x, 0, sample.tangent.z).normalize();
     face.copy(right).multiplyScalar(-side * Math.cos(toe)).addScaledVector(along, -Math.sin(toe)).normalize();
-    spots.push({ position, yaw: Math.atan2(face.x, face.z), kind: spots.length % kinds, s: sample.s, side, ground: onCollider ? "collider" : "profile" });
-    side = side > 0 ? -1 : 1;
+    const yaw = Math.atan2(face.x, face.z);
+    let placed: BoardSpot | null = null;
+    for (const out of BOARD_RETRY_OUT_M) {
+      const position = sample.position.clone().addScaledVector(right, side * (base + out));
+      // Not on (or right beside) another part of the lap: a hairpin's other leg, a parallel straight. Searched over
+      // the whole lap (a hint would keep the search near this sample, where the board's own stretch always wins)
+      const near = track.projectWorldToTrack(position.x, position.z);
+      const lapGap = Math.min(Math.abs(near.s - sample.s), track.totalLengthM - Math.abs(near.s - sample.s));
+      if (lapGap > 30 && Math.abs(near.lateralOffset) < near.sample.width / 2 + BOARD_CLEARANCE_M + 2) break;
+      // Its foot on the ground: the physics ground where it reaches, else the edge of the lateral profile
+      const guess = edgeHeight(sample, side);
+      const onCollider = !!ground && ground.query(position.x, position.z, guess + 20, hit) && Math.abs(hit.height - guess) < 4;
+      position.y = onCollider ? hit.height : guess;
+      if (occluder && !boardClear(occluder, track, sample.s, position, yaw)) continue;
+      placed = { position, yaw, kind: spots.length % kinds, s: sample.s, side, ground: onCollider ? "collider" : "profile" };
+      break;
+    }
+    if (placed) {
+      spots.push(placed);
+      nextS = sample.s + BOARD_SPACING_M;
+      side = side > 0 ? -1 : 1;
+    } else {
+      // Blocked here: try a little further on (the other side's turn stays the same)
+      dropped++;
+      nextS = sample.s + 15;
+    }
   }
-  return spots;
+  return { spots, dropped };
 }
 
 /** The boards: one instanced mesh per picture (front face textured), one for all the posts */
@@ -342,7 +413,8 @@ function addTracksideBoards(root: THREE.Object3D, track: BuiltTrackData): number
     brandTexture(1024, 128, paintEventBanner, BRAND_FILES.bannerEvent),
     brandTexture(1024, 128, paintComboBanner, BRAND_FILES.bannerCombo),
   ];
-  const spots = boardSpots(root, track, pictures.length);
+  const { spots, dropped } = boardSpots(root, track, pictures.length, solidSceneryOccluder(root));
+  if (dropped > 0) console.info(`[event] ${dropped} board spots skipped (walls, stands or no line of sight)`);
   // Test builds only (compiled out otherwise): an end-to-end test drives up to the boards to look at them
   if (process.env.NEXT_PUBLIC_KIOSK_TEST_HOOKS === "1") {
     (window as Window & { __kioskBoardSpots?: unknown }).__kioskBoardSpots = spots.map((b) => ({
@@ -425,6 +497,17 @@ function addTracksideBoards(root: THREE.Object3D, track: BuiltTrackData): number
  */
 export function applyEventBranding(root: THREE.Object3D, track?: BuiltTrackData): void {
   if (!EVENT_BRANDING_ON || typeof document === "undefined") return;
+  // A new circuit: the last one's screens stop asking for the leaderboard (their textures are never disposed when the
+  // game switches circuit in place), and the test handles let go of the last circuit's boards
+  if (screenTimer !== null) {
+    window.clearInterval(screenTimer);
+    screenTimer = null;
+  }
+  if (process.env.NEXT_PUBLIC_KIOSK_TEST_HOOKS === "1") {
+    const w = window as Window & { __kioskBoardSpots?: unknown; __kioskBoardsGroup?: unknown };
+    delete w.__kioskBoardSpots;
+    delete w.__kioskBoardsGroup;
+  }
   const banners = new Map<string, BrandTexture>();
   let screen: BrandTexture | null = null;
   let redWhiteKerb: THREE.Texture | null = null;
