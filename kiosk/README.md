@@ -113,9 +113,9 @@ Risposta di `/leaderboard`:
 ## Grafiche Huawei / Milan Games Week
 
 Il circuito (RISE Motordrome) ha striscioni, maxischermi, portale di partenza, bandiere e cordoli con i colori e i nomi
-dello sponsor e dell'evento; la monoposto ha la livrea "Milan Games Week #26". Gli striscioni Huawei e l'intestazione
-usano il wordmark HUAWEI (provvisorio, da Wikimedia Commons, rigenerabile dal brand kit con
-`scripts/kiosk/build_brand_assets.py`); il resto è testo nei colori del brand. Dettagli in `public/kiosk/brand/README.md`. Testi, date e colori: `src/lib/kiosk/event-brand.ts`.
+dello sponsor e dell'evento; la monoposto ha la livrea "Milan Games Week #26". Striscioni e intestazione usano il wordmark
+HUAWEI (provvisorio, da Wikimedia Commons) e il logo ufficiale Milan Games Week 2026 (dal sito dell'evento), generati
+con `scripts/kiosk/build_brand_assets.py` e tenuti fuori da git; rigenerali dal brand kit Huawei quando arriva. Dettagli in `public/kiosk/brand/README.md`. Testi, date e colori: `src/lib/kiosk/event-brand.ts`.
 I maxischermi del circuito mostrano la classifica live del kiosk.
 
 ## Contenuti extra: Ferrari SF-26 e Monza

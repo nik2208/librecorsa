@@ -17,8 +17,10 @@ senza ricompilare se il kiosk serve già la build (basta copiarli anche in `out/
 `huawei-logo.png`, `banner-huawei.png` e `banner-combo.png` (questa cartella è nel `.gitignore`: gli asset di marca non
 vengono committati né pubblicati). Sulla macchina di sviluppo sono stati generati, in via **provvisoria**, dal wordmark
 HUAWEI pubblicato su Wikimedia Commons (`File:Huawei wordmark.svg`): sostituiscili con quello del brand kit ufficiale.
-Il logo di Milan Games Week non è stato scaricato (il sito ufficiale blocca l'accesso automatico): `banner-mgw.png` e
-`mgw-logo.png` vanno presi dal kit dell'organizzatore.
+Il logo di Milan Games Week 2026 viene dal sito ufficiale (SVG "Logo bianco scritta bianca no sfondo",
+`milangamesweek.it/content/dam/mgw/loghi/2026/`), rasterizzato e passato come secondo argomento:
+`python3 scripts/kiosk/build_brand_assets.py wordmark-huawei.png mgw-logo.png` crea anche `mgw-logo.png` e
+`banner-mgw.png`, e mette il logo MGW nello striscione combinato.
 
 La livrea della monoposto usa `public/cars/f12026/liveries/huawei_mgw/decals.png` (2048 × 512, trasparente):
 per l'artwork ufficiale sostituiscila tenendo ogni immagine nel suo rettangolo
