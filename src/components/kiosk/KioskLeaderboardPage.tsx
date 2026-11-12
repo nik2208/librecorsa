@@ -28,7 +28,7 @@ export const KioskLeaderboardPage: React.FC = () => {
         setError(false);
         const track = KIOSK_TRACKS.find((t) => t.id === config.trackId)?.label ?? config.trackId;
         const car = config.carId === "vf26" ? "" : ` · ${KIOSK_CARS.find((c) => c.id === config.carId)?.label ?? config.carId}`;
-        setSubtitle(config.limitMode === "laps" ? `${config.laps} giri · tempo totale · ${track}${car}` : `Miglior giro · ${track}${car}`);
+        setSubtitle(config.limitMode === "laps" ? `${config.laps} ${config.laps === 1 ? "giro" : "giri"} · tempo totale · ${track}${car}` : `Miglior giro · ${track}${car}`);
       } catch {
         if (live) setError(true);
       }

@@ -83,7 +83,7 @@ export const LeaderboardTable: React.FC<{
   emptyText = "Nessun tempo ancora: sii il primo!",
 }) => {
   const rows = board?.rows.slice(0, limit) ?? [];
-  const label = board?.mode === "total" ? `Tempo totale · ${board.laps} giri` : "Miglior giro";
+  const label = board?.mode === "total" ? `Tempo totale · ${board.laps} ${board.laps === 1 ? "giro" : "giri"}` : "Miglior giro";
   return (
     <div className="w-full">
       <div className={`mb-2 flex items-baseline justify-between font-f1-italic font-bold uppercase tracking-[0.2em] text-white/60 ${large ? "text-lg" : "text-xs"}`}>

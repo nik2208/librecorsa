@@ -535,7 +535,7 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
               <div className="grid grid-cols-2 gap-3">
                 <Stat label="Miglior giro" value={formatLapTime(outcome.score.bestLapMs)} note={outcome.score.bestLapPenalised ? `con penalità +${outcome.input.penaltyS} s` : undefined} />
                 {outcome.input.limitMode === "laps" ? (
-                  <Stat label={`Tempo totale (${outcome.input.limitLaps} giri)`} value={formatLapTime(outcome.score.totalTimeMs)} note={outcome.score.totalTimeMs === null ? "giri non completati" : undefined} />
+                  <Stat label={`Tempo totale (${outcome.input.limitLaps} ${outcome.input.limitLaps === 1 ? "giro" : "giri"})`} value={formatLapTime(outcome.score.totalTimeMs)} note={outcome.score.totalTimeMs === null ? "giri non completati" : undefined} />
                 ) : (
                   <Stat label="Tempo di guida" value={formatClock(outcome.input.drivenMs)} />
                 )}

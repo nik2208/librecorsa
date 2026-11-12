@@ -19,6 +19,16 @@ Classifica:
 - I giri fuori dai limiti della pista prendono una penalità (default +5 s) oppure non contano (opzione admin).
 - Per ogni nome resta in classifica il risultato migliore.
 
+## Verifiche fatte
+
+- Suite `npm run verify kiosk` (punteggi, config, API del server, gate degli extra) e suite upstream pertinenti.
+- End-to-end in Chromium: nome, GIOCA, countdown, pausa (cronometro fermo), fine al limite di tempo, risultato salvato,
+  giocatore successivo, admin con PIN, classifica pubblica, uscita staff, tempo massimo in modalità giri.
+- **Un giro reale completo** su RISE (modalità 1 giro), guidato dall'autopilota del gioco attraverso fisica, registratore
+  dei giri e kiosk: "Traguardo!", risultato salvato (1:51.328, +5 s perché i giri in autopilota non sono validi).
+- SF-26 su Monza: caricamento, guida e risultato sulla classifica dedicata; cartelloni visibili lungo i rettilinei.
+- Da provare sul posto: il PC dell'evento con il volante vero (avvio con un pulsante del volante, audio, prestazioni).
+
 ## Avvio rapido
 
 Serve **Node ≥ 20.9** per compilare (Next 16); il server del kiosk gira anche su Node 18.
