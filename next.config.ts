@@ -15,7 +15,11 @@ const turbopackRoot = process.env.NEXT_TURBOPACK_ROOT;
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   ...(turbopackRoot ? { turbopack: { root: turbopackRoot } } : {}),
-  env: { NEXT_PUBLIC_ASSET_VERSION: assetVersion },
+  env: {
+    NEXT_PUBLIC_ASSET_VERSION: assetVersion,
+    // Event branch: always defined, so a normal build compiles the kiosk's test hooks out (src/components/kiosk)
+    NEXT_PUBLIC_KIOSK_TEST_HOOKS: process.env.NEXT_PUBLIC_KIOSK_TEST_HOOKS === "1" ? "1" : "0",
+  },
   ...(devOrigins.length ? { allowedDevOrigins: devOrigins } : {}),
   output: "export",
   images: {
