@@ -363,9 +363,13 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
                 <p className="mt-2 font-f1-italic text-2xl font-bold text-[#FF3B30]">{rules.headline}</p>
                 <p className="mt-1 max-w-2xl font-f1-italic text-base text-white/70">{rules.detail}</p>
               </div>
-              <label className="flex flex-col gap-2">
-                <span className="font-f1-italic text-sm font-bold uppercase tracking-[0.25em] text-white/60">Il tuo nome</span>
+              {/* Not wrapped in its label: the game rings a label round a focused input (globals.css), in its own lime */}
+              <div className="flex flex-col gap-2">
+                <label htmlFor="kiosk-player-name" className="font-f1-italic text-sm font-bold uppercase tracking-[0.25em] text-white/60">
+                  Il tuo nome
+                </label>
                 <input
+                  id="kiosk-player-name"
                   value={name}
                   onChange={(e) => {
                     setName(e.target.value.slice(0, 16));
@@ -376,9 +380,9 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
                   autoComplete="off"
                   spellCheck={false}
                   placeholder="NOME"
-                  className="h-16 w-full max-w-xl rounded-xl border-2 border-white/20 bg-black/50 px-5 font-f1-display text-3xl font-bold uppercase tracking-[0.08em] text-white outline-none placeholder:text-white/25 focus:border-[#C7000B]"
+                  className="h-16 w-full max-w-xl rounded-xl border-2 border-white/20 bg-black/50 px-5 font-f1-display text-3xl font-bold uppercase tracking-[0.08em] text-white outline-none placeholder:text-white/25 focus:border-[#C7000B] focus-visible:outline-none"
                 />
-              </label>
+              </div>
               {nameError ? <p className="font-f1-italic text-lg font-bold text-[#FF6B60]">{nameError}</p> : null}
               <OnScreenKeyboard
                 onKey={(k) => {

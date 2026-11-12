@@ -990,6 +990,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       const clean = sanitizeDriverName(name);
       setSettings((prev) => ({ ...prev, profile: { ...prev.profile, name: clean, code: codeFromName(clean), generated: false } }));
       startDriving(false);
+      // The kiosk's name screen has already said how to drive; the hint would sit under the kiosk's clock
+      setLaunchHint(false);
     },
     [session, startDriving]
   );
