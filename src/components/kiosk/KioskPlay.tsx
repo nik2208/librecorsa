@@ -11,9 +11,14 @@ import { kioskSettingsFor } from "@/lib/kiosk/kiosk-settings";
 import { runnableCarId, runnableTrackId, type KioskConfig } from "@/lib/kiosk/kiosk-types";
 import type { KioskMode } from "@/lib/kiosk/kiosk-bridge";
 import { withBasePath } from "@/lib/base-path";
+import { pinF1ModPhysics } from "@/lib/cars/f1-mod-physics";
 
 /** Results still waiting in this browser (the server was down) are sent again this often */
 const QUEUE_RETRY_MS = 60_000;
+
+// A ported F1 car (the SF-26) always drives on its own registry model here, whatever the switch says in the full game:
+// one leaderboard, one model. Fixed as this page loads, before the game reads it, and never saved
+pinF1ModPhysics("f12026-car");
 
 export const KioskPlay: React.FC = () => {
   const [state, setState] = useState<{ config: KioskConfig; source: ConfigSource } | null>(null);
@@ -53,14 +58,14 @@ export const KioskPlay: React.FC = () => {
     [config, settings, source, refresh, staffExit]
   );
 
-  if (!config || !kiosk) {
-    return (
-      <div className="flex h-screen w-screen flex-col items-center justify-center gap-6 bg-[#08090D] px-6 text-white">
-        <BrandHeader />
-        <p className="font-f1-italic text-lg font-bold uppercase tracking-[0.3em] text-white/60">Caricamento…</p>
-      </div>
-    );
-  }
+  if (!config || !kiosk) return <KioskBoot />;
   // Another car remounts the game on it (the circuit reloads), so nothing of the last car's session carries over
   return <TrackGate key={config.carId} kiosk={kiosk} trackId={config.trackId} />;
 };
+
+const KioskBoot: React.FC = () => (
+  <div className="flex h-screen w-screen flex-col items-center justify-center gap-6 bg-[#08090D] px-6 text-white">
+    <BrandHeader />
+    <p className="font-f1-italic text-lg font-bold uppercase tracking-[0.3em] text-white/60">Caricamento…</p>
+  </div>
+);

@@ -243,12 +243,15 @@ const materialsOf = (mesh: THREE.Mesh): THREE.Material[] => (Array.isArray(mesh.
 
 // ---- Trackside boards for circuits with no banners of their own (every circuit but RISE Motordrome)
 
-/** A board: 8 × 1 m, the banners' 8:1, on two posts */
-const BOARD_W = 8;
-const BOARD_H = 1;
-const BOARD_DEPTH = 0.08;
-/** Gap between the ground and the board's lower edge, and how far the posts reach into the ground (m) */
-const BOARD_LIFT_M = 0.35;
+/** A board: 12 × 1.5 m, the banners' 8:1, on two posts */
+const BOARD_W = 12;
+const BOARD_H = 1.5;
+const BOARD_DEPTH = 0.1;
+/**
+ * Gap between the ground and the board's lower edge, and how far the posts reach into the ground (m). Raised clear of
+ * the barriers: a converted circuit's walls and fences hid boards standing on the ground (checked at Monza)
+ */
+const BOARD_LIFT_M = 2.2;
 const POST_SINK_M = 0.6;
 /** One board this often along the lap (m), sides taking turns */
 const BOARD_SPACING_M = 55;
@@ -266,6 +269,10 @@ interface BoardSpot {
   position: THREE.Vector3;
   yaw: number;
   kind: number;
+  /** Lap distance and side (+1 right) it stands beside, and where its ground height came from */
+  s: number;
+  side: 1 | -1;
+  ground: "collider" | "profile";
 }
 
 /** Ground height beside a sample: the outermost point of its lateral profile on that side (±12 m), else the road's */
@@ -305,11 +312,12 @@ function boardSpots(root: THREE.Object3D, track: BuiltTrackData, kinds: number):
     }
     // Its foot on the ground: the physics ground where it reaches, else the edge of the lateral profile
     const guess = edgeHeight(sample, side);
-    position.y = ground && ground.query(position.x, position.z, guess + 20, hit) && Math.abs(hit.height - guess) < 4 ? hit.height : guess;
+    const onCollider = !!ground && ground.query(position.x, position.z, guess + 20, hit) && Math.abs(hit.height - guess) < 4;
+    position.y = onCollider ? hit.height : guess;
     // Facing the track, turned a little towards the cars coming
     along.set(sample.tangent.x, 0, sample.tangent.z).normalize();
     face.copy(right).multiplyScalar(-side * Math.cos(toe)).addScaledVector(along, -Math.sin(toe)).normalize();
-    spots.push({ position, yaw: Math.atan2(face.x, face.z), kind: spots.length % kinds });
+    spots.push({ position, yaw: Math.atan2(face.x, face.z), kind: spots.length % kinds, s: sample.s, side, ground: onCollider ? "collider" : "profile" });
     side = side > 0 ? -1 : 1;
   }
   return spots;
@@ -323,9 +331,34 @@ function addTracksideBoards(root: THREE.Object3D, track: BuiltTrackData): number
     brandTexture(1024, 128, paintComboBanner, BRAND_FILES.bannerCombo),
   ];
   const spots = boardSpots(root, track, pictures.length);
+  // Test builds only (compiled out otherwise): an end-to-end test drives up to the boards to look at them
+  if (process.env.NEXT_PUBLIC_KIOSK_TEST_HOOKS === "1") {
+    (window as Window & { __kioskBoardSpots?: unknown }).__kioskBoardSpots = spots.map((b) => ({
+      s: b.s,
+      side: b.side,
+      ground: b.ground,
+      x: b.position.x,
+      y: b.position.y,
+      z: b.position.z,
+    }));
+  }
   if (spots.length === 0) return 0;
   const group = new THREE.Group();
   group.name = "Event_TracksideBoards";
+  // Test builds only: a debug switch draws the boards huge and high, to tell a placement problem from a drawing one
+  let debugScale = 1;
+  let debugLift = 0;
+  if (process.env.NEXT_PUBLIC_KIOSK_TEST_HOOKS === "1") {
+    try {
+      if (localStorage.getItem("kiosk.debugBoards") === "1") {
+        debugScale = 4;
+        debugLift = 6;
+      }
+    } catch {
+      // No storage: normal boards
+    }
+    (window as Window & { __kioskBoardsGroup?: THREE.Group }).__kioskBoardsGroup = group;
+  }
   const boardGeo = new THREE.BoxGeometry(BOARD_W, BOARD_H, BOARD_DEPTH);
   // The banner pictures are drawn the glTF way round (no flip): turn the box's UVs to match
   const uv = boardGeo.getAttribute("uv") as THREE.BufferAttribute;
@@ -334,7 +367,7 @@ function addTracksideBoards(root: THREE.Object3D, track: BuiltTrackData): number
   const matrix = new THREE.Matrix4();
   const quat = new THREE.Quaternion();
   const up = new THREE.Vector3(0, 1, 0);
-  const unit = new THREE.Vector3(1, 1, 1);
+  const unit = new THREE.Vector3(debugScale, debugScale, debugScale);
   const centre = new THREE.Vector3();
   pictures.forEach((picture, kind) => {
     const mine = spots.filter((s) => s.kind === kind);
@@ -344,7 +377,7 @@ function addTracksideBoards(root: THREE.Object3D, track: BuiltTrackData): number
     const boards = new THREE.InstancedMesh(boardGeo, [back, back, back, back, front, back], mine.length);
     mine.forEach((spot, i) => {
       quat.setFromAxisAngle(up, spot.yaw);
-      centre.copy(spot.position).setY(spot.position.y + BOARD_LIFT_M + BOARD_H / 2);
+      centre.copy(spot.position).setY(spot.position.y + BOARD_LIFT_M + (BOARD_H * debugScale) / 2 + debugLift);
       boards.setMatrixAt(i, matrix.compose(centre, quat, unit));
     });
     boards.instanceMatrix.needsUpdate = true;
@@ -355,12 +388,12 @@ function addTracksideBoards(root: THREE.Object3D, track: BuiltTrackData): number
     group.add(boards);
   });
   const postH = BOARD_LIFT_M + POST_SINK_M + BOARD_H * 0.5;
-  const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.1, postH, 0.1), back, spots.length * 2);
+  const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.14, postH, 0.14), back, spots.length * 2);
   const offset = new THREE.Vector3();
   spots.forEach((spot, i) => {
     quat.setFromAxisAngle(up, spot.yaw);
     for (const end of [-1, 1]) {
-      offset.set((end * (BOARD_W / 2 - 0.4)), 0, -BOARD_DEPTH).applyQuaternion(quat);
+      offset.set(end * (BOARD_W / 2 - 0.6), 0, -BOARD_DEPTH).applyQuaternion(quat);
       centre.copy(spot.position).add(offset).setY(spot.position.y - POST_SINK_M + postH / 2);
       posts.setMatrixAt(i * 2 + (end > 0 ? 1 : 0), matrix.compose(centre, quat, unit));
     }

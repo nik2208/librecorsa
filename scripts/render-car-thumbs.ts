@@ -49,7 +49,16 @@ async function main(): Promise<void> {
     format: "esm",
     outfile: join(work, "render.js"),
     tsconfig: join(ROOT, "tsconfig.json"),
-    define: { "process.env.NEXT_PUBLIC_BASE_PATH": '""', "process.env.NEXT_PUBLIC_HOSTED_CONTENT": '"1"', "process.env.NODE_ENV": '"production"' },
+    define: {
+      "process.env.NEXT_PUBLIC_BASE_PATH": '""',
+      "process.env.NEXT_PUBLIC_HOSTED_CONTENT": '"1"',
+      "process.env.NODE_ENV": '"production"',
+      // Event branch: read when the kiosk's modules load (the event's dressing, its extras, its server and test hooks)
+      "process.env.NEXT_PUBLIC_EVENT_BRANDING": '"1"',
+      "process.env.NEXT_PUBLIC_EXTRA_CONTENT": JSON.stringify(process.env.NEXT_PUBLIC_EXTRA_CONTENT ?? ""),
+      "process.env.NEXT_PUBLIC_KIOSK_API": '""',
+      "process.env.NEXT_PUBLIC_KIOSK_TEST_HOOKS": '"0"',
+    },
     logLevel: "warning",
   });
   writeFileSync(

@@ -49,6 +49,16 @@ export function setF1ModPhysics(next: F1ModPhysics): void {
   listeners.forEach((l) => l());
 }
 
+/**
+ * Event branch: the kiosk's page fixes the model for the session without saving it (a staff member's switch in the
+ * full game must not move the kiosk's ported car, and so its leaderboard, onto another model)
+ */
+export function pinF1ModPhysics(next: F1ModPhysics): void {
+  if (next === getF1ModPhysics()) return;
+  current = next;
+  listeners.forEach((l) => l());
+}
+
 export function subscribeF1ModPhysics(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
