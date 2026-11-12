@@ -23,6 +23,8 @@ export interface KioskMode {
 }
 
 export interface KioskSimApi {
+  /** The circuit actually loaded: the config's, or the default when its files could not be loaded */
+  trackId: string;
   phase: AppPhase;
   /** The circuit has loaded and the car waits on the grid for a player */
   ready: boolean;

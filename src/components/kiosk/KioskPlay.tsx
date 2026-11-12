@@ -16,12 +16,19 @@ import { pinF1ModPhysics } from "@/lib/cars/f1-mod-physics";
 /** Results still waiting in this browser (the server was down) are sent again this often */
 const QUEUE_RETRY_MS = 60_000;
 
-// A ported F1 car (the SF-26) always drives on its own registry model here, whatever the switch says in the full game:
-// one leaderboard, one model. Fixed as this page loads, before the game reads it, and never saved
-pinF1ModPhysics("f12026-car");
+/** The vehicle model a ported F1 car (the SF-26) drives on in the kiosk: its registry model, whatever the full game's
+ * switch says, so one car has one leaderboard on one model */
+const KIOSK_F1_MOD_PHYSICS = "f12026-car" as const;
 
 export const KioskPlay: React.FC = () => {
   const [state, setState] = useState<{ config: KioskConfig; source: ConfigSource } | null>(null);
+  // Pinned before the game below first reads it (render), again after a dev remount (effect), and let go on the way
+  // out, so the full game shows the staff's own choice again even after a client-side navigation
+  pinF1ModPhysics(KIOSK_F1_MOD_PHYSICS);
+  useEffect(() => {
+    pinF1ModPhysics(KIOSK_F1_MOD_PHYSICS);
+    return () => pinF1ModPhysics(null);
+  }, []);
 
   const refresh = useCallback(() => {
     void loadKioskConfig().then((next) =>

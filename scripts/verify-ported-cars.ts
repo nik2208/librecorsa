@@ -9,6 +9,7 @@
  */
 import { CAR_CLASSES, carById, CARS, carsByYear, carsInClass, carThumbUrl, resolveCarId } from "../src/lib/cars/car-registry";
 import { carPhysics, carTakesPhysicsSwitch } from "../src/lib/cars/f1-mod-physics";
+import { EXTRA_CONTENT_IDS } from "../src/lib/hosted-content";
 
 let passed = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -27,8 +28,9 @@ for (const native of ["vf26", "amg-gt3", "bmw-m4-gt3", "mtr-496r"] as const) {
     !carTakesPhysicsSwitch(native) && carPhysics(native, "vf26") === carById(native).physics && carPhysics(native, "f12026-car") === carById(native).physics
   );
 }
-// Event branch: the SF-26 is the one ported F1 car, an extra restored by hand (scripts/kiosk/restore-extra-content.mjs)
-const EVENT_EXTRA_F1_CARS: readonly string[] = ["sf26"];
+// Event branch: the SF-26 is the one ported F1 car, an extra restored by hand (scripts/kiosk/restore-extra-content.mjs),
+// allowed here only when the build names it in NEXT_PUBLIC_EXTRA_CONTENT
+const EVENT_EXTRA_F1_CARS: readonly string[] = ["sf26"].filter((id) => EXTRA_CONTENT_IDS.has(id));
 const switched = CARS.filter((c) => carTakesPhysicsSwitch(c.id)).map((c) => c.id);
 check(
   "No car but the event's extras takes the F1 physics switch",

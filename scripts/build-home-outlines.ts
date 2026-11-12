@@ -9,6 +9,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import trackIndex from "../public/tracks/index.json";
 import { lapOutlineOf, type LapOutline, type RawLap } from "../src/lib/home/lap-outline";
+import { EXTRA_CONTENT_KNOWN } from "../src/lib/hosted-content";
 
 const OUT = join(process.cwd(), "src/lib/home/circuit-outlines.json");
 
@@ -17,7 +18,8 @@ const after: Record<string, LapOutline> = {};
 const kept: string[] = [];
 const missing: string[] = [];
 
-for (const t of trackIndex as { id: string; dataUrl?: string }[]) {
+// Event branch: the hand-restored extras (Monza) stay out of this tracked file, even when their data is on disk
+for (const t of (trackIndex as { id: string; dataUrl?: string }[]).filter((t) => !EXTRA_CONTENT_KNOWN.has(t.id))) {
   const file = join(process.cwd(), "public", t.dataUrl ?? `/tracks/${t.id}/track_data.json`);
   if (existsSync(file)) after[t.id] = lapOutlineOf(JSON.parse(readFileSync(file, "utf8")) as RawLap);
   else if (before[t.id]) {

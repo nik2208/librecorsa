@@ -4,7 +4,9 @@ import { carById, type CarId } from "@/lib/cars/car-registry";
 
 /**
  * Which vehicle model a ported F1 car (one with its own GLB) drives on: the 6-DOF rigid-body model (default) or the
- * F1 2026 Prototype's. None is listed now, so the switch shows nowhere. The F1 2026 Prototype keeps its own model; the GT3s have one model. The rigid-body model
+ * F1 2026 Prototype's. Upstream lists none, so the switch shows nowhere; this event branch lists the SF-26 when a build
+ * names it in NEXT_PUBLIC_EXTRA_CONTENT, and the switch shows for it. The F1 2026 Prototype keeps its own model; the
+ * GT3s have one model. The rigid-body model
  * has no car of its own in the list: a saved choice of it opens the Prototype.
  */
 export type F1ModPhysics = Extract<VehicleModelId, "f12026-car" | "vf26">;
@@ -31,9 +33,12 @@ function load(): F1ModPhysics {
 }
 
 let current: F1ModPhysics | null = null;
+/** Event branch: the kiosk's fixed model, over the player's choice while the kiosk page is up (pinF1ModPhysics) */
+let pinned: F1ModPhysics | null = null;
 const listeners = new Set<() => void>();
 
 export function getF1ModPhysics(): F1ModPhysics {
+  if (pinned !== null) return pinned;
   if (current === null) current = typeof window === "undefined" ? DEFAULT : load();
   return current;
 }
@@ -50,13 +55,15 @@ export function setF1ModPhysics(next: F1ModPhysics): void {
 }
 
 /**
- * Event branch: the kiosk's page fixes the model for the session without saving it (a staff member's switch in the
- * full game must not move the kiosk's ported car, and so its leaderboard, onto another model)
+ * Event branch: the kiosk's page fixes the model over the player's choice, without saving it (a staff member's switch
+ * in the full game must not move the kiosk's ported car, and so its leaderboard, onto another model); null lets the
+ * player's own choice show again
  */
-export function pinF1ModPhysics(next: F1ModPhysics): void {
-  if (next === getF1ModPhysics()) return;
-  current = next;
-  listeners.forEach((l) => l());
+export function pinF1ModPhysics(next: F1ModPhysics | null): void {
+  if (next === pinned) return;
+  const before = getF1ModPhysics();
+  pinned = next;
+  if (getF1ModPhysics() !== before) listeners.forEach((l) => l());
 }
 
 export function subscribeF1ModPhysics(listener: () => void): () => void {

@@ -1797,6 +1797,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
 
       {kiosk
         ? kiosk.render({
+            trackId,
             phase,
             ready: assetsReady && phase !== "loading",
             paused,

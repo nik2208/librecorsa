@@ -4,7 +4,7 @@ import { HomeHub } from "@/components/home/HomeHub";
 import type { HomeData } from "@/components/home/home-data";
 import { withBasePath } from "@/lib/base-path";
 import { CAR_CLASSES, CARS, carThumbUrl, type CarId } from "@/lib/cars/car-registry";
-import { REPO_CAR_IDS } from "@/lib/hosted-content";
+import { EXTRA_CONTENT_KNOWN, REPO_CAR_IDS } from "@/lib/hosted-content";
 import outlines from "@/lib/home/circuit-outlines.json";
 import type { LapOutline } from "@/lib/home/lap-outline";
 import { carModelSource, trackModelSource } from "@/lib/model-source";
@@ -27,7 +27,8 @@ function thumbOf(id: CarId): string | null {
 
 /** The home page: the game's circuits, cars and press, with Drive into the game at /play */
 export default function HomePage() {
-  const missing = CIRCUIT_VENUES.flatMap((v) => v.layouts.filter((t) => !OUTLINES[t.id]).map((t) => t.id));
+  // Event branch: the hand-restored extras (Monza) have no outline on purpose (scripts/build-home-outlines.ts)
+  const missing = CIRCUIT_VENUES.flatMap((v) => v.layouts.filter((t) => !OUTLINES[t.id] && !EXTRA_CONTENT_KNOWN.has(t.id)).map((t) => t.id));
   if (missing.length) console.warn(`Home page: no outline for ${missing.join(", ")} (npm run home-outlines)`);
 
   const data: HomeData = {

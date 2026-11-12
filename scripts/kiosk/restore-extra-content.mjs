@@ -6,21 +6,24 @@
  *   monza  the Monza circuit (model + track data)  → public/tracks/monza/
  *
  * The files are written to public/ UNTRACKED: those folders are gitignored, so they are never committed (or pushed)
- * again. The game lists them only in a build made with NEXT_PUBLIC_EXTRA_CONTENT naming them (src/lib/hosted-content.ts).
+ * again. The game lists them only in a build made with NEXT_PUBLIC_EXTRA_CONTENT naming them (src/lib/hosted-content.ts),
+ * but `next build` copies all of public/ into out/: while the files are in public/, any build ships them (unlisted, yet
+ * downloadable from the kiosk server). --remove takes them out of public/ and out/ again.
  *
  * WARNING (read kiosk/README.md, "Contenuti extra"): upstream removed these because the SF-26 body was ripped from an
  * F1 video game and the Monza model from "Ripped" Assetto Corsa conversions on Sketchfab. Using them at a commercial
- * event exposes you and the brand you work for. The default build does not include them.
+ * event exposes you and the brand you work for. A build without the flag does not list them.
  *
  * Usage:
  *   node scripts/kiosk/restore-extra-content.mjs [sf26] [monza] [--force]
  *   echo "NEXT_PUBLIC_EXTRA_CONTENT=sf26,monza" >> .env.local && npm run build
+ *   node scripts/kiosk/restore-extra-content.mjs --remove     # and drop the flag from .env.local, then rebuild
  *
  * Needs the full git history (a shallow clone: git fetch --unshallow).
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -36,6 +39,7 @@ const git = (args, opts = {}) => execFileSync("git", args, { cwd: ROOT, maxBuffe
 
 const argv = process.argv.slice(2);
 const force = argv.includes("--force");
+const remove = argv.includes("--remove");
 const wanted = argv.filter((a) => !a.startsWith("--"));
 const ids = wanted.length > 0 ? wanted : Object.keys(SETS);
 for (const id of ids) {
@@ -43,6 +47,27 @@ for (const id of ids) {
     console.error(`Unknown content "${id}" (known: ${Object.keys(SETS).join(", ")})`);
     process.exit(1);
   }
+}
+
+if (remove) {
+  for (const id of ids) {
+    for (const p of SETS[id].paths) {
+      // Only the gitignored copies: never a folder git tracks
+      try {
+        git(["check-ignore", "-q", join(p, "probe")], { stdio: "ignore" });
+      } catch {
+        console.error(`${p} is not gitignored: not removing it`);
+        process.exit(1);
+      }
+      for (const dir of [join(ROOT, p), join(ROOT, "out", p.replace(/^public\//, ""))]) {
+        if (!existsSync(dir)) continue;
+        rmSync(dir, { recursive: true, force: true });
+        console.log(`removed ${dir.slice(ROOT.length + 1)}`);
+      }
+    }
+  }
+  console.log("Drop NEXT_PUBLIC_EXTRA_CONTENT from .env.local and rebuild (npm run build).");
+  process.exit(0);
 }
 
 try {

@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,6 +62,19 @@ async function main() {
     assert.equal(formatMinutes(0.5), "30 secondi");
     assert.equal(formatMinutes(1), "1 minuto");
     assert.equal(formatMinutes(2.5), "2:30 minuti");
+  });
+
+  console.log("Extras");
+  await check("the SF-26 and Monza are listed only when NEXT_PUBLIC_EXTRA_CONTENT names them", async () => {
+    const probe = (env: Record<string, string>) =>
+      execFileSync(process.execPath, ["--import", "tsx", "-e", `const h = require(${JSON.stringify(join(__dirname, "../src/lib/hosted-content.ts"))}); console.log(JSON.stringify([h.carListed("sf26"), h.trackListed("monza"), h.carListed("vf26"), h.trackListed("rwanda_official_short")]))`], {
+        env: { ...process.env, NEXT_PUBLIC_HOSTED_CONTENT: "", NEXT_PUBLIC_EXTRA_CONTENT: "", ...env },
+        encoding: "utf8",
+      }).trim();
+    assert.equal(probe({}), "[false,false,true,true]", "default build");
+    assert.equal(probe({ NEXT_PUBLIC_HOSTED_CONTENT: "1" }), "[false,false,true,true]", "hosted build without the flag");
+    assert.equal(probe({ NEXT_PUBLIC_EXTRA_CONTENT: "sf26" }), "[true,false,true,true]", "only the SF-26 named");
+    assert.equal(probe({ NEXT_PUBLIC_EXTRA_CONTENT: "sf26,monza,f2004" }), "[true,true,true,true]", "both named (unknown ids ignored)");
   });
 
   console.log("Config");

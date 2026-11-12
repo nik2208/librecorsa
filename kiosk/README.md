@@ -112,7 +112,7 @@ I maxischermi del circuito mostrano la classifica live del kiosk.
 Upstream li ha rimossi il 12/11/2026: la carrozzeria della SF-26 è estratta ("ripped") da un videogioco di F1 e il
 modello di Monza da conversioni di Assetto Corsa caricate su Sketchfab come "Ripped". **Usarli a un evento commerciale
 espone te e il brand** (diritti d'autore sui modelli, marchi Ferrari): valuta con l'ufficio legale del cliente prima di
-mostrarli allo stand. La build predefinita non li contiene.
+mostrarli allo stand. Il repository non li contiene e una build senza flag non li elenca.
 
 Per abilitarli su una macchina:
 
@@ -124,11 +124,20 @@ npm run build && npm run kiosk
 
 - I file finiscono in `public/cars/sf26/` e `public/tracks/monza/`, che sono nel `.gitignore`: non vengono mai
   committati né pushati. Serve la history completa del repository (`git fetch --unshallow` su un clone superficiale).
+- Il flag e i file devono esserci **prima** di `npm run build` (vengono incorporati nella build statica).
+- **Attenzione**: finché i file sono in `public/`, `next build` li copia in `out/` anche senza flag (non elencati ma
+  scaricabili dal server del kiosk). Per toglierli davvero:
+  `node scripts/kiosk/restore-extra-content.mjs --remove`, togli il flag da `.env.local` e ricompila.
 - Senza `NEXT_PUBLIC_EXTRA_CONTENT` la build non li elenca; se la config del kiosk li nomina, il kiosk usa la monoposto
   Huawei e il circuito corto.
 - In admin compaiono **Monza** tra i circuiti e la scelta **Auto** (monoposto Huawei / Ferrari SF-26). La classifica è
   separata per auto e circuito.
-- La SF-26 ha la sua livrea originale (non prende quella Huawei).
+- La SF-26 ha la sua livrea originale (non prende quella Huawei): marchi Ferrari e loghi degli sponsor reali, tra cui
+  **HP, IBM, AWS**, Shell, UniCredit, Santander, Ray-Ban. A uno stand Huawei sono marchi di concorrenti.
+- Il modello di Monza contiene uno striscione **"Kunos Simulazioni"** (lo sviluppatore di Assetto Corsa) sopra la pista:
+  è la prova visibile che proviene da Assetto Corsa.
+- Su Monza (e su ogni circuito senza i banner di RISE) il gioco aggiunge cartelloni con le grafiche dell'evento lungo i
+  rettilinei, oltre le barriere.
 
 ## Licenze e diritti (da verificare prima dell'evento)
 

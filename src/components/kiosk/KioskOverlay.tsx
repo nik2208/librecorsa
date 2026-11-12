@@ -12,7 +12,7 @@ import type { KioskSimApi } from "@/lib/kiosk/kiosk-bridge";
 import type { LapSummaryData } from "@/lib/sim/lap-types";
 import { fetchLeaderboard, newClientId, submitKioskResult, type ConfigSource } from "@/lib/kiosk/kiosk-api";
 import { formatClock, formatLapTime, formatMinutes, lapScoreMs, scoreSession, type KioskScore } from "@/lib/kiosk/kiosk-score";
-import { rankingModeFor, type KioskConfig, type KioskLap, type KioskLeaderboard, type KioskResultInput } from "@/lib/kiosk/kiosk-types";
+import { KIOSK_TRACKS, rankingModeFor, type KioskConfig, type KioskLap, type KioskLeaderboard, type KioskResultInput } from "@/lib/kiosk/kiosk-types";
 import { EVENT_BRAND } from "@/lib/kiosk/event-brand";
 import { BrandHeader, KioskButton, KioskCredits, LeaderboardTable, OnScreenKeyboard, PinDialog, useGamepadPress, useStaffGesture } from "@/components/kiosk/kiosk-ui";
 
@@ -104,16 +104,19 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
     if (stage === "boot" && api.ready && api.phase === "title") setStage("entry");
   }, [stage, api.ready, api.phase, setStage]);
 
+  // The circuit actually loaded: the config's, or the default when its files could not be loaded (results and boards
+  // go with what visitors really drive)
+  const activeTrackId = api.trackId;
   // The leaderboard beside the name entry, kept fresh
   const rankingMode = rankingModeFor(config);
   const loadBoard = useCallback(async () => {
     try {
-      setBoard(await fetchLeaderboard({ mode: rankingMode, trackId: config.trackId, carId: config.carId, laps: config.laps, limit: 10 }));
+      setBoard(await fetchLeaderboard({ mode: rankingMode, trackId: activeTrackId, carId: config.carId, laps: config.laps, limit: 10 }));
       setBoardError(false);
     } catch {
       setBoardError(true);
     }
-  }, [rankingMode, config.trackId, config.carId, config.laps]);
+  }, [rankingMode, activeTrackId, config.carId, config.laps]);
   useEffect(() => {
     if (stage !== "entry") return;
     void loadBoard();
@@ -144,7 +147,7 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
     setNameError(null);
     const a = apiRef.current;
     a.start(clean);
-    runRef.current = { name: clean, clientId: newClientId(), config: { ...config }, laps: [], drivenMs: 0, lastTick: null };
+    runRef.current = { name: clean, clientId: newClientId(), config: { ...config, trackId: a.trackId as KioskConfig["trackId"] }, laps: [], drivenMs: 0, lastTick: null };
     setOutcome(null);
     setLapToast(null);
     if (config.countdownS > 0) {
@@ -417,11 +420,19 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
           </div>
           <div className="mt-6 flex items-end justify-between gap-4">
             <KioskCredits className="max-w-4xl" />
-            {configSource !== "server" ? (
-              <span className="shrink-0 rounded-full border border-[#FFB300]/50 px-3 py-1 font-f1-mono text-[11px] text-[#FFB300]">
-                server offline · config {configSource === "cache" ? "in cache" : "predefinita"}
-              </span>
-            ) : null}
+            <div className="flex shrink-0 flex-col items-end gap-1">
+              {activeTrackId !== config.trackId ? (
+                <span className="rounded-full border border-[#FFB300]/50 px-3 py-1 font-f1-mono text-[11px] text-[#FFB300]">
+                  {KIOSK_TRACKS.find((t) => t.id === config.trackId)?.label ?? config.trackId} non caricato · in uso{" "}
+                  {KIOSK_TRACKS.find((t) => t.id === activeTrackId)?.label ?? activeTrackId}
+                </span>
+              ) : null}
+              {configSource !== "server" ? (
+                <span className="rounded-full border border-[#FFB300]/50 px-3 py-1 font-f1-mono text-[11px] text-[#FFB300]">
+                  server offline · config {configSource === "cache" ? "in cache" : "predefinita"}
+                </span>
+              ) : null}
+            </div>
           </div>
         </div>
       ) : null}

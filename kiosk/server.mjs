@@ -349,12 +349,13 @@ const fmtLap = (ms) => {
 };
 
 function resultsCsv() {
-  const head = ["id", "data", "nome", "circuito", "modalita", "giri_limite", "minuti_limite", "giri_completati", "giri_validi", "miglior_giro_ms", "miglior_giro", "penalizzato", "tempo_totale_ms", "tempo_totale", "completato", "tempo_guida_ms", "giri"];
+  const head = ["id", "data", "nome", "circuito", "auto", "modalita", "giri_limite", "minuti_limite", "giri_completati", "giri_validi", "miglior_giro_ms", "miglior_giro", "penalizzato", "tempo_totale_ms", "tempo_totale", "completato", "tempo_guida_ms", "giri"];
   const rows = results.map((r) => [
     r.id,
     r.createdAt,
     r.name,
     r.trackId,
+    r.carId ?? "vf26",
     r.limitMode,
     r.limitLaps,
     r.limitMinutes,

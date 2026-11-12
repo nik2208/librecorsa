@@ -3,13 +3,15 @@
  * kerbs (Rwanda's, from scripts/rwanda-official) take the sponsor's and the event's colours and names.
  *
  * The banners and screens are drawn here as text placeholders unless the official artwork is in public/kiosk/brand/
- * (event-brand.ts BRAND_FILES). The circuit's model itself is not changed: only its materials, once loaded.
+ * (event-brand.ts BRAND_FILES). RISE's model itself is not changed, only its materials once loaded; a circuit without
+ * RISE's banners (a converted scan such as Monza) gets a group of boards along its straights (addTracksideBoards).
  */
 
 import * as THREE from "three";
 import { withBasePath } from "@/lib/base-path";
 import { BRAND_FILES, EVENT_BRAND, EVENT_BRANDING_ON } from "@/lib/kiosk/event-brand";
-import { fetchLeaderboard } from "@/lib/kiosk/kiosk-api";
+import { fetchLeaderboard, loadKioskConfig } from "@/lib/kiosk/kiosk-api";
+import { rankingModeFor, runnableCarId } from "@/lib/kiosk/kiosk-types";
 import { formatLapTime } from "@/lib/kiosk/kiosk-score";
 import type { BuiltTrackData } from "@/lib/track-data";
 import { trackColliders } from "@/lib/sim/track-colliders";
@@ -213,12 +215,22 @@ function recolourFlags(geometry: THREE.BufferGeometry): void {
 const SCREEN_REFRESH_MS = 60_000;
 let screenTimer: number | null = null;
 
-/** Keeps the circuit's screens on the kiosk's leaderboard, when a kiosk server answers */
-function followLeaderboard(screen: BrandTexture): void {
+/**
+ * Keeps the circuit's screens on the kiosk's leaderboard, when a kiosk server answers: the board of this circuit (the
+ * one loaded, whatever the stored config names) and of the car the kiosk runs
+ */
+function followLeaderboard(screen: BrandTexture, trackId: string | undefined): void {
   if (screenTimer !== null) window.clearInterval(screenTimer);
   const refresh = async () => {
     try {
-      const board = await fetchLeaderboard({ limit: 8 });
+      const { config } = await loadKioskConfig();
+      const board = await fetchLeaderboard({
+        mode: rankingModeFor(config),
+        trackId: trackId ?? config.trackId,
+        carId: runnableCarId(config.carId),
+        laps: config.laps,
+        limit: 8,
+      });
       const rows = board.rows.map((r) => ({
         rank: r.rank,
         name: r.name,
@@ -460,7 +472,7 @@ export function applyEventBranding(root: THREE.Object3D, track?: BuiltTrackData)
       m.needsUpdate = true;
     }
   }
-  if (screen) followLeaderboard(screen);
+  if (screen) followLeaderboard(screen, track?.id);
   if (banners.size === 0 && track) {
     const boards = addTracksideBoards(root, track);
     if (boards > 0) console.info(`[event] ${boards} trackside boards placed`);
