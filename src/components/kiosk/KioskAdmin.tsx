@@ -19,7 +19,19 @@ import {
 } from "@/lib/kiosk/kiosk-api";
 import { formatClock, formatLapTime } from "@/lib/kiosk/kiosk-score";
 import { withBasePath } from "@/lib/base-path";
-import { DEFAULT_KIOSK_CONFIG, KIOSK_DIFFICULTIES, KIOSK_TRACKS, sanitizeKioskConfig, type KioskConfig, type KioskResult } from "@/lib/kiosk/kiosk-types";
+import {
+  DEFAULT_KIOSK_CONFIG,
+  KIOSK_CARS,
+  KIOSK_DIFFICULTIES,
+  KIOSK_TRACKS,
+  listedKioskCars,
+  listedKioskTracks,
+  runnableCarId,
+  runnableTrackId,
+  sanitizeKioskConfig,
+  type KioskConfig,
+  type KioskResult,
+} from "@/lib/kiosk/kiosk-types";
 
 const Field: React.FC<{ label: string; hint?: string; children: React.ReactNode }> = ({ label, hint, children }) => (
   <label className="flex flex-col gap-1.5">
@@ -203,9 +215,32 @@ export const KioskAdmin: React.FC = () => {
               </Field>
             </>
           )}
-          <Field label="Circuito">
-            <Segmented value={config.trackId} options={KIOSK_TRACKS} onChange={(v) => update("trackId", v)} />
+          <Field
+            label="Circuito"
+            hint={
+              runnableTrackId(config.trackId) !== config.trackId
+                ? `${KIOSK_TRACKS.find((t) => t.id === config.trackId)?.label} non è in questa build: il kiosk usa il circuito corto`
+                : config.trackId === "monza"
+                  ? "Contenuto extra non licenziato: leggi kiosk/README.md prima di usarlo all'evento"
+                  : undefined
+            }
+          >
+            <Segmented value={config.trackId} options={listedKioskTracks()} onChange={(v) => update("trackId", v)} />
           </Field>
+          {listedKioskCars().length > 1 || runnableCarId(config.carId) !== config.carId ? (
+            <Field
+              label="Auto"
+              hint={
+                runnableCarId(config.carId) !== config.carId
+                  ? `${KIOSK_CARS.find((c) => c.id === config.carId)?.label} non è in questa build: il kiosk usa la monoposto Huawei`
+                  : config.carId === "sf26"
+                    ? "Contenuto extra non licenziato: leggi kiosk/README.md prima di usarlo all'evento. Classifica separata per auto."
+                    : "Classifica separata per auto."
+              }
+            >
+              <Segmented value={config.carId} options={listedKioskCars()} onChange={(v) => update("carId", v)} />
+            </Field>
+          ) : null}
           <Field label="Difficoltà" hint={KIOSK_DIFFICULTIES.find((d) => d.id === config.difficulty)?.hint}>
             <Segmented value={config.difficulty} options={KIOSK_DIFFICULTIES} onChange={(v) => update("difficulty", v)} />
           </Field>
@@ -318,6 +353,7 @@ export const KioskAdmin: React.FC = () => {
                     <td className="py-2 pr-3 font-bold uppercase">{r.name}</td>
                     <td className="py-2 pr-3 text-white/70">
                       {r.limitMode === "laps" ? `${r.limitLaps} giri` : `${r.limitMinutes} min`} · {KIOSK_TRACKS.find((t) => t.id === r.trackId)?.label ?? r.trackId}
+                      {r.carId && r.carId !== "vf26" ? ` · ${KIOSK_CARS.find((c) => c.id === r.carId)?.label ?? r.carId}` : ""}
                     </td>
                     <td className="py-2 pr-3 font-f1-mono">
                       {r.laps.length} ({r.validLaps})

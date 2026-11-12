@@ -191,6 +191,7 @@ export function flushResultQueue(): Promise<number> {
 export interface LeaderboardQuery {
   mode?: KioskRankingMode;
   trackId?: string;
+  carId?: string;
   laps?: number;
   limit?: number;
 }
@@ -199,6 +200,7 @@ export function leaderboardPath(q: LeaderboardQuery = {}): string {
   const p = new URLSearchParams();
   if (q.mode) p.set("mode", q.mode);
   if (q.trackId) p.set("track", q.trackId);
+  if (q.carId) p.set("car", q.carId);
   if (q.laps) p.set("laps", String(q.laps));
   if (q.limit) p.set("limit", String(q.limit));
   const s = p.toString();

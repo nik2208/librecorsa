@@ -66,11 +66,13 @@ async function main() {
 
   console.log("Config");
   await check("anything sent is made whole and in range", () => {
-    const c = sanitizeKioskConfig({ limitMode: "laps", laps: 99, minutes: -3, trackId: "monza", difficulty: "x", penaltyS: "7.3", extra: true });
+    const c = sanitizeKioskConfig({ limitMode: "laps", laps: 99, minutes: -3, trackId: "imola", carId: "f2004", difficulty: "x", penaltyS: "7.3", extra: true });
     assert.equal(c.limitMode, "laps");
     assert.equal(c.laps, 20);
     assert.equal(c.minutes, 0.5);
     assert.equal(c.trackId, DEFAULT_KIOSK_CONFIG.trackId);
+    assert.equal(c.carId, DEFAULT_KIOSK_CONFIG.carId);
+    assert.equal(sanitizeKioskConfig({ trackId: "monza", carId: "sf26" }).trackId, "monza", "Monza is a known circuit");
     assert.equal(c.difficulty, DEFAULT_KIOSK_CONFIG.difficulty);
     assert.equal(c.penaltyS, 7.5);
     assert.equal("extra" in c, false);
@@ -155,6 +157,18 @@ async function main() {
       assert.equal(best.rows[0].bestLapMs, 98_000);
       assert.equal(best.rows.some((r: { name: string }) => r.name === "Carla"), false);
     });
+    await check("each car has its own board; an unknown car in the config falls back to the default", async () => {
+      await post(session("c7", "Fede", [[90_000, true], [90_000, true]], { carId: "sf26" }));
+      const vf26 = await (await api("/leaderboard?mode=best")).json();
+      assert.equal(vf26.carId, "vf26");
+      assert.equal(vf26.rows.some((r: { name: string }) => r.name === "Fede"), false, "an SF-26 lap on the default car's board");
+      const sf26 = await (await api("/leaderboard?mode=best&car=sf26")).json();
+      assert.deepEqual(sf26.rows.map((r: { name: string }) => r.name), ["Fede"]);
+      const cfg = await (await api("/config", { method: "PUT", body: JSON.stringify({ carId: "f2004", trackId: "monza" }) }, "9876")).json();
+      assert.equal(cfg.carId, "vf26");
+      assert.equal(cfg.trackId, "monza");
+      await api("/config", { method: "PUT", body: JSON.stringify({ trackId: "rwanda_official_short" }) }, "9876");
+    });
     await check("bad posts are refused", async () => {
       assert.equal((await post({ ...session("c5", "", [[100_000, true]]) })).status, 400);
       assert.equal((await post({ ...session("c6", "Dario", [[1_000, true]]) })).status, 400);
@@ -163,10 +177,10 @@ async function main() {
     await check("admin: list, CSV, delete one, reset with a backup", async () => {
       assert.equal((await api("/results")).status, 401);
       const { results } = await (await api("/results", {}, "9876")).json();
-      assert.equal(results.length, 4);
+      assert.equal(results.length, 5);
       const csv = await (await api("/results.csv", {}, "9876")).text();
       assert.match(csv, /miglior_giro/);
-      assert.equal(csv.trim().split("\n").length, 5);
+      assert.equal(csv.trim().split("\n").length, 6);
       assert.equal((await api(`/results/${results[0].id}`, { method: "DELETE" }, "9876")).status, 200);
       const reset = await (await api("/results", { method: "DELETE" }, "9876")).json();
       assert.ok(reset.backup);

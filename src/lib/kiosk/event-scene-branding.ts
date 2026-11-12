@@ -11,6 +11,9 @@ import { withBasePath } from "@/lib/base-path";
 import { BRAND_FILES, EVENT_BRAND, EVENT_BRANDING_ON } from "@/lib/kiosk/event-brand";
 import { fetchLeaderboard } from "@/lib/kiosk/kiosk-api";
 import { formatLapTime } from "@/lib/kiosk/kiosk-score";
+import type { BuiltTrackData } from "@/lib/track-data";
+import { trackColliders } from "@/lib/sim/track-colliders";
+import { createGroundHit } from "@/lib/sim/f12026-car/TrackColliderQuery";
 
 interface Fonts {
   display: string;
@@ -238,8 +241,144 @@ function followLeaderboard(screen: BrandTexture): void {
 
 const materialsOf = (mesh: THREE.Mesh): THREE.Material[] => (Array.isArray(mesh.material) ? mesh.material : [mesh.material]);
 
-/** Puts the event's dressing on a loaded circuit (RISE Motordrome's materials; other circuits are left as they are) */
-export function applyEventBranding(root: THREE.Object3D): void {
+// ---- Trackside boards for circuits with no banners of their own (every circuit but RISE Motordrome)
+
+/** A board: 8 × 1 m, the banners' 8:1, on two posts */
+const BOARD_W = 8;
+const BOARD_H = 1;
+const BOARD_DEPTH = 0.08;
+/** Gap between the ground and the board's lower edge, and how far the posts reach into the ground (m) */
+const BOARD_LIFT_M = 0.35;
+const POST_SINK_M = 0.6;
+/** One board this often along the lap (m), sides taking turns */
+const BOARD_SPACING_M = 55;
+/** Beyond the barrier line (m) */
+const BOARD_CLEARANCE_M = 2;
+/** Straights and gentle bends only: a board on the outside of a corner sits where cars run wide */
+const STRAIGHT_MAX_CURVATURE = 1 / 250;
+/** The start-finish straight and the pit lane beside it stay clear: this far after the line, and before it (m) */
+const START_CLEAR_AFTER_M = 300;
+const START_CLEAR_BEFORE_M = 500;
+/** Boards turn this far towards the oncoming cars (deg) */
+const BOARD_TOE_DEG = 15;
+
+interface BoardSpot {
+  position: THREE.Vector3;
+  yaw: number;
+  kind: number;
+}
+
+/** Ground height beside a sample: the outermost point of its lateral profile on that side (±12 m), else the road's */
+function edgeHeight(sample: BuiltTrackData["samples"][number], side: 1 | -1): number {
+  const prof = sample.yProf;
+  if (prof && prof.length > 0) return side > 0 ? prof[prof.length - 1] : prof[0];
+  return sample.position.y;
+}
+
+/** Where the boards go: outside the barrier line on straights, sides taking turns, never over another part of the lap */
+function boardSpots(root: THREE.Object3D, track: BuiltTrackData, kinds: number): BoardSpot[] {
+  const spots: BoardSpot[] = [];
+  const ground = trackColliders(root).ground;
+  const hit = createGroundHit();
+  const right = new THREE.Vector3();
+  const along = new THREE.Vector3();
+  const face = new THREE.Vector3();
+  const toe = THREE.MathUtils.degToRad(BOARD_TOE_DEG);
+  let side: 1 | -1 = 1;
+  let nextS = START_CLEAR_AFTER_M;
+  for (const sample of track.samples) {
+    if (sample.s < nextS || sample.s > track.totalLengthM - START_CLEAR_BEFORE_M) continue;
+    if (Math.abs(sample.curvature) > STRAIGHT_MAX_CURVATURE) continue;
+    nextS = sample.s + BOARD_SPACING_M;
+    right.set(sample.binormal.x, 0, sample.binormal.z);
+    if (right.lengthSq() < 1e-6) continue;
+    right.normalize();
+    const wall = side > 0 ? sample.wallRightM : sample.wallLeftM;
+    const lateral = Math.max(wall ?? sample.width / 2 + 3, sample.width / 2 + 1) + BOARD_CLEARANCE_M;
+    const position = sample.position.clone().addScaledVector(right, side * lateral);
+    // Not on (or right beside) another part of the lap: a hairpin's other leg, a parallel straight
+    const near = track.projectWorldToTrack(position.x, position.z, sample.s);
+    const lapGap = Math.min(Math.abs(near.s - sample.s), track.totalLengthM - Math.abs(near.s - sample.s));
+    if (lapGap > 30 && Math.abs(near.lateralOffset) < near.sample.width / 2 + BOARD_CLEARANCE_M + 2) {
+      side = side > 0 ? -1 : 1;
+      continue;
+    }
+    // Its foot on the ground: the physics ground where it reaches, else the edge of the lateral profile
+    const guess = edgeHeight(sample, side);
+    position.y = ground && ground.query(position.x, position.z, guess + 20, hit) && Math.abs(hit.height - guess) < 4 ? hit.height : guess;
+    // Facing the track, turned a little towards the cars coming
+    along.set(sample.tangent.x, 0, sample.tangent.z).normalize();
+    face.copy(right).multiplyScalar(-side * Math.cos(toe)).addScaledVector(along, -Math.sin(toe)).normalize();
+    spots.push({ position, yaw: Math.atan2(face.x, face.z), kind: spots.length % kinds });
+    side = side > 0 ? -1 : 1;
+  }
+  return spots;
+}
+
+/** The boards: one instanced mesh per picture (front face textured), one for all the posts */
+function addTracksideBoards(root: THREE.Object3D, track: BuiltTrackData): number {
+  const pictures = [
+    brandTexture(1024, 128, paintSponsorBanner, BRAND_FILES.bannerSponsor),
+    brandTexture(1024, 128, paintEventBanner, BRAND_FILES.bannerEvent),
+    brandTexture(1024, 128, paintComboBanner, BRAND_FILES.bannerCombo),
+  ];
+  const spots = boardSpots(root, track, pictures.length);
+  if (spots.length === 0) return 0;
+  const group = new THREE.Group();
+  group.name = "Event_TracksideBoards";
+  const boardGeo = new THREE.BoxGeometry(BOARD_W, BOARD_H, BOARD_DEPTH);
+  // The banner pictures are drawn the glTF way round (no flip): turn the box's UVs to match
+  const uv = boardGeo.getAttribute("uv") as THREE.BufferAttribute;
+  for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - uv.getY(i));
+  const back = new THREE.MeshStandardMaterial({ color: 0x18181c, roughness: 0.8, metalness: 0.1 });
+  const matrix = new THREE.Matrix4();
+  const quat = new THREE.Quaternion();
+  const up = new THREE.Vector3(0, 1, 0);
+  const unit = new THREE.Vector3(1, 1, 1);
+  const centre = new THREE.Vector3();
+  pictures.forEach((picture, kind) => {
+    const mine = spots.filter((s) => s.kind === kind);
+    if (mine.length === 0) return;
+    const front = new THREE.MeshStandardMaterial({ map: picture.texture, roughness: 0.6, metalness: 0 });
+    // BoxGeometry's groups: +x, -x, +y, -y, +z (the face), -z
+    const boards = new THREE.InstancedMesh(boardGeo, [back, back, back, back, front, back], mine.length);
+    mine.forEach((spot, i) => {
+      quat.setFromAxisAngle(up, spot.yaw);
+      centre.copy(spot.position).setY(spot.position.y + BOARD_LIFT_M + BOARD_H / 2);
+      boards.setMatrixAt(i, matrix.compose(centre, quat, unit));
+    });
+    boards.instanceMatrix.needsUpdate = true;
+    boards.computeBoundingSphere();
+    boards.computeBoundingBox();
+    boards.receiveShadow = true;
+    boards.name = `Event_Boards_${kind}`;
+    group.add(boards);
+  });
+  const postH = BOARD_LIFT_M + POST_SINK_M + BOARD_H * 0.5;
+  const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.1, postH, 0.1), back, spots.length * 2);
+  const offset = new THREE.Vector3();
+  spots.forEach((spot, i) => {
+    quat.setFromAxisAngle(up, spot.yaw);
+    for (const end of [-1, 1]) {
+      offset.set((end * (BOARD_W / 2 - 0.4)), 0, -BOARD_DEPTH).applyQuaternion(quat);
+      centre.copy(spot.position).add(offset).setY(spot.position.y - POST_SINK_M + postH / 2);
+      posts.setMatrixAt(i * 2 + (end > 0 ? 1 : 0), matrix.compose(centre, quat, unit));
+    }
+  });
+  posts.instanceMatrix.needsUpdate = true;
+  posts.computeBoundingSphere();
+  posts.computeBoundingBox();
+  posts.name = "Event_BoardPosts";
+  group.add(posts);
+  root.add(group);
+  return spots.length;
+}
+
+/**
+ * Puts the event's dressing on a loaded circuit: RISE Motordrome's own banners, screens, gantry, flags and kerbs take
+ * the event's pictures and colours; a circuit without such banners (a converted scan) gets boards along its straights
+ */
+export function applyEventBranding(root: THREE.Object3D, track?: BuiltTrackData): void {
   if (!EVENT_BRANDING_ON || typeof document === "undefined") return;
   const banners = new Map<string, BrandTexture>();
   let screen: BrandTexture | null = null;
@@ -289,4 +428,8 @@ export function applyEventBranding(root: THREE.Object3D): void {
     }
   }
   if (screen) followLeaderboard(screen);
+  if (banners.size === 0 && track) {
+    const boards = addTracksideBoards(root, track);
+    if (boards > 0) console.info(`[event] ${boards} trackside boards placed`);
+  }
 }

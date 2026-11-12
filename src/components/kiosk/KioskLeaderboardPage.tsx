@@ -6,7 +6,7 @@ import React, { useEffect, useState } from "react";
 import { BrandHeader, KioskCredits, LeaderboardTable } from "@/components/kiosk/kiosk-ui";
 import { fetchLeaderboard, loadKioskConfig } from "@/lib/kiosk/kiosk-api";
 import { EVENT_BRAND } from "@/lib/kiosk/event-brand";
-import { KIOSK_TRACKS, rankingModeFor, type KioskLeaderboard } from "@/lib/kiosk/kiosk-types";
+import { KIOSK_CARS, KIOSK_TRACKS, rankingModeFor, runnableCarId, runnableTrackId, type KioskLeaderboard } from "@/lib/kiosk/kiosk-types";
 
 const REFRESH_MS = 10_000;
 
@@ -20,13 +20,15 @@ export const KioskLeaderboardPage: React.FC = () => {
     const limit = Number(new URLSearchParams(window.location.search).get("limit")) || 15;
     const load = async () => {
       try {
-        const { config } = await loadKioskConfig();
-        const next = await fetchLeaderboard({ mode: rankingModeFor(config), trackId: config.trackId, laps: config.laps, limit });
+        const { config: raw } = await loadKioskConfig();
+        const config = { ...raw, trackId: runnableTrackId(raw.trackId), carId: runnableCarId(raw.carId) };
+        const next = await fetchLeaderboard({ mode: rankingModeFor(config), trackId: config.trackId, carId: config.carId, laps: config.laps, limit });
         if (!live) return;
         setBoard(next);
         setError(false);
         const track = KIOSK_TRACKS.find((t) => t.id === config.trackId)?.label ?? config.trackId;
-        setSubtitle(config.limitMode === "laps" ? `${config.laps} giri · tempo totale · ${track}` : `Miglior giro · ${track}`);
+        const car = config.carId === "vf26" ? "" : ` · ${KIOSK_CARS.find((c) => c.id === config.carId)?.label ?? config.carId}`;
+        setSubtitle(config.limitMode === "laps" ? `${config.laps} giri · tempo totale · ${track}${car}` : `Miglior giro · ${track}${car}`);
       } catch {
         if (live) setError(true);
       }

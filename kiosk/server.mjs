@@ -41,7 +41,9 @@ const MAX_BODY_BYTES = 256 * 1024;
 // ---------------------------------------------------------------------------------------------------------------
 // Config (src/lib/kiosk/kiosk-types.ts)
 
-const TRACK_IDS = ["rwanda_official_short", "rwanda_official"];
+// Monza and the SF-26 are extras a build lists only with NEXT_PUBLIC_EXTRA_CONTENT (kiosk/README.md, "Contenuti extra")
+const TRACK_IDS = ["rwanda_official_short", "rwanda_official", "monza"];
+const CAR_IDS = ["vf26", "sf26"];
 const DIFFICULTIES = ["assisted", "semi_pro", "pro"];
 const DEFAULT_CONFIG = {
   limitMode: "time",
@@ -49,6 +51,7 @@ const DEFAULT_CONFIG = {
   minutes: 5,
   maxMinutes: 10,
   trackId: "rwanda_official_short",
+  carId: "vf26",
   difficulty: "assisted",
   invalidLaps: "penalty",
   penaltyS: 5,
@@ -73,6 +76,7 @@ function sanitizeConfig(raw) {
     minutes: num(r.minutes, 0.5, 60, d.minutes, 0.5),
     maxMinutes: num(r.maxMinutes, 0, 120, d.maxMinutes, 0.5),
     trackId: TRACK_IDS.includes(r.trackId) ? r.trackId : d.trackId,
+    carId: CAR_IDS.includes(r.carId) ? r.carId : d.carId,
     difficulty: DIFFICULTIES.includes(r.difficulty) ? r.difficulty : d.difficulty,
     invalidLaps: r.invalidLaps === "exclude" || r.invalidLaps === "penalty" ? r.invalidLaps : d.invalidLaps,
     penaltyS: num(r.penaltyS, 0, 60, d.penaltyS, 0.5),
@@ -176,10 +180,11 @@ function parseResult(raw) {
 // ---------------------------------------------------------------------------------------------------------------
 // Ranking
 
-/** Best result per driver, fastest first: best lap on a circuit, or total time of "laps" sessions of one length */
-function ranked(results, { mode, trackId, laps, unique = true }) {
+/** Best result per driver, fastest first: best lap on a circuit in a car, or total time of "laps" sessions of one length */
+function ranked(results, { mode, trackId, carId, laps, unique = true }) {
   const scoreOf = mode === "total" ? (r) => r.totalTimeMs : (r) => r.bestLapMs;
-  let pool = results.filter((r) => r.trackId === trackId);
+  // Results from before the car choice existed were all driven in the default car
+  let pool = results.filter((r) => r.trackId === trackId && (r.carId ?? "vf26") === carId);
   if (mode === "total") pool = pool.filter((r) => r.limitMode === "laps" && r.limitLaps === laps);
   pool = pool.filter((r) => scoreOf(r) !== null && scoreOf(r) !== undefined);
   pool.sort((a, b) => scoreOf(a) - scoreOf(b) || a.createdAt.localeCompare(b.createdAt));
@@ -210,6 +215,7 @@ function leaderboard(results, query) {
   return {
     mode: query.mode,
     trackId: query.trackId,
+    carId: query.carId,
     laps: query.mode === "total" ? query.laps : null,
     total: all.length,
     generatedAt: new Date().toISOString(),
@@ -241,8 +247,9 @@ function placeOf(results, result, query) {
 const queryFor = (config, params) => {
   const mode = params.get("mode") === "total" || params.get("mode") === "best" ? params.get("mode") : config.limitMode === "laps" ? "total" : "best";
   const trackId = params.get("track") && ID_RE.test(params.get("track")) ? params.get("track") : config.trackId;
+  const carId = params.get("car") && ID_RE.test(params.get("car")) ? params.get("car") : config.carId;
   const laps = num(params.get("laps") ?? config.laps, 1, 50, config.laps);
-  return { mode, trackId, laps, limit: params.get("limit") ?? 20, unique: params.get("unique") !== "0" };
+  return { mode, trackId, carId, laps, limit: params.get("limit") ?? 20, unique: params.get("unique") !== "0" };
 };
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -421,6 +428,7 @@ async function handleApi(req, res, url) {
       const query = {
         mode: result.limitMode === "laps" ? "total" : "best",
         trackId: result.trackId,
+        carId: result.carId,
         laps: result.limitLaps,
         limit: 10,
         unique: true,

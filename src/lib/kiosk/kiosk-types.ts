@@ -4,6 +4,7 @@
  */
 
 import type { AssistPreset } from "@/types/f1";
+import { carListed, trackListed } from "@/lib/hosted-content";
 
 /** How a player's session ends: after a number of laps, or after a number of minutes */
 export type KioskLimitMode = "laps" | "time";
@@ -11,16 +12,35 @@ export type KioskLimitMode = "laps" | "time";
 /** What happens to a lap that left the track limits */
 export type KioskInvalidLapRule = "penalty" | "exclude";
 
-/** The circuits a kiosk can run: the ones the repository carries (src/lib/hosted-content.ts) */
+/**
+ * The circuits a kiosk can run: the ones the repository carries, plus Monza when a build lists it
+ * (NEXT_PUBLIC_EXTRA_CONTENT, src/lib/hosted-content.ts; its files are restored by scripts/kiosk/restore-extra-content.mjs)
+ */
 export const KIOSK_TRACKS = [
-  { id: "rwanda_official_short", label: "Circuito corto" },
-  { id: "rwanda_official", label: "Circuito Grand Prix" },
+  { id: "rwanda_official_short", label: "Circuito corto", extra: false },
+  { id: "rwanda_official", label: "Circuito Grand Prix", extra: false },
+  { id: "monza", label: "Monza", extra: true },
 ] as const;
 export type KioskTrackId = (typeof KIOSK_TRACKS)[number]["id"];
 
-/** The car every player drives: the 2026 Prototype (CC BY body by Qvist Designs), in the event livery */
+/** The 2026 Prototype (CC BY body by Qvist Designs), in the event livery: the default car */
 export const KIOSK_CAR_ID = "vf26";
 export const KIOSK_LIVERY_ID = "huawei_mgw";
+
+/** The cars a kiosk can run: the event car, plus the Ferrari SF-26 when a build lists it (as Monza above) */
+export const KIOSK_CARS = [
+  { id: "vf26", label: "Monoposto 2026 Huawei", extra: false },
+  { id: "sf26", label: "Ferrari SF-26", extra: true },
+] as const;
+export type KioskCarId = (typeof KIOSK_CARS)[number]["id"];
+
+/** The circuits and cars this build can actually run */
+export const listedKioskTracks = () => KIOSK_TRACKS.filter((t) => trackListed(t.id));
+export const listedKioskCars = () => KIOSK_CARS.filter((c) => carListed(c.id));
+
+/** The config's circuit and car when this build has them, else the defaults (a build without the extras) */
+export const runnableTrackId = (id: KioskTrackId): KioskTrackId => (trackListed(id) ? id : DEFAULT_KIOSK_CONFIG.trackId);
+export const runnableCarId = (id: KioskCarId): KioskCarId => (carListed(id) ? id : KIOSK_CAR_ID);
 
 export const KIOSK_DIFFICULTIES: readonly { id: AssistPreset; label: string; hint: string }[] = [
   { id: "assisted", label: "Facile", hint: "Tutti gli aiuti attivi" },
@@ -38,6 +58,7 @@ export interface KioskConfig {
   /** "laps" mode: the session ends anyway after this many minutes (0 = no cap) */
   maxMinutes: number;
   trackId: KioskTrackId;
+  carId: KioskCarId;
   difficulty: AssistPreset;
   /** Laps outside the track limits: timed with a penalty, or not counted for the ranking */
   invalidLaps: KioskInvalidLapRule;
@@ -59,6 +80,7 @@ export const DEFAULT_KIOSK_CONFIG: KioskConfig = {
   minutes: 5,
   maxMinutes: 10,
   trackId: "rwanda_official_short",
+  carId: KIOSK_CAR_ID,
   difficulty: "assisted",
   invalidLaps: "penalty",
   penaltyS: 5,
@@ -79,6 +101,7 @@ export function sanitizeKioskConfig(raw: unknown): KioskConfig {
   const r = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
   const d = DEFAULT_KIOSK_CONFIG;
   const trackId = KIOSK_TRACKS.some((t) => t.id === r.trackId) ? (r.trackId as KioskTrackId) : d.trackId;
+  const carId = KIOSK_CARS.some((c) => c.id === r.carId) ? (r.carId as KioskCarId) : d.carId;
   const difficulty = KIOSK_DIFFICULTIES.some((x) => x.id === r.difficulty) ? (r.difficulty as AssistPreset) : d.difficulty;
   return {
     limitMode: r.limitMode === "laps" || r.limitMode === "time" ? r.limitMode : d.limitMode,
@@ -86,6 +109,7 @@ export function sanitizeKioskConfig(raw: unknown): KioskConfig {
     minutes: num(r.minutes, 0.5, 60, d.minutes, 0.5),
     maxMinutes: num(r.maxMinutes, 0, 120, d.maxMinutes, 0.5),
     trackId,
+    carId,
     difficulty,
     invalidLaps: r.invalidLaps === "exclude" || r.invalidLaps === "penalty" ? r.invalidLaps : d.invalidLaps,
     penaltyS: num(r.penaltyS, 0, 60, d.penaltyS, 0.5),
@@ -153,6 +177,7 @@ export interface KioskLeaderboardRow {
 export interface KioskLeaderboard {
   mode: KioskRankingMode;
   trackId: string;
+  carId: string;
   /** "total" ranking: the session length it compares */
   laps: number | null;
   rows: KioskLeaderboardRow[];

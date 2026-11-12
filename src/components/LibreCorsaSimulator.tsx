@@ -102,6 +102,8 @@ const challengeTrackName = (id: string) => {
 };
 /** The snapshot store before the session exists: nothing to subscribe to */
 const noSubscribe = () => () => {};
+/** Kiosk mode's map: its corners move nothing */
+const ignoreTurn = () => {};
 // polish:B the podium shot's view before the drive exists
 const IDLE_PODIUM: PodiumUi = { stage: "idle", rows: [] };
 const idlePodium = () => IDLE_PODIUM;
@@ -140,8 +142,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
 
   const track = useMemo(() => getActiveTrackData(1200), []);
   /** The chosen car, and the vehicle model it drives on */
-  // The kiosk always runs the event's car, whatever this browser drove last
-  const [carId, setCarId] = useState<CarId>(() => (kioskOn ? (KIOSK_CAR_ID as CarId) : loadCarChoice()));
+  // The kiosk runs its own car, whatever this browser drove last (and never saves it as this browser's choice)
+  const [carId, setCarId] = useState<CarId>(() => (kioskOn ? ((kiosk.carId || KIOSK_CAR_ID) as CarId) : loadCarChoice()));
   const carIdRef = useRef(carId);
   const [vehicleModel, setVehicleModel] = useState<VehicleModelId>(() => carPhysics(carId));
   const vehicleModelRef = useRef(vehicleModel);
@@ -1009,6 +1011,16 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     [session]
   );
   const kioskUnlockAudio = useCallback(() => session?.unlockAudio(), [session]);
+  // Test builds only (NEXT_PUBLIC_KIOSK_TEST_HOOKS=1; a normal build compiles this out): an end-to-end test moves the
+  // car to a corner to look at the circuit, where software rendering is too slow to drive there
+  useEffect(() => {
+    if (process.env.NEXT_PUBLIC_KIOSK_TEST_HOOKS !== "1" || !kioskOn || !session) return;
+    const w = window as Window & { __kioskTeleportToTurn?: (turn: number) => void };
+    w.__kioskTeleportToTurn = (turn) => session.car.teleportToTurn(turn);
+    return () => {
+      delete w.__kioskTeleportToTurn;
+    };
+  }, [kioskOn, session]);
 
   // The title opens on the lobby by itself once (back to the lobby, or a ?room= invite): used up when the title is left
   const prevPhaseRef = useRef(phase);
@@ -1489,7 +1501,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     onToggleMouseSteer: handleToggleMouseSteer,
     onResetCar: handleResetCar,
     challengeTarget: targetShown ? challengeTargetNow : null,
-    onSelectTurn: handleSelectTurn,
+    // Kiosk mode: a tap on the map's corners would move a visitor's car (corner practice); it does nothing there
+    onSelectTurn: kioskOn ? ignoreTurn : handleSelectTurn,
     onHostP2PRoom: handleHostP2PRoom,
     onJoinP2PRoom: handleJoinP2PRoom,
     onCreateManualOffer: handleCreateManualOffer,

@@ -107,6 +107,29 @@ dello sponsor e dell'evento; la monoposto ha la livrea "Milan Games Week #26". S
 ufficiali vedi `public/kiosk/brand/README.md`. Testi, date e colori: `src/lib/kiosk/event-brand.ts`.
 I maxischermi del circuito mostrano la classifica live del kiosk.
 
+## Contenuti extra: Ferrari SF-26 e Monza
+
+Upstream li ha rimossi il 12/11/2026: la carrozzeria della SF-26 è estratta ("ripped") da un videogioco di F1 e il
+modello di Monza da conversioni di Assetto Corsa caricate su Sketchfab come "Ripped". **Usarli a un evento commerciale
+espone te e il brand** (diritti d'autore sui modelli, marchi Ferrari): valuta con l'ufficio legale del cliente prima di
+mostrarli allo stand. La build predefinita non li contiene.
+
+Per abilitarli su una macchina:
+
+```bash
+node scripts/kiosk/restore-extra-content.mjs          # estrae i file dalla history git in public/ (non tracciati)
+echo "NEXT_PUBLIC_EXTRA_CONTENT=sf26,monza" >> .env.local
+npm run build && npm run kiosk
+```
+
+- I file finiscono in `public/cars/sf26/` e `public/tracks/monza/`, che sono nel `.gitignore`: non vengono mai
+  committati né pushati. Serve la history completa del repository (`git fetch --unshallow` su un clone superficiale).
+- Senza `NEXT_PUBLIC_EXTRA_CONTENT` la build non li elenca; se la config del kiosk li nomina, il kiosk usa la monoposto
+  Huawei e il circuito corto.
+- In admin compaiono **Monza** tra i circuiti e la scelta **Auto** (monoposto Huawei / Ferrari SF-26). La classifica è
+  separata per auto e circuito.
+- La SF-26 ha la sua livrea originale (non prende quella Huawei).
+
 ## Licenze e diritti (da verificare prima dell'evento)
 
 - **Codice**: MIT, uso commerciale consentito.

@@ -12,7 +12,7 @@ import type { KioskSimApi } from "@/lib/kiosk/kiosk-bridge";
 import type { LapSummaryData } from "@/lib/sim/lap-types";
 import { fetchLeaderboard, newClientId, submitKioskResult, type ConfigSource } from "@/lib/kiosk/kiosk-api";
 import { formatClock, formatLapTime, formatMinutes, lapScoreMs, scoreSession, type KioskScore } from "@/lib/kiosk/kiosk-score";
-import { KIOSK_CAR_ID, rankingModeFor, type KioskConfig, type KioskLap, type KioskLeaderboard, type KioskResultInput } from "@/lib/kiosk/kiosk-types";
+import { rankingModeFor, type KioskConfig, type KioskLap, type KioskLeaderboard, type KioskResultInput } from "@/lib/kiosk/kiosk-types";
 import { EVENT_BRAND } from "@/lib/kiosk/event-brand";
 import { BrandHeader, KioskButton, KioskCredits, LeaderboardTable, OnScreenKeyboard, PinDialog, useGamepadPress, useStaffGesture } from "@/components/kiosk/kiosk-ui";
 
@@ -108,12 +108,12 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
   const rankingMode = rankingModeFor(config);
   const loadBoard = useCallback(async () => {
     try {
-      setBoard(await fetchLeaderboard({ mode: rankingMode, trackId: config.trackId, laps: config.laps, limit: 10 }));
+      setBoard(await fetchLeaderboard({ mode: rankingMode, trackId: config.trackId, carId: config.carId, laps: config.laps, limit: 10 }));
       setBoardError(false);
     } catch {
       setBoardError(true);
     }
-  }, [rankingMode, config.trackId, config.laps]);
+  }, [rankingMode, config.trackId, config.carId, config.laps]);
   useEffect(() => {
     if (stage !== "entry") return;
     void loadBoard();
@@ -192,7 +192,7 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
         clientId: run.clientId,
         name: run.name,
         trackId: c.trackId,
-        carId: KIOSK_CAR_ID,
+        carId: c.carId,
         limitMode: c.limitMode,
         limitLaps: c.laps,
         limitMinutes: c.limitMode === "time" ? c.minutes : c.maxMinutes,

@@ -7,6 +7,17 @@
  */
 export const HOSTED_CONTENT = process.env.NEXT_PUBLIC_HOSTED_CONTENT === "1";
 
+/**
+ * Event branch: single extras whose files were put in `public/` by hand, listed by id ("sf26,monza"). Their files are
+ * gitignored and restored by scripts/kiosk/restore-extra-content.mjs; without this a build lists none of them.
+ */
+export const EXTRA_CONTENT_IDS: ReadonlySet<string> = new Set(
+  (process.env.NEXT_PUBLIC_EXTRA_CONTENT ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+);
+
 /** The cars in the repository: both drive the 2026 prototype's body and sound */
 export const REPO_CAR_IDS: ReadonlySet<string> = new Set(["vf26"]);
 
@@ -14,7 +25,7 @@ export const REPO_CAR_IDS: ReadonlySet<string> = new Set(["vf26"]);
 export const REPO_TRACK_IDS: ReadonlySet<string> = new Set(["rwanda_official_short", "rwanda_official"]);
 
 /** Whether this copy lists a car */
-export const carListed = (id: string): boolean => HOSTED_CONTENT || REPO_CAR_IDS.has(id);
+export const carListed = (id: string): boolean => HOSTED_CONTENT || REPO_CAR_IDS.has(id) || EXTRA_CONTENT_IDS.has(id);
 
 /** Whether this copy lists a circuit */
-export const trackListed = (id: string): boolean => HOSTED_CONTENT || REPO_TRACK_IDS.has(id);
+export const trackListed = (id: string): boolean => HOSTED_CONTENT || REPO_TRACK_IDS.has(id) || EXTRA_CONTENT_IDS.has(id);

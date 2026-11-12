@@ -9,7 +9,7 @@ import { BrandHeader, KioskCredits, PinDialog } from "@/components/kiosk/kiosk-u
 import { loadKioskConfig, storedPin } from "@/lib/kiosk/kiosk-api";
 import { EVENT_BRAND } from "@/lib/kiosk/event-brand";
 import { formatMinutes } from "@/lib/kiosk/kiosk-score";
-import { KIOSK_TRACKS, type KioskConfig } from "@/lib/kiosk/kiosk-types";
+import { KIOSK_CARS, KIOSK_TRACKS, runnableCarId, runnableTrackId, type KioskConfig } from "@/lib/kiosk/kiosk-types";
 import { withBasePath } from "@/lib/base-path";
 
 export const KioskLauncher: React.FC = () => {
@@ -29,8 +29,10 @@ export const KioskLauncher: React.FC = () => {
     else setAskPin(true);
   };
 
+  const track = config ? runnableTrackId(config.trackId) : null;
+  const car = config ? runnableCarId(config.carId) : null;
   const summary = config
-    ? `${config.limitMode === "laps" ? `${config.laps} ${config.laps === 1 ? "giro" : "giri"}` : formatMinutes(config.minutes)} · ${KIOSK_TRACKS.find((t) => t.id === config.trackId)?.label ?? config.trackId}`
+    ? `${config.limitMode === "laps" ? `${config.laps} ${config.laps === 1 ? "giro" : "giri"}` : formatMinutes(config.minutes)} · ${KIOSK_TRACKS.find((t) => t.id === track)?.label ?? track}${car && car !== "vf26" ? ` · ${KIOSK_CARS.find((c) => c.id === car)?.label ?? car}` : ""}`
     : "…";
 
   return (

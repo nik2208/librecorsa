@@ -27,15 +27,25 @@ for (const native of ["vf26", "amg-gt3", "bmw-m4-gt3", "mtr-496r"] as const) {
     !carTakesPhysicsSwitch(native) && carPhysics(native, "vf26") === carById(native).physics && carPhysics(native, "f12026-car") === carById(native).physics
   );
 }
+// Event branch: the SF-26 is the one ported F1 car, an extra restored by hand (scripts/kiosk/restore-extra-content.mjs)
+const EVENT_EXTRA_F1_CARS: readonly string[] = ["sf26"];
 const switched = CARS.filter((c) => carTakesPhysicsSwitch(c.id)).map((c) => c.id);
-check("No car takes the F1 physics switch (no ported F1 car is listed)", switched.length === 0, switched.join(", "));
+check(
+  "No car but the event's extras takes the F1 physics switch",
+  switched.every((id) => EVENT_EXTRA_F1_CARS.includes(id)),
+  switched.join(", ")
+);
 
 // The Mercedes-AMG GT3 took the GT3 Evo's body: the Evo's old id opens it, and its picture is the Evo's
 check("A saved or linked amg-gt3-evo opens the amg-gt3", resolveCarId("amg-gt3-evo") === "amg-gt3" && resolveCarId("amg-gt3") === "amg-gt3" && resolveCarId("nope") === null);
 check("The amg-gt3's picture is beside its model", carThumbUrl("amg-gt3") === "/cars/amg-gt3-evo/thumb.webp", carThumbUrl("amg-gt3"));
 
 const f1Cars = carsInClass("f1").map((c) => c.id);
-check("F1 class has the 2026 Prototype only", f1Cars.join(",") === "vf26", f1Cars.join(", "));
+check(
+  "F1 class has the 2026 Prototype, and the event's extras only",
+  f1Cars[0] === "vf26" && f1Cars.slice(1).every((id) => EVENT_EXTRA_F1_CARS.includes(id)),
+  f1Cars.join(", ")
+);
 
 // The menus group each class by year, newest first; no heading may be a single car's name
 check(

@@ -170,7 +170,9 @@ function loadTrackGlb(
   /** World boxes of the scan to leave out (track data `mesh.cutBoxes`) */
   cutBoxes: readonly SceneryCutBox[] = [],
   /** Scan materials whose meshes are left out (track data `mesh.cutMaterials`) */
-  cutMaterials: readonly string[] = []
+  cutMaterials: readonly string[] = [],
+  /** Event branch: the circuit's track data, for the event's trackside boards (src/lib/kiosk/event-scene-branding.ts) */
+  eventTrack?: BuiltTrackData
 ): void {
   const cutMaterialNames = new Set(cutMaterials);
   const roadMaterialNames = new Set(roadMaterials);
@@ -307,7 +309,7 @@ function loadTrackGlb(
     .then((root) => {
       if (!current()) return;
       // Event branch: the event's banners, screens and colours on the circuit (src/lib/kiosk/event-scene-branding.ts)
-      applyEventBranding(root);
+      applyEventBranding(root, eventTrack);
       glbGroup.add(root);
       onLoaded(root);
       // The circuit never moves: its transforms are fixed from here (static-scene.ts)
@@ -1105,7 +1107,8 @@ export function buildCircuitScene(
     track.sceneryUrls ?? [],
     track.roadMaterials ?? [],
     track.sceneryCuts ?? [],
-    track.sceneryCutMaterials ?? []
+    track.sceneryCutMaterials ?? [],
+    track
   );
 
   // The procedural stand-in is placed once

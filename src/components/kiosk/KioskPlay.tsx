@@ -8,7 +8,7 @@ import { KioskOverlay } from "@/components/kiosk/KioskOverlay";
 import { BrandHeader } from "@/components/kiosk/kiosk-ui";
 import { flushResultQueue, loadKioskConfig, type ConfigSource } from "@/lib/kiosk/kiosk-api";
 import { kioskSettingsFor } from "@/lib/kiosk/kiosk-settings";
-import type { KioskConfig } from "@/lib/kiosk/kiosk-types";
+import { runnableCarId, runnableTrackId, type KioskConfig } from "@/lib/kiosk/kiosk-types";
 import type { KioskMode } from "@/lib/kiosk/kiosk-bridge";
 import { withBasePath } from "@/lib/base-path";
 
@@ -34,13 +34,18 @@ export const KioskPlay: React.FC = () => {
 
   const staffExit = useCallback(() => window.location.assign(withBasePath("/kiosk/admin")), []);
 
-  const config = state?.config;
+  // A config naming an extra this build doesn't list (Monza, the SF-26) runs the defaults instead
+  const config = useMemo(
+    () => (state ? { ...state.config, trackId: runnableTrackId(state.config.trackId), carId: runnableCarId(state.config.carId) } : undefined),
+    [state]
+  );
   const source = state?.source ?? "default";
   const settings = useMemo(() => (config ? kioskSettingsFor(config) : undefined), [config]);
   const kiosk = useMemo<KioskMode | undefined>(
     () =>
       config && settings
         ? {
+            carId: config.carId,
             settings,
             render: (api) => <KioskOverlay api={api} config={config} configSource={source} onRefreshConfig={refresh} onStaffExit={staffExit} />,
           }
@@ -56,5 +61,6 @@ export const KioskPlay: React.FC = () => {
       </div>
     );
   }
-  return <TrackGate kiosk={kiosk} trackId={config.trackId} />;
+  // Another car remounts the game on it (the circuit reloads), so nothing of the last car's session carries over
+  return <TrackGate key={config.carId} kiosk={kiosk} trackId={config.trackId} />;
 };

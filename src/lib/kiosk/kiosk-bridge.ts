@@ -11,6 +11,8 @@ import type { PlayerSettings } from "@/lib/settings/player-settings";
 import type { CarTelemetry } from "@/types/f1";
 
 export interface KioskMode {
+  /** The car every session drives (the kiosk remounts the game for another) */
+  carId: string;
   /**
    * Laid over the settings saved in this browser (the controls the staff set up in the full game). Kiosk mode never
    * saves settings back, so what it changes lasts for this page only.
