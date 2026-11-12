@@ -76,7 +76,7 @@ volante (i pulsanti dei gamepad non contano come "gesto" per il browser).
 | :-- | :-- | :-: | :-- |
 | GET | `/api/kiosk/leaderboard` | | Classifica JSON. Parametri: `mode=best\|total`, `track`, `laps`, `limit` (20), `unique=0` per tutti i risultati. Default: quelli della config attuale. |
 | GET | `/api/kiosk/config` | | Config attuale |
-| PUT | `/api/kiosk/config` | ✓ | Salva la config |
+| PUT | `/api/kiosk/config` | ✓ | Salva la config (i campi omessi restano invariati) |
 | POST | `/api/kiosk/results` | | Invia una sessione (la usa il gioco); risponde con posizione e top 10 |
 | GET | `/api/kiosk/results` | ✓ | Tutti i risultati |
 | DELETE | `/api/kiosk/results/:id` | ✓ | Elimina un risultato (es. nomi offensivi) |

@@ -9,6 +9,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { nameProblem } from "@/lib/net/name-filter";
 import { sanitizeDriverName } from "@/lib/settings/player-settings";
 import type { KioskSimApi } from "@/lib/kiosk/kiosk-bridge";
+import type { LapSummaryData } from "@/lib/sim/lap-types";
 import { fetchLeaderboard, newClientId, submitKioskResult, type ConfigSource } from "@/lib/kiosk/kiosk-api";
 import { formatClock, formatLapTime, formatMinutes, lapScoreMs, scoreSession, type KioskScore } from "@/lib/kiosk/kiosk-score";
 import { KIOSK_CAR_ID, rankingModeFor, type KioskConfig, type KioskLap, type KioskLeaderboard, type KioskResultInput } from "@/lib/kiosk/kiosk-types";
@@ -225,20 +226,30 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
   );
 
   // Laps: each completed lap counts towards the limit; valid ones (or penalised ones) towards the ranking
-  useEffect(
-    () =>
-      api.onLap((lap) => {
-        const run = runRef.current;
-        if (!run || stageRef.current !== "running") return;
-        const entry: KioskLap = { lapMs: Math.round(lap.lapTimeMs), valid: lap.valid && !lap.autopilot };
-        const before = scoreSession(run.laps, { limitMode: "time", limitLaps: 1, invalidLaps: run.config.invalidLaps, penaltyS: run.config.penaltyS }).bestLapMs;
-        run.laps.push(entry);
-        const score = lapScoreMs(entry, run.config);
-        setLapToast({ n: run.laps.length, lap: entry, best: score !== null && (before === null || score < before) });
-        if (run.config.limitMode === "laps" && run.laps.length >= run.config.laps) finish("laps");
-      }),
-    [api.onLap, finish]
-  );
+  useEffect(() => {
+    const onLap = (lap: Pick<LapSummaryData, "lapTimeMs" | "valid" | "autopilot">) => {
+      const run = runRef.current;
+      if (!run || stageRef.current !== "running") return;
+      const entry: KioskLap = { lapMs: Math.round(lap.lapTimeMs), valid: lap.valid && !lap.autopilot };
+      const before = scoreSession(run.laps, { limitMode: "time", limitLaps: 1, invalidLaps: run.config.invalidLaps, penaltyS: run.config.penaltyS }).bestLapMs;
+      run.laps.push(entry);
+      const score = lapScoreMs(entry, run.config);
+      setLapToast({ n: run.laps.length, lap: entry, best: score !== null && (before === null || score < before) });
+      if (run.config.limitMode === "laps" && run.laps.length >= run.config.laps) finish("laps");
+    };
+    const off = api.onLap(onLap);
+    // Test builds only (NEXT_PUBLIC_KIOSK_TEST_HOOKS=1 at build time; a normal build drops this): an end-to-end test
+    // feeds laps the way the game does, where software rendering is too slow to drive a whole one
+    if (process.env.NEXT_PUBLIC_KIOSK_TEST_HOOKS === "1") {
+      const w = window as Window & { __kioskInjectLap?: (lapMs: number, valid: boolean) => void };
+      w.__kioskInjectLap = (lapMs, valid) => onLap({ lapTimeMs: lapMs, valid, autopilot: false });
+      return () => {
+        off();
+        delete w.__kioskInjectLap;
+      };
+    }
+    return off;
+  }, [api.onLap, finish]);
 
   // The clock: time on track only (a pause stops it), checked against the limit
   useEffect(() => {

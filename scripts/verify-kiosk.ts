@@ -120,6 +120,11 @@ async function main() {
       assert.equal(saved.limitMode, "laps");
       assert.equal(saved.laps, 2);
       assert.ok(saved.updatedAt);
+      // A partial update leaves the other fields as they were
+      const merged = await (await api("/config", { method: "PUT", body: JSON.stringify({ maxMinutes: 4 }) }, "9876")).json();
+      assert.equal(merged.limitMode, "laps");
+      assert.equal(merged.laps, 2);
+      assert.equal(merged.maxMinutes, 4);
     });
     await check("results: ranked by total time in a laps session, best per driver, retries stored once", async () => {
       assert.equal((await post(session("c1", "Anna", [[100_000, true], [100_000, true]]))).status, 200);

@@ -394,7 +394,8 @@ async function handleApi(req, res, url) {
     if (method === "PUT") {
       if (!pinOk(req)) return sendJson(res, 401, { error: "PIN non valido" });
       const body = await readBody(req);
-      config = sanitizeConfig({ ...body, updatedAt: new Date().toISOString() });
+      // Fields left out keep their value: a client may send only what it changes
+      config = sanitizeConfig({ ...config, ...(body && typeof body === "object" ? body : {}), updatedAt: new Date().toISOString() });
       await persist(CONFIG_FILE, config);
       console.log(`[kiosk] config saved: ${config.limitMode === "laps" ? `${config.laps} laps` : `${config.minutes} min`} on ${config.trackId}`);
       return sendJson(res, 200, config);
