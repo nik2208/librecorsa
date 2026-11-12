@@ -1015,12 +1015,19 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   // car to a corner to look at the circuit, where software rendering is too slow to drive there
   useEffect(() => {
     if (process.env.NEXT_PUBLIC_KIOSK_TEST_HOOKS !== "1" || !kioskOn || !session) return;
-    const w = window as Window & { __kioskTeleportToTurn?: (turn: number) => void; __kioskTeleportToDistance?: (s: number, lateral?: number) => void };
+    const w = window as Window & {
+      __kioskTeleportToTurn?: (turn: number) => void;
+      __kioskTeleportToDistance?: (s: number, lateral?: number) => void;
+      __kioskToggleAutopilot?: () => void;
+    };
     w.__kioskTeleportToTurn = (turn) => session.car.teleportToTurn(turn);
     w.__kioskTeleportToDistance = (s, lateral = 0) => session.car.teleportToDistance(s, 0, lateral);
+    // The racing-line autopilot drives a whole real lap (its laps count as invalid on the kiosk's boards)
+    w.__kioskToggleAutopilot = () => session.toggleAutopilot();
     return () => {
       delete w.__kioskTeleportToTurn;
       delete w.__kioskTeleportToDistance;
+      delete w.__kioskToggleAutopilot;
     };
   }, [kioskOn, session]);
 
