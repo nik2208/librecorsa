@@ -5,15 +5,23 @@ import { LibreCorsaSimulator } from "@/components/LibreCorsaSimulator";
 import { RenderProfiler } from "@/components/dev/RenderProfiler";
 import { activateTrack, getTrackInfo, loadStoredTrackId, DEFAULT_TRACK_ID } from "@/lib/track-registry";
 import { registerAssetCache } from "@/lib/service-worker";
+import type { KioskMode } from "@/lib/kiosk/kiosk-bridge";
 
 /** How long the "couldn't load" notice stays up (ms) */
 const ERROR_NOTICE_MS = 6000;
+
+export interface TrackGateProps {
+  /** Kiosk mode (event branch): passed on to the simulator */
+  kiosk?: KioskMode;
+  /** The circuit to run, whatever was picked last (the kiosk's config); a change switches to it */
+  trackId?: string;
+}
 
 /**
  * Activates the chosen circuit before the simulator mounts, and remounts it (fresh scene, physics and
  * menus) when the player picks another one from the title menu.
  */
-export const TrackGate: React.FC = () => {
+export const TrackGate: React.FC<TrackGateProps> = ({ kiosk, trackId: wantedTrackId }) => {
   const [trackId, setTrackId] = useState<string | null>(null);
   /** The circuit the simulator is mounted on (null before the first load lands) */
   const trackIdRef = useRef<string | null>(null);
@@ -56,8 +64,10 @@ export const TrackGate: React.FC = () => {
 
   useEffect(() => {
     registerAssetCache();
-    void select(loadStoredTrackId());
-  }, [select]);
+  }, []);
+  useEffect(() => {
+    void select(wantedTrackId ?? loadStoredTrackId());
+  }, [select, wantedTrackId]);
 
   useEffect(() => {
     if (!error) return;
@@ -69,7 +79,7 @@ export const TrackGate: React.FC = () => {
   return (
     <>
       <RenderProfiler id="sim">
-        <LibreCorsaSimulator key={trackId} trackId={trackId} onSelectTrack={select} />
+        <LibreCorsaSimulator key={trackId} trackId={trackId} onSelectTrack={select} kiosk={kiosk} />
       </RenderProfiler>
       {error ? (
         <div

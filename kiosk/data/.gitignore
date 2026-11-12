@@ -1,0 +1,3 @@
+# Kiosk data (config.json, results.json and their backups) stays on the kiosk machine
+*
+!.gitignore

@@ -52,7 +52,7 @@ export type CameraMode =
 /** Dry slicks, then the treaded rain tyres: intermediate (damp / light rain) and full wet (standing water) */
 export type TireCompound = "soft" | "medium" | "hard" | "intermediate" | "wet";
 
-export type LiveryId = "librecorsa" | "aurora" | "verdant" | "oracle_red_bull";
+export type LiveryId = "librecorsa" | "aurora" | "verdant" | "oracle_red_bull" | "huawei_mgw";
 
 export interface LiveryConfig {
   id: LiveryId;

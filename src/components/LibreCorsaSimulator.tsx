@@ -62,6 +62,8 @@ import { useRaceHistory } from "@/components/hud/useRaceHistory";
 import { isNudgeView, markSeatHintSeen, nudgeOf, seatHintSeen, stepNudge, type CameraNudge, type NudgeView } from "@/lib/settings/camera-nudges";
 import { dashViewFovDeg } from "@/lib/render/onboard-views";
 import { SeatPanel } from "@/components/hud/SeatPanel";
+import { KIOSK_CAR_ID } from "@/lib/kiosk/kiosk-types";
+import type { KioskMode, KioskSimApi } from "@/lib/kiosk/kiosk-bridge";
 
 const DEFAULT_ASSIST_PRESET: AssistPreset = DEFAULT_PLAYER_SETTINGS.assistPreset;
 /** A lap record's car: records are per vehicle model, named after its first car */
@@ -122,16 +124,24 @@ export interface LibreCorsaSimulatorProps {
   /** Title menu circuit picker */
   /** Switches circuit: settles once the load lands (the scene remounts) or fails (the old circuit stays) */
   onSelectTrack?: (id: string) => void | Promise<void>;
+  /**
+   * Kiosk mode (event branch): no title menu, setup or pause menu; the kiosk's own screens drive the game through
+   * `KioskSimApi`, and the settings it lays over the player's are never saved (src/lib/kiosk/kiosk-bridge.ts)
+   */
+  kiosk?: KioskMode;
 }
 
-export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackId = DEFAULT_TRACK_ID, onSelectTrack }) => {
+export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackId = DEFAULT_TRACK_ID, onSelectTrack, kiosk }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const kioskOn = kiosk !== undefined;
+  const kioskSettings = kiosk?.settings;
   /** The drive on the mounted circuit: the scene, the car and the frame loop (created once the container exists) */
   const [session, setSession] = useState<DriveSession | null>(null);
 
   const track = useMemo(() => getActiveTrackData(1200), []);
   /** The chosen car, and the vehicle model it drives on */
-  const [carId, setCarId] = useState<CarId>(loadCarChoice);
+  // The kiosk always runs the event's car, whatever this browser drove last
+  const [carId, setCarId] = useState<CarId>(() => (kioskOn ? (KIOSK_CAR_ID as CarId) : loadCarChoice()));
   const carIdRef = useRef(carId);
   const [vehicleModel, setVehicleModel] = useState<VehicleModelId>(() => carPhysics(carId));
   const vehicleModelRef = useRef(vehicleModel);
@@ -963,6 +973,41 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   }, [session, setPhase, inviteRoom]);
   const handleLoadingDone = useCallback(() => setLoadingVisible(false), []);
 
+  // ---- Kiosk mode: the loading screen gives way by itself, and the kiosk's screens take the title's place
+  useEffect(() => {
+    if (!kioskOn || !assetsReady || phaseRef.current !== "loading") return;
+    // No gesture yet: the sound is set up muted here and unlocked by the player's start click
+    handleLoadingStart();
+    setLoadingVisible(false);
+  }, [kioskOn, assetsReady, handleLoadingStart]);
+  // The seat panel (a held camera button) would freeze the car with no one there to close it
+  useEffect(() => {
+    if (kioskOn && seatPanel) session?.closeSeatPanel();
+  }, [kioskOn, seatPanel, session]);
+  const kioskStart = useCallback(
+    (name: string) => {
+      session?.unlockAudio();
+      const clean = sanitizeDriverName(name);
+      setSettings((prev) => ({ ...prev, profile: { ...prev.profile, name: clean, code: codeFromName(clean), generated: false } }));
+      startDriving(false);
+    },
+    [session, startDriving]
+  );
+  const kioskSetFrozen = useCallback(
+    (frozen: boolean) => {
+      if (!session) return;
+      const snap = session.getSnapshot();
+      if (frozen && !snap.paused) session.togglePause();
+      else if (!frozen && (snap.paused || snap.seatPanel)) session.endPause();
+    },
+    [session]
+  );
+  const kioskOnLap = useCallback(
+    (listener: (lap: LapSummaryData) => void) => (session ? session.onLapCompleted((summary) => listener(summary)) : () => {}),
+    [session]
+  );
+  const kioskUnlockAudio = useCallback(() => session?.unlockAudio(), [session]);
+
   // The title opens on the lobby by itself once (back to the lobby, or a ?room= invite): used up when the title is left
   const prevPhaseRef = useRef(phase);
   useEffect(() => {
@@ -1037,11 +1082,17 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     setInviteRoom(roomFromUrl());
     setSettingsHydrated(true);
   }, []);
+  // Kiosk mode lays its own settings over the saved ones once they are read, and again whenever the kiosk's change
+  useEffect(() => {
+    if (!settingsHydrated || !kioskSettings) return;
+    setSettings((prev) => kioskSettings(prev));
+  }, [settingsHydrated, kioskSettings]);
 
   useEffect(() => {
-    if (!settingsHydrated) return;
+    // The kiosk never saves: the staff's controls set up in the full game stay as they were
+    if (!settingsHydrated || kioskOn) return;
     savePlayerSettings(settings);
-  }, [settingsHydrated, settings]);
+  }, [settingsHydrated, settings, kioskOn]);
 
   // Recently driven / raced, for the browsers: the car and circuit in use once the save is read, then every change
   useEffect(() => {
@@ -1501,7 +1552,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     >
       <div ref={containerRef} className="h-full w-full" />
 
-      {phase === "driving" && seatPanel ? (
+      {phase === "driving" && seatPanel && !kioskOn ? (
         <SeatPanel
           carTitle={carById(carId).title}
           view={seatView}
@@ -1540,7 +1591,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
           onToggleXMode={handleToggleXMode}
           onToggleBoostLatch={handleToggleBoostLatch}
           onChangeLiveTuner={handleChangeLiveTuner}
-          paused={paused}
+          // Kiosk mode: no pause menu (its settings and exits are for the staff); the kiosk draws its own pause screen
+          paused={kioskOn ? false : paused}
           onOpenControls={() => openControls("pause")}
           onExitToTitle={leaveSession}
           controlsCheatSheet={controlsCheatSheet}
@@ -1632,7 +1684,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
         />
       ) : null}
 
-      {phase === "title" ? (
+      {phase === "title" && !kioskOn ? (
         <TitleMenu
           {...menuProps}
           onCycleCamera={cycleCamera}
@@ -1725,6 +1777,21 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       {loadingVisible ? (
         <LoadingScreen track={track} ready={assetsReady} onStart={handleLoadingStart} onDone={handleLoadingDone} />
       ) : null}
+
+      {kiosk
+        ? kiosk.render({
+            phase,
+            ready: assetsReady && phase !== "loading",
+            paused,
+            pauseNotice,
+            telemetry,
+            start: kioskStart,
+            setFrozen: kioskSetFrozen,
+            stop: leaveSession,
+            onLap: kioskOnLap,
+            unlockAudio: kioskUnlockAudio,
+          } satisfies KioskSimApi)
+        : null}
     </div>
   );
 };

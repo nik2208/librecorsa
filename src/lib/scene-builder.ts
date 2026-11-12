@@ -21,6 +21,7 @@ import { createGroundHit, type GroundQuery } from "@/lib/sim/f12026-car/TrackCol
 import { OVERLAY_LAYER } from "@/lib/render/layers";
 import { cutSceneryBoxes, isCutMaterialMesh, type SceneryCutBox } from "@/lib/scenery-cuts";
 import { freezeStaticTransforms, singlePassTransparency } from "@/lib/render/static-scene";
+import { applyEventBranding } from "@/lib/kiosk/event-scene-branding";
 
 /** Height of a racing-line dash over the driving surface: clear of its ripple, low enough to read as paint */
 const DASH_SEAT_LIFT_M = 0.035;
@@ -305,6 +306,8 @@ function loadTrackGlb(
     })
     .then((root) => {
       if (!current()) return;
+      // Event branch: the event's banners, screens and colours on the circuit (src/lib/kiosk/event-scene-branding.ts)
+      applyEventBranding(root);
       glbGroup.add(root);
       onLoaded(root);
       // The circuit never moves: its transforms are fixed from here (static-scene.ts)
