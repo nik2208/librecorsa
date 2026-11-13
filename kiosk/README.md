@@ -36,7 +36,7 @@ Serve **Node ≥ 20.9** per compilare (Next 16); il server del kiosk gira anche 
 ```bash
 npm ci
 npm run build                          # crea la build statica in out/
-KIOSK_ADMIN_PIN=1234 npm run kiosk     # = node kiosk/server.mjs → http://localhost:8787
+KIOSK_ADMIN_PIN=1234 npm run kiosk     # = node kiosk/server.mjs → http://localhost:8787 (genera anche loghi e striscioni)
 ```
 
 Variabili del server: `KIOSK_ADMIN_PIN` (default `2026`: **cambialo**), `PORT` (8787), `KIOSK_HOST` (0.0.0.0),
@@ -113,10 +113,19 @@ Risposta di `/leaderboard`:
 ## Grafiche Huawei / Milan Games Week
 
 Il circuito (RISE Motordrome) ha striscioni, maxischermi, portale di partenza, bandiere e cordoli con i colori e i nomi
-dello sponsor e dell'evento; la monoposto ha la livrea "Milan Games Week #26". Striscioni e intestazione usano il wordmark
-HUAWEI (provvisorio, da Wikimedia Commons) e il logo ufficiale Milan Games Week 2026 (dal sito dell'evento), generati
-con `scripts/kiosk/build_brand_assets.py` e tenuti fuori da git; rigenerali dal brand kit Huawei quando arriva. Dettagli in `public/kiosk/brand/README.md`. Testi, date e colori: `src/lib/kiosk/event-brand.ts`.
-I maxischermi del circuito mostrano la classifica live del kiosk.
+dello sponsor e dell'evento; la monoposto ha la livrea "Milan Games Week #26". I maxischermi mostrano la classifica live.
+
+**Loghi e striscioni si generano all'avvio del server** (`kiosk/brand.mjs`, nella build servita), dai loghi sorgente:
+
+- **wordmark HUAWEI**: scaricato automaticamente la prima volta (Wikimedia Commons) e tenuto in cache in
+  `kiosk/data/brand-src/`; per quello ufficiale del brand kit: `kiosk/brand/sponsor-logo.svg`;
+- **logo Milan Games Week 2026**: il sito ufficiale rifiuta i download automatici, quindi va salvato **una volta** da un
+  browser come `kiosk/brand/event-logo.svg` (indirizzo: `https://www.milangamesweek.it/content/dam/mgw/loghi/2026/`
+  "Logo bianco scritta bianca no sfondo.svg").
+
+`kiosk/brand/` è nel `.gitignore`: gli asset di marca restano sulla macchina. Dettagli e opzioni (`KIOSK_BRAND=0`,
+`npm run kiosk:brand -- --force`): `kiosk/brand/README.md`. Testi, date e colori dei segnaposto del gioco:
+`src/lib/kiosk/event-brand.ts`.
 
 ## Contenuti extra: Ferrari SF-26 e Monza
 

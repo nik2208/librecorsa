@@ -70,6 +70,8 @@ UI-RESEARCH-*.md
 /artifacts/
 *.blend1
 
-# Event branch: brand artwork for the kiosk stays on the machine (scripts/kiosk/build_brand_assets.py); only its README is tracked
+# Event branch: brand artwork for the kiosk stays on the machine (kiosk/brand.mjs makes it at start); only READMEs are tracked
 /public/kiosk/brand/*
 !/public/kiosk/brand/README.md
+/kiosk/brand/*
+!/kiosk/brand/README.md

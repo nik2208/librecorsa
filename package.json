@@ -19,6 +19,7 @@
     "press-kit": "node --import tsx scripts/build-press-kit.ts",
     "home-outlines": "node --import tsx scripts/build-home-outlines.ts",
     "kiosk": "node kiosk/server.mjs",
+    "kiosk:brand": "node kiosk/brand.mjs",
     "kiosk:build": "next build && node kiosk/server.mjs"
   },
   "dependencies": {

@@ -7,7 +7,8 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatClock, formatLapTime, formatMinutes, scoreSession } from "../src/lib/kiosk/kiosk-score";
@@ -95,7 +96,8 @@ async function main() {
   const dataDir = mkdtempSync(join(tmpdir(), "kiosk-verify-"));
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   const server = spawn(process.execPath, [join(__dirname, "../kiosk/server.mjs")], {
-    env: { ...process.env, PORT: String(port), KIOSK_HOST: "127.0.0.1", KIOSK_DATA_DIR: dataDir, KIOSK_ADMIN_PIN: "9876", NODE_OPTIONS: "" },
+    // KIOSK_BRAND=0: no logo downloads from a test (the brand pictures have their own check below)
+    env: { ...process.env, PORT: String(port), KIOSK_HOST: "127.0.0.1", KIOSK_DATA_DIR: dataDir, KIOSK_ADMIN_PIN: "9876", KIOSK_BRAND: "0", NODE_OPTIONS: "" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const base = `http://127.0.0.1:${port}`;
@@ -208,6 +210,34 @@ async function main() {
     server.kill();
     rmSync(dataDir, { recursive: true, force: true });
   }
+
+  console.log("Brand pictures (kiosk/brand.mjs)");
+  await check("made from local logos at the sizes the game expects, then left alone while up to date", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "kiosk-brand-"));
+    try {
+      const brandDir = join(tmp, "brand");
+      const outDir = join(tmp, "out", "kiosk", "brand");
+      mkdirSync(brandDir, { recursive: true });
+      mkdirSync(join(tmp, "out", "kiosk"), { recursive: true });
+      // One-colour logos with transparency, as a brand kit's (no download: local sources come first)
+      writeFileSync(join(brandDir, "sponsor-logo.svg"), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 100"><rect x="0" y="10" width="600" height="80" fill="#000"/></svg>');
+      writeFileSync(join(brandDir, "event-logo.svg"), '<!DOCTYPE svg><svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 4500 2392"><script>x()</script><path d="M0 0H4500V2392Z" fill="#fff"/></svg>');
+      const brandUrl = pathToFileURL(join(__dirname, "../kiosk/brand.mjs")).href;
+      const { ensureBrandAssets } = (await import(brandUrl)) as { ensureBrandAssets: (o: object) => Promise<{ made: string[]; skipped?: string }> };
+      const quiet = { warn: () => {}, log: () => {} };
+      const first = await ensureBrandAssets({ outDir, brandDir, cacheDir: join(tmp, "cache"), log: quiet });
+      assert.deepEqual(first.made.sort(), ["banner-combo.png", "banner-huawei.png", "banner-mgw.png", "huawei-logo.png", "mgw-logo.png"]);
+      const size = (name: string) => {
+        const png = readFileSync(join(outDir, name));
+        return [png.readUInt32BE(16), png.readUInt32BE(20)];
+      };
+      for (const banner of ["banner-huawei.png", "banner-mgw.png", "banner-combo.png"]) assert.deepEqual(size(banner), [1024, 128], banner);
+      const second = await ensureBrandAssets({ outDir, brandDir, cacheDir: join(tmp, "cache"), log: quiet });
+      assert.equal(second.skipped, "up to date");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 
   if (failures > 0) {
     console.error(`\n${failures} kiosk check(s) failed`);

@@ -15,6 +15,8 @@
  *   KIOSK_DATA_DIR         where config.json and results.json live (kiosk/data)
  *   KIOSK_STATIC_DIR       the static build (out)
  *   KIOSK_HOME             where "/" goes (/kiosk; empty = the site's own home page)
+ *   KIOSK_BRAND=0          don't make the brand pictures at start (kiosk/brand.mjs: logos and banners from the
+ *                          sponsor's and the event's logos, downloaded once or taken from kiosk/brand/)
  *
  * The scoring rules mirror src/lib/kiosk/kiosk-score.ts and the config rules src/lib/kiosk/kiosk-types.ts.
  */
@@ -25,6 +27,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { ensureBrandAssets } from "./brand.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, "..");
@@ -593,6 +596,15 @@ const server = http.createServer(async (req, res) => {
     else res.destroy();
   }
 });
+
+// The brand pictures (header logos, trackside banners) into the served build, before the first page asks for them;
+// a slow download doesn't hold the kiosk up for long, and a failure only leaves the game's text in their place
+const BRAND_WAIT_MS = 20_000;
+const brand = await Promise.race([
+  ensureBrandAssets({ outDir: path.join(STATIC_DIR, "kiosk", "brand"), log: console }),
+  new Promise((resolve) => setTimeout(() => resolve({ made: [], skipped: "still working after 20 s (continuing in the background)" }), BRAND_WAIT_MS)),
+]);
+console.log(brand.made.length ? `[kiosk] brand pictures: ${brand.made.join(", ")}` : `[kiosk] brand pictures: ${brand.skipped}`);
 
 server.listen(PORT, HOST, () => {
   const staticOk = fs.existsSync(path.join(STATIC_DIR, "kiosk.html")) || fs.existsSync(path.join(STATIC_DIR, "kiosk", "index.html"));
