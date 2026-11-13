@@ -38,7 +38,8 @@ export const BrandHeader: React.FC<{ compact?: boolean }> = ({ compact }) => (
   <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
     <BrandMark kind="sponsor" className={compact ? "h-7 w-auto" : "h-10 w-auto"} textClassName={`font-f1-display font-black tracking-[0.18em] text-[#C7000B] ${compact ? "text-xl" : "text-3xl"}`} />
     <span className={`font-f1-display text-white/50 ${compact ? "text-lg" : "text-2xl"}`}>×</span>
-    <BrandMark kind="event" className={compact ? "h-7 w-auto" : "h-10 w-auto"} textClassName={`font-f1-display font-extrabold tracking-[0.08em] text-white ${compact ? "text-lg" : "text-2xl"}`} />
+    {/* The event's logo is taller than wide words: a little more height keeps its tagline readable */}
+    <BrandMark kind="event" className={compact ? "h-10 w-auto" : "h-16 w-auto"} textClassName={`font-f1-display font-extrabold tracking-[0.08em] text-white ${compact ? "text-lg" : "text-2xl"}`} />
     {!compact ? (
       <span className="font-f1-italic text-sm font-bold uppercase tracking-[0.2em] text-white/60">
         {EVENT_BRAND.dates} · {EVENT_BRAND.venue}
