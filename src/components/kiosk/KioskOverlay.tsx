@@ -13,7 +13,8 @@ import { sanitizeDriverName } from "@/lib/settings/player-settings";
 import type { KioskSimApi } from "@/lib/kiosk/kiosk-bridge";
 import type { LapSummaryData } from "@/lib/sim/lap-types";
 import type { AssistPreset } from "@/types/f1";
-import { useAssetProgress } from "@/lib/loading/asset-progress";
+import { useAssetProgress, type AssetProgressSnapshot } from "@/lib/loading/asset-progress";
+import { withBasePath } from "@/lib/base-path";
 import { fetchLeaderboard, newClientId, submitKioskResult, type ConfigSource } from "@/lib/kiosk/kiosk-api";
 import { formatClock, formatLapTime, formatMinutes, lapScoreMs, scoreSession, type KioskScore } from "@/lib/kiosk/kiosk-score";
 import {
@@ -32,6 +33,9 @@ import { BrandHeader, KioskButton, LeaderboardTable, OnScreenKeyboard, PinDialog
 
 type Stage = "boot" | "menu" | "entry" | "countdown" | "running" | "finished";
 type EndReason = "time" | "laps" | "cap" | "staff";
+
+/** The downloads the kiosk can't do without (no opponents on the kiosk; the shaders compile, they don't download) */
+const KIOSK_DOWNLOADS: ReadonlySet<string> = new Set(["track", "car"]);
 
 /** Standard-mapping pad buttons the start screen reads (any other button starts the session) */
 const PAD_B = 1;
@@ -130,10 +134,13 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
   const [askPin, setAskPin] = useState(false);
   const [pausedAt, setPausedAt] = useState(0);
 
-  // ---- Loaded: the menu
+  // ---- Loaded: the menu. A circuit or car that failed to download keeps the loading screen up, which starts the
+  // page again (the game would otherwise go on without it)
+  const progress = useAssetProgress();
+  const downloadFailed = progress.tasks.some((t) => KIOSK_DOWNLOADS.has(t.id) && t.status === "failed");
   useEffect(() => {
-    if (stage === "boot" && api.ready && api.phase === "title") setStage("menu");
-  }, [stage, api.ready, api.phase, setStage]);
+    if (stage === "boot" && api.ready && api.phase === "title" && !downloadFailed) setStage("menu");
+  }, [stage, api.ready, api.phase, downloadFailed, setStage]);
 
   // The circuit actually loaded: the config's, or the default when its files could not be loaded (results and boards
   // go with what visitors really drive)
@@ -472,7 +479,7 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
         />
       ) : null}
 
-      {stage === "boot" ? <KioskBootScreen /> : null}
+      {stage === "boot" ? <KioskBootScreen progress={progress} downloadFailed={downloadFailed} /> : null}
 
       {stage === "menu" ? (
         <div className="fixed inset-0 z-[70] flex flex-col overflow-y-auto bg-gradient-to-r from-black/90 via-black/70 to-black/25 px-[max(1.25rem,env(safe-area-inset-left))] py-6 text-white">
@@ -730,8 +737,7 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
 };
 
 /** While the circuit and the car load: the event's screen with the progress (the game's own loading screen is not shown) */
-const KioskBootScreen: React.FC = () => {
-  const progress = useAssetProgress();
+const KioskBootScreen: React.FC<{ progress: AssetProgressSnapshot; downloadFailed: boolean }> = ({ progress, downloadFailed }) => {
   const [startedAt] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -739,9 +745,11 @@ const KioskBootScreen: React.FC = () => {
     return () => window.clearInterval(id);
   }, []);
   const elapsed = now - startedAt;
-  const failed = progress.settled && progress.anyFailed;
-  // A download with no data for a while (not the shaders: they report nothing until done, and take long on a weak GPU)
-  const downloading = progress.tasks.filter((t) => t.status === "loading" && t.id !== "shaders");
+  // The circuit's or the car's download (the shaders don't count: a slow GPU compiles for long, and the game goes on
+  // when it is done, even after the watchdog has marked them failed)
+  const failed = downloadFailed;
+  // A download with no data for a while
+  const downloading = progress.tasks.filter((t) => t.status === "loading" && KIOSK_DOWNLOADS.has(t.id));
   const lastData = downloading.length ? Math.max(...downloading.map((t) => t.lastProgressMs)) : null;
   const stalled = lastData !== null && lastData > 0 && performance.now() - lastData > BOOT_STALL_MS;
   // A failed or stuck load starts again by itself: nobody may be there to press anything
@@ -774,9 +782,15 @@ const KioskBootScreen: React.FC = () => {
               Il caricamento sta richiedendo molto tempo. Se succede sempre, abbassa la qualità grafica nelle impostazioni del kiosk.
             </p>
           ) : null}
-          <KioskButton tone="ghost" onClick={() => window.location.reload()}>
-            Riprova
-          </KioskButton>
+          <div className="flex flex-wrap justify-center gap-3">
+            <KioskButton tone="ghost" onClick={() => window.location.reload()}>
+              Riprova
+            </KioskButton>
+            {/* The staff's way to the settings (graphics quality) when the game never gets to its menu */}
+            <KioskButton tone="ghost" onClick={() => window.location.assign(withBasePath("/kiosk/admin"))}>
+              Impostazioni
+            </KioskButton>
+          </div>
         </div>
       ) : null}
     </div>

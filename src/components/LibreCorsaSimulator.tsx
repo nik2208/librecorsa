@@ -1615,6 +1615,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
           onToggleXMode={handleToggleXMode}
           onToggleBoostLatch={handleToggleBoostLatch}
           onChangeLiveTuner={handleChangeLiveTuner}
+          noMfd={kioskOn}
           // Kiosk mode: no pause menu (its settings and exits are for the staff); the kiosk draws its own pause screen
           paused={kioskOn ? false : paused}
           onOpenControls={() => openControls("pause")}

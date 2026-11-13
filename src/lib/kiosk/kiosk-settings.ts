@@ -26,8 +26,9 @@ export function kioskSettingsFor(config: KioskConfig, difficulty: AssistPreset =
     conditions: { ...own.conditions, weather: "clear", weatherNodes: undefined, timeScale: 0 },
     // Controls a visitor must not reach: the autopilot (it would set lap times), mute, replays, the flying restart and
     // mouse steering. Restart stays: it puts a stuck car back on the grid (the lap in progress is lost)
-    keys: { ...own.keys, autopilot: [], mute: [], replay: [], flyingLap: [], mouseSteer: [] },
-    padButtons: { ...own.padButtons, flyingLap: null },
+    keys: { ...own.keys, autopilot: [], mute: [], replay: [], flyingLap: [], mouseSteer: [], mfdPage: [] },
+    // Nor the MFD (its dials change the assists of the level picked) or hiding the HUD
+    padButtons: { ...own.padButtons, flyingLap: null, mfd: null, mfdPage: null, hud: null },
     // The lap card has buttons (save a ghost file …) a visitor has no use for; the kiosk shows its own lap times
     hud: { ...own.hud, lapSummary: false, deltaBar: false },
   });

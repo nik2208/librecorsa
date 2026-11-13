@@ -131,6 +131,8 @@ interface F1TelemetryHudProps extends MultiplayerPanelProps {
   onToggleXMode: () => void;
   onToggleBoostLatch: () => void;
   onChangeLiveTuner?: (patch: LiveTunerPatch) => void;
+  /** Event branch, kiosk mode: no MFD (its dials would let a visitor change the assists of the level they picked) */
+  noMfd?: boolean;
   onToggleMouseSteer?: () => void;
   onResetCar: (flyingStart: boolean) => void;
   onSelectTurn: (turnNumber: number) => void;
@@ -303,7 +305,7 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
     scale === 1 ? undefined : { transform: `scale(${scale})`, transformOrigin: origin };
   // Classic and Telemetry fill both right-hand corners, and on a laptop Broadcast's sits over the pod, so the MFD starts as its status pill there
   // The lap summary toast lifts itself above anything marked data-hud-avoid
-  const mfdNode = (
+  const mfdNode = props.noMfd ? null : (
     <div data-hud-avoid>
       <MultiPageMfd
         telemetry={telemetry}
@@ -351,7 +353,7 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
           scale={scale}
           trackCode={trackInfo.country.slice(0, 3).toUpperCase()}
           ffb={props.ffbMeter ? <FfbMeter {...props.ffbMeter} /> : null}
-          mfd={phone ? undefined : mfdNode}
+          mfd={phone || !mfdNode ? undefined : mfdNode}
           touch={Boolean(props.touchControls)}
           lapInvalid={lapInvalid}
           towerGaps={hud?.towerGaps}
