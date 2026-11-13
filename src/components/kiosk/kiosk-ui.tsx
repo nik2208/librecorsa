@@ -136,19 +136,22 @@ export const LeaderboardTable: React.FC<{
   );
 };
 
+/** How often the kiosk's screens read the pads */
+const PAD_POLL_MS = 50;
+
 /**
  * Calls `onPress` for every pad or wheel button that goes down while `enabled` (buttons already held when it turns on
- * are ignored until released, so the press that led here does not count again)
+ * are ignored until released, so the press that led here does not count again). Read on a timer, not on animation
+ * frames: on a PC that draws the circuit slowly, frames come too seldom and a short press would be missed
  */
 export function useGamepadPress(onPress: (button: number) => void, enabled: boolean): void {
   const onPressRef = useRef(onPress);
   onPressRef.current = onPress;
   useEffect(() => {
     if (!enabled || typeof navigator === "undefined" || !navigator.getGamepads) return;
-    let raf = 0;
     const held = new Map<number, boolean[]>();
     let first = true;
-    const loop = () => {
+    const poll = () => {
       for (const pad of navigator.getGamepads()) {
         if (!pad) continue;
         const was = held.get(pad.index) ?? [];
@@ -157,10 +160,10 @@ export function useGamepadPress(onPress: (button: number) => void, enabled: bool
         held.set(pad.index, now);
       }
       first = false;
-      raf = window.requestAnimationFrame(loop);
     };
-    raf = window.requestAnimationFrame(loop);
-    return () => window.cancelAnimationFrame(raf);
+    poll();
+    const id = window.setInterval(poll, PAD_POLL_MS);
+    return () => window.clearInterval(id);
   }, [enabled]);
 }
 
