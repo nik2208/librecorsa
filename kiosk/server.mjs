@@ -27,7 +27,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { ensureBrandAssets } from "./brand.mjs";
+import { describeBrandResult, ensureBrandAssets } from "./brand.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, "..");
@@ -600,11 +600,15 @@ const server = http.createServer(async (req, res) => {
 // The brand pictures (header logos, trackside banners) into the served build, before the first page asks for them;
 // a slow download doesn't hold the kiosk up for long, and a failure only leaves the game's text in their place
 const BRAND_WAIT_MS = 20_000;
-const brand = await Promise.race([
-  ensureBrandAssets({ outDir: path.join(STATIC_DIR, "kiosk", "brand"), log: console }),
-  new Promise((resolve) => setTimeout(() => resolve({ made: [], skipped: "still working after 20 s (continuing in the background)" }), BRAND_WAIT_MS)),
-]);
-console.log(brand.made.length ? `[kiosk] brand pictures: ${brand.made.join(", ")}` : `[kiosk] brand pictures: ${brand.skipped}`);
+const brandWork = ensureBrandAssets({ outDir: path.join(STATIC_DIR, "kiosk", "brand"), log: console });
+let brandTimer;
+const brand = await Promise.race([brandWork, new Promise((resolve) => (brandTimer = setTimeout(() => resolve(null), BRAND_WAIT_MS)))]);
+clearTimeout(brandTimer);
+if (brand) console.log(`[kiosk] brand pictures: ${describeBrandResult(brand)}`);
+else {
+  console.log("[kiosk] brand pictures: still being made after 20 s, the kiosk starts meanwhile");
+  void brandWork.then((late) => console.log(`[kiosk] brand pictures (late): ${describeBrandResult(late)}`));
+}
 
 server.listen(PORT, HOST, () => {
   const staticOk = fs.existsSync(path.join(STATIC_DIR, "kiosk.html")) || fs.existsSync(path.join(STATIC_DIR, "kiosk", "index.html"));
