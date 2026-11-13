@@ -6,7 +6,7 @@
  * /api/kiosk (the admin's config, the players' results and the leaderboard), keeping its data in JSON files. It runs
  * on the kiosk machine itself, so the stand keeps working without internet.
  *
- *   npm run build && node kiosk/server.mjs           # then open http://localhost:8787
+ *   npm run build && npm start                       # then open http://localhost:8787 (the kiosk is the home page)
  *
  * Environment:
  *   PORT / KIOSK_PORT      port (8787)
@@ -14,7 +14,9 @@
  *   KIOSK_ADMIN_PIN        the admin PIN (2026: change it for the event)
  *   KIOSK_DATA_DIR         where config.json and results.json live (kiosk/data)
  *   KIOSK_STATIC_DIR       the static build (out)
- *   KIOSK_HOME             where "/" goes (/kiosk; empty = the site's own home page)
+ *   KIOSK_HOME             a page "/" redirects to (empty, the default: "/" is the kiosk itself)
+ *   KIOSK_PUBLIC_URL       the address other devices reach this server at, shown on the admin page with the leaderboard's
+ *                          (e.g. http://192.168.1.50:8787 behind Docker or a proxy; by default the LAN addresses found)
  *   KIOSK_BRAND=0          don't make the brand pictures at start (kiosk/brand.mjs: logos and banners from the
  *                          sponsor's and the event's logos, downloaded once or taken from kiosk/brand/)
  *
@@ -26,6 +28,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { describeBrandResult, ensureBrandAssets } from "./brand.mjs";
 
@@ -36,7 +39,8 @@ const HOST = process.env.KIOSK_HOST || "0.0.0.0";
 const STATIC_DIR = path.resolve(process.env.KIOSK_STATIC_DIR || path.join(ROOT, "out"));
 const DATA_DIR = path.resolve(process.env.KIOSK_DATA_DIR || path.join(here, "data"));
 const ADMIN_PIN = String(process.env.KIOSK_ADMIN_PIN || "2026");
-const HOME = process.env.KIOSK_HOME ?? "/kiosk";
+const HOME = process.env.KIOSK_HOME ?? "";
+const PUBLIC_URL = (process.env.KIOSK_PUBLIC_URL || "").trim().replace(/\/+$/, "");
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 const RESULTS_FILE = path.join(DATA_DIR, "results.json");
 const MAX_BODY_BYTES = 256 * 1024;
@@ -44,18 +48,22 @@ const MAX_BODY_BYTES = 256 * 1024;
 // ---------------------------------------------------------------------------------------------------------------
 // Config (src/lib/kiosk/kiosk-types.ts)
 
-// Monza and the SF-26 are extras a build lists only with NEXT_PUBLIC_EXTRA_CONTENT (kiosk/README.md, "Contenuti extra")
-const TRACK_IDS = ["rwanda_official_short", "rwanda_official", "monza"];
-const CAR_IDS = ["vf26", "sf26"];
+// Monza and the SF-26 are the event's circuit and car (a build can leave them out: NEXT_PUBLIC_EXTRA_CONTENT)
+const TRACK_IDS = ["monza", "rwanda_official_short", "rwanda_official"];
+const CAR_IDS = ["sf26", "vf26"];
 const DIFFICULTIES = ["assisted", "semi_pro", "pro"];
+const DEVICES = ["controller", "wheel", "keyboard"];
+const GRAPHICS = ["low", "medium", "high"];
 const DEFAULT_CONFIG = {
   limitMode: "time",
   laps: 3,
   minutes: 5,
   maxMinutes: 10,
-  trackId: "rwanda_official_short",
-  carId: "vf26",
+  trackId: "monza",
+  carId: "sf26",
   difficulty: "assisted",
+  device: "controller",
+  graphics: "medium",
   invalidLaps: "penalty",
   penaltyS: 5,
   racingLine: true,
@@ -81,6 +89,8 @@ function sanitizeConfig(raw) {
     trackId: TRACK_IDS.includes(r.trackId) ? r.trackId : d.trackId,
     carId: CAR_IDS.includes(r.carId) ? r.carId : d.carId,
     difficulty: DIFFICULTIES.includes(r.difficulty) ? r.difficulty : d.difficulty,
+    device: DEVICES.includes(r.device) ? r.device : d.device,
+    graphics: GRAPHICS.includes(r.graphics) ? r.graphics : d.graphics,
     invalidLaps: r.invalidLaps === "exclude" || r.invalidLaps === "penalty" ? r.invalidLaps : d.invalidLaps,
     penaltyS: num(r.penaltyS, 0, 60, d.penaltyS, 0.5),
     racingLine: typeof r.racingLine === "boolean" ? r.racingLine : d.racingLine,
@@ -160,6 +170,8 @@ function parseResult(raw) {
     name,
     trackId,
     carId,
+    // The level the player picked on the start screen
+    difficulty: DIFFICULTIES.includes(raw.difficulty) ? raw.difficulty : null,
     limitMode,
     limitLaps: num(raw.limitLaps, 1, 50, 3),
     limitMinutes: num(raw.limitMinutes, 0, 120, 0, 0.5),
@@ -226,6 +238,7 @@ function leaderboard(results, query) {
       rank,
       id: r.id,
       name: r.name,
+      difficulty: r.difficulty ?? null,
       bestLapMs: r.bestLapMs,
       bestLapPenalised: r.bestLapPenalised,
       totalTimeMs: r.totalTimeMs,
@@ -269,7 +282,15 @@ function readJsonFile(file, fallback) {
   }
 }
 
-let config = sanitizeConfig(readJsonFile(CONFIG_FILE, DEFAULT_CONFIG));
+let config = (() => {
+  const raw = readJsonFile(CONFIG_FILE, DEFAULT_CONFIG);
+  // A config saved before the kiosk opened on the Ferrari SF-26 at Monza (it has no "device") takes them up once
+  if (raw && typeof raw === "object" && !("device" in raw) && fs.existsSync(CONFIG_FILE)) {
+    console.log(`[kiosk] config from an earlier version: circuit and car set to ${DEFAULT_CONFIG.trackId} / ${DEFAULT_CONFIG.carId}`);
+    return sanitizeConfig({ ...raw, trackId: DEFAULT_CONFIG.trackId, carId: DEFAULT_CONFIG.carId });
+  }
+  return sanitizeConfig(raw);
+})();
 let results = (() => {
   const raw = readJsonFile(RESULTS_FILE, []);
   return Array.isArray(raw) ? raw.filter((r) => r && typeof r.id === "string" && Array.isArray(r.laps)) : [];
@@ -351,14 +372,17 @@ const fmtLap = (ms) => {
   return `${m}:${s}`;
 };
 
+const DIFFICULTY_LABELS = { assisted: "facile", semi_pro: "medio", pro: "difficile" };
+
 function resultsCsv() {
-  const head = ["id", "data", "nome", "circuito", "auto", "modalita", "giri_limite", "minuti_limite", "giri_completati", "giri_validi", "miglior_giro_ms", "miglior_giro", "penalizzato", "tempo_totale_ms", "tempo_totale", "completato", "tempo_guida_ms", "giri"];
+  const head = ["id", "data", "nome", "circuito", "auto", "difficolta", "modalita", "giri_limite", "minuti_limite", "giri_completati", "giri_validi", "miglior_giro_ms", "miglior_giro", "penalizzato", "tempo_totale_ms", "tempo_totale", "completato", "tempo_guida_ms", "giri"];
   const rows = results.map((r) => [
     r.id,
     r.createdAt,
     r.name,
     r.trackId,
     r.carId ?? "vf26",
+    DIFFICULTY_LABELS[r.difficulty] ?? "",
     r.limitMode,
     r.limitLaps,
     r.limitMinutes,
@@ -374,6 +398,33 @@ function resultsCsv() {
     r.laps.map((l) => `${fmtLap(l.lapMs)}${l.valid ? "" : "*"}`).join(" "),
   ]);
   return [head, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Network: the addresses other screens on the LAN reach this server at (the admin page shows the leaderboard's)
+
+/** This machine's IPv4 addresses, the LAN's first: private ranges before others, virtual bridges (Docker…) last */
+function lanAddresses() {
+  const out = [];
+  for (const [iface, list] of Object.entries(os.networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (a.internal || !(a.family === "IPv4" || a.family === 4) || a.address.startsWith("169.254.")) continue;
+      const virtual = /^(docker|br-|veth|virbr|vmnet|vboxnet|tun|tap|wg|zt|tailscale|utun)/i.test(iface);
+      const lan = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(a.address);
+      out.push({ iface, address: a.address, virtual, rank: virtual ? 2 : lan ? 0 : 1 });
+    }
+  }
+  return out.sort((x, y) => x.rank - y.rank || x.iface.localeCompare(y.iface)).map(({ rank, ...a }) => a);
+}
+
+/** Where this server is reached: KIOSK_PUBLIC_URL, else one address per LAN interface (all of them when listening on any) */
+function serverUrls() {
+  const listenAny = HOST === "0.0.0.0" || HOST === "::";
+  const urls = [];
+  if (PUBLIC_URL) urls.push({ url: PUBLIC_URL, iface: "KIOSK_PUBLIC_URL", virtual: false });
+  if (listenAny) for (const a of lanAddresses()) urls.push({ url: `http://${a.address}:${PORT}`, iface: a.iface, virtual: a.virtual });
+  else if (HOST !== "127.0.0.1" && HOST !== "localhost") urls.push({ url: `http://${HOST}:${PORT}`, iface: "KIOSK_HOST", virtual: false });
+  return urls;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -394,6 +445,15 @@ async function handleApi(req, res, url) {
 
   if (route === "/api/kiosk/health" && method === "GET") {
     return sendJson(res, 200, { ok: true, results: results.length, time: new Date().toISOString() });
+  }
+
+  // The addresses of the leaderboard page and API on the LAN (for the admin page; LAN addresses are no secret there)
+  if (route === "/api/kiosk/network" && method === "GET") {
+    return sendJson(res, 200, {
+      port: PORT,
+      urls: serverUrls(),
+      paths: { leaderboardPage: "/kiosk/classifica", leaderboardApi: "/api/kiosk/leaderboard" },
+    });
   }
 
   if (route === "/api/kiosk/auth" && method === "POST") {
@@ -611,8 +671,9 @@ else {
 }
 
 server.listen(PORT, HOST, () => {
-  const staticOk = fs.existsSync(path.join(STATIC_DIR, "kiosk.html")) || fs.existsSync(path.join(STATIC_DIR, "kiosk", "index.html"));
-  console.log(`[kiosk] LibreCorsa kiosk on http://localhost:${PORT}${HOME || "/"}`);
+  const staticOk = fs.existsSync(path.join(STATIC_DIR, "index.html"));
+  console.log(`[kiosk] kiosk on http://localhost:${PORT}${HOME || "/"}`);
+  for (const u of serverUrls()) console.log(`[kiosk] leaderboard on the network: ${u.url}/kiosk/classifica (${u.iface}${u.virtual ? ", virtual" : ""})`);
   console.log(`[kiosk] data: ${DATA_DIR} (${results.length} results) · static: ${STATIC_DIR}${staticOk ? "" : " (no build found: run npm run build)"}`);
   if (!process.env.KIOSK_ADMIN_PIN) console.warn("[kiosk] KIOSK_ADMIN_PIN not set: the admin PIN is the default 2026. Set your own for the event.");
 });

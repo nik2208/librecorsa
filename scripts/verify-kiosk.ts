@@ -67,14 +67,18 @@ async function main() {
   });
 
   console.log("Extras");
-  await check("the SF-26 and Monza are listed only when NEXT_PUBLIC_EXTRA_CONTENT names them", async () => {
+  await check("the SF-26 and Monza are listed by default; NEXT_PUBLIC_EXTRA_CONTENT narrows them", async () => {
+    // The variable left out entirely (a plain build), not set to ""
+    const { NEXT_PUBLIC_EXTRA_CONTENT: _unset, ...baseEnv } = process.env;
+    void _unset;
     const probe = (env: Record<string, string>) =>
       execFileSync(process.execPath, ["--import", "tsx", "-e", `const h = require(${JSON.stringify(join(__dirname, "../src/lib/hosted-content.ts"))}); console.log(JSON.stringify([h.carListed("sf26"), h.trackListed("monza"), h.carListed("vf26"), h.trackListed("rwanda_official_short")]))`], {
-        env: { ...process.env, NEXT_PUBLIC_HOSTED_CONTENT: "", NEXT_PUBLIC_EXTRA_CONTENT: "", ...env },
+        env: { ...baseEnv, NEXT_PUBLIC_HOSTED_CONTENT: "", ...env },
         encoding: "utf8",
       }).trim();
-    assert.equal(probe({}), "[false,false,true,true]", "default build");
-    assert.equal(probe({ NEXT_PUBLIC_HOSTED_CONTENT: "1" }), "[false,false,true,true]", "hosted build without the flag");
+    assert.equal(probe({}), "[true,true,true,true]", "default build");
+    assert.equal(probe({ NEXT_PUBLIC_HOSTED_CONTENT: "1" }), "[true,true,true,true]", "hosted build");
+    assert.equal(probe({ NEXT_PUBLIC_EXTRA_CONTENT: "" }), "[false,false,true,true]", "an empty list leaves both out");
     assert.equal(probe({ NEXT_PUBLIC_EXTRA_CONTENT: "sf26" }), "[true,false,true,true]", "only the SF-26 named");
     assert.equal(probe({ NEXT_PUBLIC_EXTRA_CONTENT: "sf26,monza,f2004" }), "[true,true,true,true]", "both named (unknown ids ignored)");
   });
@@ -91,6 +95,9 @@ async function main() {
     assert.equal(c.difficulty, DEFAULT_KIOSK_CONFIG.difficulty);
     assert.equal(c.penaltyS, 7.5);
     assert.equal("extra" in c, false);
+    const d = sanitizeKioskConfig({ device: "joystick", graphics: "ultra" });
+    assert.deepEqual([d.trackId, d.carId, d.device, d.graphics], ["monza", "sf26", "controller", "medium"], "the event's defaults");
+    assert.deepEqual([sanitizeKioskConfig({ device: "wheel" }).device, sanitizeKioskConfig({ graphics: "high" }).graphics], ["wheel", "high"]);
   });
 
   console.log("Server (kiosk/server.mjs)");
@@ -98,7 +105,16 @@ async function main() {
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   const server = spawn(process.execPath, [join(__dirname, "../kiosk/server.mjs")], {
     // KIOSK_BRAND=0: no logo downloads from a test (the brand pictures have their own check below)
-    env: { ...process.env, PORT: String(port), KIOSK_HOST: "127.0.0.1", KIOSK_DATA_DIR: dataDir, KIOSK_ADMIN_PIN: "9876", KIOSK_BRAND: "0", NODE_OPTIONS: "" },
+    env: {
+      ...process.env,
+      PORT: String(port),
+      KIOSK_HOST: "127.0.0.1",
+      KIOSK_DATA_DIR: dataDir,
+      KIOSK_ADMIN_PIN: "9876",
+      KIOSK_BRAND: "0",
+      KIOSK_PUBLIC_URL: "http://192.168.50.5:8787/",
+      NODE_OPTIONS: "",
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const base = `http://127.0.0.1:${port}`;
@@ -130,11 +146,17 @@ async function main() {
       ...extra,
     });
 
-    await check("config: anyone reads it, only the PIN writes it", async () => {
-      assert.equal((await api("/config")).status, 200);
+    await check("config: anyone reads it, only the PIN writes it; the event's defaults at first", async () => {
+      const first = await api("/config");
+      assert.equal(first.status, 200);
+      const initial = await first.json();
+      assert.deepEqual([initial.trackId, initial.carId, initial.device, initial.graphics], ["monza", "sf26", "controller", "medium"]);
       assert.equal((await api("/config", { method: "PUT", body: JSON.stringify({ laps: 2 }) })).status, 401);
       assert.equal((await api("/config", { method: "PUT", body: JSON.stringify({ laps: 2 }) }, "1111")).status, 401);
-      const saved = await (await api("/config", { method: "PUT", body: JSON.stringify({ limitMode: "laps", laps: 2 }) }, "9876")).json();
+      // The boards below are on RISE's short layout in the 2026 prototype
+      const saved = await (
+        await api("/config", { method: "PUT", body: JSON.stringify({ limitMode: "laps", laps: 2, trackId: "rwanda_official_short", carId: "vf26" }) }, "9876")
+      ).json();
       assert.equal(saved.limitMode, "laps");
       assert.equal(saved.laps, 2);
       assert.ok(saved.updatedAt);
@@ -181,9 +203,28 @@ async function main() {
       const sf26 = await (await api("/leaderboard?mode=best&car=sf26")).json();
       assert.deepEqual(sf26.rows.map((r: { name: string }) => r.name), ["Fede"]);
       const cfg = await (await api("/config", { method: "PUT", body: JSON.stringify({ carId: "f2004", trackId: "monza" }) }, "9876")).json();
-      assert.equal(cfg.carId, "vf26");
+      assert.equal(cfg.carId, "sf26");
       assert.equal(cfg.trackId, "monza");
-      await api("/config", { method: "PUT", body: JSON.stringify({ trackId: "rwanda_official_short" }) }, "9876");
+      await api("/config", { method: "PUT", body: JSON.stringify({ trackId: "rwanda_official_short", carId: "vf26" }) }, "9876");
+    });
+    await check("the player's level is kept with the result and shown on the board", async () => {
+      const easy = await (await post(session("c8", "Gino", [[95_000, true], [95_000, true]], { difficulty: "semi_pro" }))).json();
+      assert.equal(easy.result.difficulty, "semi_pro");
+      const odd = await (await post(session("c9", "Ugo", [[97_000, true], [97_000, true]], { difficulty: "expert" }))).json();
+      assert.equal(odd.result.difficulty, null, "an unknown level is not stored");
+      const board = await (await api("/leaderboard")).json();
+      const row = board.rows.find((r: { name: string }) => r.name === "Gino");
+      assert.equal(row?.difficulty, "semi_pro");
+      assert.equal(board.rows.find((r: { name: string }) => r.name === "Ugo")?.difficulty, null);
+    });
+    await check("the leaderboard's addresses on the network", async () => {
+      const net = await (await api("/network")).json();
+      assert.equal(net.port, port);
+      assert.equal(net.urls[0].url, "http://192.168.50.5:8787", "KIOSK_PUBLIC_URL first, without its trailing slash");
+      assert.equal(net.paths.leaderboardPage, "/kiosk/classifica");
+      assert.equal(net.paths.leaderboardApi, "/api/kiosk/leaderboard");
+      // Listening on 127.0.0.1 only: no LAN address to offer
+      assert.equal(net.urls.length, 1);
     });
     await check("bad posts are refused", async () => {
       assert.equal((await post({ ...session("c5", "", [[100_000, true]]) })).status, 400);
@@ -193,10 +234,12 @@ async function main() {
     await check("admin: list, CSV, delete one, reset with a backup", async () => {
       assert.equal((await api("/results")).status, 401);
       const { results } = await (await api("/results", {}, "9876")).json();
-      assert.equal(results.length, 5);
+      assert.equal(results.length, 7);
       const csv = await (await api("/results.csv", {}, "9876")).text();
       assert.match(csv, /miglior_giro/);
-      assert.equal(csv.trim().split("\n").length, 6);
+      assert.match(csv, /,difficolta,/);
+      assert.match(csv, /,medio,/);
+      assert.equal(csv.trim().split("\n").length, 8);
       assert.equal((await api(`/results/${results[0].id}`, { method: "DELETE" }, "9876")).status, 200);
       const reset = await (await api("/results", { method: "DELETE" }, "9876")).json();
       assert.ok(reset.backup);
@@ -211,6 +254,30 @@ async function main() {
     server.kill();
     rmSync(dataDir, { recursive: true, force: true });
   }
+
+  await check("a config saved by an earlier version takes up the Ferrari SF-26 at Monza once, keeping the rest", async () => {
+    const oldDir = mkdtempSync(join(tmpdir(), "kiosk-verify-old-"));
+    writeFileSync(join(oldDir, "config.json"), JSON.stringify({ limitMode: "laps", laps: 4, trackId: "rwanda_official_short", carId: "vf26" }));
+    const oldPort = port + 1;
+    const old = spawn(process.execPath, [join(__dirname, "../kiosk/server.mjs")], {
+      env: { ...process.env, PORT: String(oldPort), KIOSK_HOST: "127.0.0.1", KIOSK_DATA_DIR: oldDir, KIOSK_BRAND: "0", NODE_OPTIONS: "" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      let cfg: { trackId?: string; carId?: string; laps?: number; limitMode?: string } | null = null;
+      for (let i = 0; i < 50 && !cfg; i++) {
+        try {
+          cfg = await (await fetch(`http://127.0.0.1:${oldPort}/api/kiosk/config`)).json();
+        } catch {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+      assert.deepEqual([cfg?.trackId, cfg?.carId, cfg?.limitMode, cfg?.laps], ["monza", "sf26", "laps", 4]);
+    } finally {
+      old.kill();
+      rmSync(oldDir, { recursive: true, force: true });
+    }
+  });
 
   console.log("Brand pictures (kiosk/brand.mjs)");
   {

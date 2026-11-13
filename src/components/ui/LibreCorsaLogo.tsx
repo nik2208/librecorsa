@@ -1,4 +1,5 @@
 import React from "react";
+import { EVENT_BRAND, EVENT_BRANDING_ON } from "@/lib/kiosk/event-brand";
 
 export interface LibreCorsaLogoProps {
   /**
@@ -30,6 +31,8 @@ const SIZES = {
  */
 export const LibreCorsaMark: React.FC<{ className?: string; title?: string }> = ({ className = "h-10 w-10", title = "LibreCorsa" }) => {
   const uid = React.useId().replace(/:/g, "");
+  // Event branch: the event's badge wherever the game shows its own (the HUD, the menus)
+  if (EVENT_BRANDING_ON) return <EventMark className={className} />;
   return (
     <svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" className={className} role="img" aria-label={title}>
       <defs>
@@ -68,6 +71,20 @@ export const LibreCorsaMark: React.FC<{ className?: string; title?: string }> = 
   );
 };
 
+/** Event branch: a red number board with the event's initials, in place of the game's emblem (public/kiosk/event-mark.svg) */
+export const EventMark: React.FC<{ className?: string }> = ({ className = "h-10 w-10" }) => (
+  <svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" className={className} role="img" aria-label={`${EVENT_BRAND.eventShort} ${EVENT_BRAND.year}`}>
+    <path d="M28 6H110Q122 6 122 18V98L98 122H18Q6 122 6 110V28Z" fill={EVENT_BRAND.red} />
+    <path d="M28 6H110Q122 6 122 18V98L98 122H18Q6 122 6 110V28Z" stroke="#FFFFFF" strokeOpacity="0.25" strokeWidth="3" />
+    <text x="64" y="70" textAnchor="middle" fill="#FFFFFF" fontFamily="Arial, Helvetica, sans-serif" fontSize="44" fontWeight="900" fontStyle="italic">
+      MGW
+    </text>
+    <text x="64" y="102" textAnchor="middle" fill="#FFFFFF" fillOpacity="0.85" fontFamily="Arial, Helvetica, sans-serif" fontSize="26" fontWeight="700" letterSpacing="4">
+      {EVENT_BRAND.year}
+    </text>
+  </svg>
+);
+
 export const LibreCorsaLogo: React.FC<LibreCorsaLogoProps> = ({
   variant = "full",
   size,
@@ -76,6 +93,17 @@ export const LibreCorsaLogo: React.FC<LibreCorsaLogoProps> = ({
 }) => {
   if (variant === "mark") return <LibreCorsaMark className={className || "h-10 w-10"} />;
   const s = SIZES[size ?? (variant === "compact" ? "sm" : "md")];
+  // Event branch: the event's name in place of the game's wordmark
+  if (EVENT_BRANDING_ON) {
+    return (
+      <div className={`inline-flex max-w-full items-center select-none ${s.gap} ${className}`}>
+        <EventMark className={`${s.mark} shrink-0`} />
+        <div className={`font-f1-display leading-none font-black tracking-[0.06em] text-[#F5F7FA] italic ${s.word}`}>
+          {EVENT_BRAND.sponsor} <span className="text-[#FF3B30]">RACING</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`inline-flex max-w-full items-center select-none ${s.gap} ${className}`}>

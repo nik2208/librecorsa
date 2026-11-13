@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { TrackGate } from "@/components/TrackGate";
+import { KioskReturnButton } from "@/components/kiosk/KioskReturnButton";
 import { SITE_DESCRIPTION, SITE_NAME } from "@/lib/site";
 
 export const metadata: Metadata = {
@@ -17,6 +18,8 @@ export default function PlayPage() {
       <h1 className="sr-only">Play LibreCorsa: free open-source racing simulator in your browser</h1>
       <p className="sr-only">{SITE_DESCRIPTION}</p>
       <TrackGate />
+      {/* Event branch: the staff come here from the kiosk's settings (the wheel's setup), with no address bar to leave by */}
+      <KioskReturnButton />
     </main>
   );
 }

@@ -19,7 +19,8 @@ import {
 
 const API_BASE = (process.env.NEXT_PUBLIC_KIOSK_API || "").trim().replace(/\/+$/, "");
 const TIMEOUT_MS = 6000;
-const CONFIG_CACHE_KEY = "kiosk.config.v1";
+// v2: the kiosk opens on the Ferrari SF-26 at Monza (a v1 copy would bring back the earlier circuit and car)
+const CONFIG_CACHE_KEY = "kiosk.config.v2";
 const QUEUE_KEY = "kiosk.queue.v1";
 const PIN_KEY = "kiosk.pin";
 
@@ -208,6 +209,25 @@ export function leaderboardPath(q: LeaderboardQuery = {}): string {
 }
 
 export const fetchLeaderboard = (q: LeaderboardQuery = {}): Promise<KioskLeaderboard> => request<KioskLeaderboard>(leaderboardPath(q));
+
+// ---- Network
+
+/** One address the kiosk server is reached at (`iface` names the network card, or the setting it came from) */
+export interface KioskServerUrl {
+  url: string;
+  iface: string;
+  /** A virtual bridge (Docker, VPN…): usually not the address other screens can reach */
+  virtual: boolean;
+}
+
+export interface KioskNetworkInfo {
+  port: number;
+  urls: KioskServerUrl[];
+  paths: { leaderboardPage: string; leaderboardApi: string };
+}
+
+/** The server's addresses on the local network, for the leaderboard's link on the admin page */
+export const fetchNetworkInfo = (): Promise<KioskNetworkInfo> => request<KioskNetworkInfo>("/network");
 
 // ---- Admin: results
 

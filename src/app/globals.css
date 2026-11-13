@@ -509,3 +509,13 @@ body {
     animation: none;
   }
 }
+
+/* ---- Event branch: the kiosk's screens ring focus in white and the sponsor's red, not the game's lime ---- */
+.kiosk-ui {
+  --lc-volt: #ffffff;
+}
+html[data-input="pad"] .kiosk-ui :where(button, a, input, select, textarea, summary, [tabindex]):focus {
+  box-shadow:
+    0 0 0 5px rgba(255, 255, 255, 0.14),
+    0 0 22px rgba(199, 0, 11, 0.45);
+}

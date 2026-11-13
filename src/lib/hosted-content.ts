@@ -8,13 +8,13 @@
 export const HOSTED_CONTENT = process.env.NEXT_PUBLIC_HOSTED_CONTENT === "1";
 
 /**
- * Event branch: extras whose files are put in `public/` by hand (scripts/kiosk/restore-extra-content.mjs; gitignored),
- * listed only when NEXT_PUBLIC_EXTRA_CONTENT names them ("sf26,monza"), whatever NEXT_PUBLIC_HOSTED_CONTENT says: the
- * hosted bucket doesn't have them, and the deploy, the verify suites and the thumbnail script all set that one
+ * Event branch: Monza and the Ferrari SF-26, restored from the repository's history (commit 7b009d9) and committed on
+ * this branch for the kiosk. Listed unless NEXT_PUBLIC_EXTRA_CONTENT names a narrower set ("" = none), whatever
+ * NEXT_PUBLIC_HOSTED_CONTENT says: the hosted bucket doesn't have them
  */
 export const EXTRA_CONTENT_KNOWN: ReadonlySet<string> = new Set(["sf26", "monza"]);
 export const EXTRA_CONTENT_IDS: ReadonlySet<string> = new Set(
-  (process.env.NEXT_PUBLIC_EXTRA_CONTENT ?? "")
+  (process.env.NEXT_PUBLIC_EXTRA_CONTENT ?? "sf26,monza")
     .split(",")
     .map((id) => id.trim())
     .filter((id) => EXTRA_CONTENT_KNOWN.has(id))

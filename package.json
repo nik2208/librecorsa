@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "node kiosk/server.mjs",
     "typecheck": "tsc --noEmit",
     "verify": "node scripts/run-verify.mjs",
     "verify:laps": "node scripts/run-verify.mjs driver-laps",

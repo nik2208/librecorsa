@@ -1,27 +1,49 @@
 "use client";
 
 /**
- * The kiosk's screens over the game: name entry and the leaderboard while the car waits on the grid, the countdown,
- * the session clock (laps or minutes, as the admin set), the pause screen, and the result once the limit is reached.
+ * The kiosk's screens over the game: the loading screen, the menu (GIOCA, the leaderboard, the staff's settings), the
+ * player's name and level, the countdown, the session clock (laps or minutes, as the admin set), the pause screen, and
+ * the result once the limit is reached, which then goes back to the menu.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Settings } from "lucide-react";
 import { nameProblem } from "@/lib/net/name-filter";
 import { sanitizeDriverName } from "@/lib/settings/player-settings";
 import type { KioskSimApi } from "@/lib/kiosk/kiosk-bridge";
 import type { LapSummaryData } from "@/lib/sim/lap-types";
+import type { AssistPreset } from "@/types/f1";
+import { useAssetProgress } from "@/lib/loading/asset-progress";
 import { fetchLeaderboard, newClientId, submitKioskResult, type ConfigSource } from "@/lib/kiosk/kiosk-api";
 import { formatClock, formatLapTime, formatMinutes, lapScoreMs, scoreSession, type KioskScore } from "@/lib/kiosk/kiosk-score";
-import { KIOSK_TRACKS, rankingModeFor, type KioskConfig, type KioskLap, type KioskLeaderboard, type KioskResultInput } from "@/lib/kiosk/kiosk-types";
+import {
+  KIOSK_CARS,
+  KIOSK_DIFFICULTIES,
+  KIOSK_TRACKS,
+  difficultyLabel,
+  rankingModeFor,
+  type KioskConfig,
+  type KioskLap,
+  type KioskLeaderboard,
+  type KioskResultInput,
+} from "@/lib/kiosk/kiosk-types";
 import { EVENT_BRAND } from "@/lib/kiosk/event-brand";
-import { BrandHeader, KioskButton, KioskCredits, LeaderboardTable, OnScreenKeyboard, PinDialog, useGamepadPress, useStaffGesture } from "@/components/kiosk/kiosk-ui";
+import { BrandHeader, KioskButton, LeaderboardTable, OnScreenKeyboard, PinDialog, useGamepadPress, useStaffGesture } from "@/components/kiosk/kiosk-ui";
 
-type Stage = "boot" | "entry" | "countdown" | "running" | "finished";
+type Stage = "boot" | "menu" | "entry" | "countdown" | "running" | "finished";
 type EndReason = "time" | "laps" | "cap" | "staff";
+
+/** Standard-mapping pad buttons the start screen reads (any other button starts the session) */
+const PAD_B = 1;
+const PAD_UP = 12;
+const PAD_DOWN = 13;
+const PAD_LEFT = 14;
+const PAD_RIGHT = 15;
 
 interface Run {
   name: string;
   clientId: string;
+  difficulty: AssistPreset;
   /** The config the session started with (a change made meanwhile counts from the next player) */
   config: KioskConfig;
   laps: KioskLap[];
@@ -46,6 +68,12 @@ const LEADERBOARD_REFRESH_MS = 20_000;
 const CONFIG_REFRESH_MS = 60_000;
 /** Pad presses on the result screen count only after this long (a button held over the line must not skip it) */
 const RESULT_INPUT_DELAY_MS = 3000;
+/** The name screen goes back to the menu after this long with nobody touching anything */
+const ENTRY_IDLE_MS = 90_000;
+/** A load still going after this long offers to start again (a slow PC can take minutes: it is never cut short) */
+const BOOT_SLOW_MS = 120_000;
+/** A download that has received nothing for this long is stuck: the page starts again by itself */
+const BOOT_STALL_MS = 90_000;
 
 const END_TITLES: Record<EndReason, string> = {
   time: "Tempo scaduto!",
@@ -70,13 +98,16 @@ export interface KioskOverlayProps {
   api: KioskSimApi;
   config: KioskConfig;
   configSource: ConfigSource;
+  /** The level the player picked (the game drives with its assists) */
+  difficulty: AssistPreset;
+  onDifficulty: (difficulty: AssistPreset) => void;
   /** Reads the admin's config again (between players, and now and then while idle) */
   onRefreshConfig: () => void;
   /** The staff gave the PIN: leave the game for the admin page */
   onStaffExit: () => void;
 }
 
-export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configSource, onRefreshConfig, onStaffExit }) => {
+export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configSource, difficulty, onDifficulty, onRefreshConfig, onStaffExit }) => {
   const [stage, setStageState] = useState<Stage>("boot");
   const stageRef = useRef<Stage>("boot");
   const setStage = useCallback((next: Stage) => {
@@ -99,9 +130,9 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
   const [askPin, setAskPin] = useState(false);
   const [pausedAt, setPausedAt] = useState(0);
 
-  // ---- Waiting for a player
+  // ---- Loaded: the menu
   useEffect(() => {
-    if (stage === "boot" && api.ready && api.phase === "title") setStage("entry");
+    if (stage === "boot" && api.ready && api.phase === "title") setStage("menu");
   }, [stage, api.ready, api.phase, setStage]);
 
   // The circuit actually loaded: the config's, or the default when its files could not be loaded (results and boards
@@ -117,19 +148,44 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
       setBoardError(true);
     }
   }, [rankingMode, activeTrackId, config.carId, config.laps]);
+  const waiting = stage === "menu" || stage === "entry";
   useEffect(() => {
-    if (stage !== "entry") return;
+    if (!waiting) return;
     void loadBoard();
     const id = window.setInterval(() => void loadBoard(), LEADERBOARD_REFRESH_MS);
     return () => window.clearInterval(id);
-  }, [stage, loadBoard]);
+  }, [waiting, loadBoard]);
   useEffect(() => {
-    if (stage !== "entry") return;
+    if (stage !== "menu") return;
     const id = window.setInterval(onRefreshConfig, CONFIG_REFRESH_MS);
     return () => window.clearInterval(id);
   }, [stage, onRefreshConfig]);
 
   const nameOk = sanitizeDriverName(name) !== "" && name.trim().length >= 2;
+
+  // ---- Menu → the player's name and level, and back
+  const lastInputRef = useRef(0);
+  const markInput = useCallback(() => {
+    lastInputRef.current = Date.now();
+  }, []);
+  const goToEntry = useCallback(() => {
+    if (stageRef.current !== "menu" || !apiRef.current.ready) return;
+    setName("");
+    setNameError(null);
+    // Each player starts from the admin's level
+    onDifficulty(config.difficulty);
+    apiRef.current.unlockAudio();
+    markInput();
+    setStage("entry");
+  }, [config.difficulty, onDifficulty, markInput, setStage]);
+  const cycleDifficulty = useCallback(
+    (step: 1 | -1) => {
+      const i = KIOSK_DIFFICULTIES.findIndex((d) => d.id === difficulty);
+      const next = KIOSK_DIFFICULTIES[Math.min(KIOSK_DIFFICULTIES.length - 1, Math.max(0, (i < 0 ? 0 : i) + step))];
+      onDifficulty(next.id);
+    },
+    [difficulty, onDifficulty]
+  );
 
   // ---- Start: out of the grid, held for the countdown
   const startRun = useCallback(() => {
@@ -147,7 +203,15 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
     setNameError(null);
     const a = apiRef.current;
     a.start(clean);
-    runRef.current = { name: clean, clientId: newClientId(), config: { ...config, trackId: a.trackId as KioskConfig["trackId"] }, laps: [], drivenMs: 0, lastTick: null };
+    runRef.current = {
+      name: clean,
+      clientId: newClientId(),
+      difficulty,
+      config: { ...config, trackId: a.trackId as KioskConfig["trackId"] },
+      laps: [],
+      drivenMs: 0,
+      lastTick: null,
+    };
     setOutcome(null);
     setLapToast(null);
     if (config.countdownS > 0) {
@@ -158,7 +222,7 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
       runRef.current.lastTick = performance.now();
       setStage("running");
     }
-  }, [name, config, setStage]);
+  }, [name, config, difficulty, setStage]);
 
   // The countdown: 3, 2, 1, GO; the car is released on GO
   useEffect(() => {
@@ -196,6 +260,7 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
         name: run.name,
         trackId: c.trackId,
         carId: c.carId,
+        difficulty: run.difficulty,
         limitMode: c.limitMode,
         limitLaps: c.laps,
         limitMinutes: c.limitMode === "time" ? c.minutes : c.maxMinutes,
@@ -278,16 +343,18 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
     return () => window.clearTimeout(id);
   }, [lapToast]);
 
-  // ---- Next player
-  const nextPlayer = useCallback(() => {
-    if (stageRef.current !== "finished") return;
-    runRef.current = null;
-    setOutcome(null);
+  // ---- Back to the menu: from the name screen, or after the result (the car goes back to the grid)
+  const backToMenu = useCallback(() => {
+    const s = stageRef.current;
+    if (s === "finished") {
+      runRef.current = null;
+      setOutcome(null);
+      apiRef.current.stop();
+      onRefreshConfig();
+    } else if (s !== "entry") return;
     setName("");
     setNameError(null);
-    apiRef.current.stop();
-    setStage("entry");
-    onRefreshConfig();
+    setStage("menu");
   }, [onRefreshConfig, setStage]);
   useEffect(() => {
     if (stage !== "finished") return;
@@ -295,8 +362,24 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
     return () => window.clearInterval(id);
   }, [stage]);
   useEffect(() => {
-    if (stage === "finished" && holdLeft === 0 && Date.now() - resultShownAt > 1000) nextPlayer();
-  }, [stage, holdLeft, resultShownAt, nextPlayer]);
+    if (stage === "finished" && holdLeft === 0 && Date.now() - resultShownAt > 1000) backToMenu();
+  }, [stage, holdLeft, resultShownAt, backToMenu]);
+
+  // A name screen nobody touches goes back to the menu
+  useEffect(() => {
+    if (stage !== "entry") return;
+    markInput();
+    window.addEventListener("keydown", markInput);
+    window.addEventListener("pointerdown", markInput);
+    const id = window.setInterval(() => {
+      if (Date.now() - lastInputRef.current > ENTRY_IDLE_MS) backToMenu();
+    }, 2000);
+    return () => {
+      window.removeEventListener("keydown", markInput);
+      window.removeEventListener("pointerdown", markInput);
+      window.clearInterval(id);
+    };
+  }, [stage, markInput, backToMenu]);
 
   // ---- Pause (the pause key, the pad's pause button, a wheel unplugged)
   const showPause = stage === "running" && api.paused;
@@ -305,28 +388,39 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
   }, [showPause]);
   const resume = useCallback(() => apiRef.current.setFrozen(false), []);
 
-  // ---- Pad and wheel buttons: start, resume, next player
+  // ---- Pad and wheel buttons: menu → name screen, the level (d-pad), start, back (B), resume, back to the menu
   useGamepadPress(
     (button) => {
+      if (askPin) return;
       const s = stageRef.current;
-      if (s === "entry" && nameOk && !askPin) startRun();
-      else if (s === "running" && apiRef.current.paused && Date.now() - pausedAt > 600) resume();
-      else if (s === "finished" && Date.now() - resultShownAt > RESULT_INPUT_DELAY_MS && button >= 0) nextPlayer();
+      if (s === "menu") goToEntry();
+      else if (s === "entry") {
+        markInput();
+        if (button === PAD_LEFT || button === PAD_UP) cycleDifficulty(-1);
+        else if (button === PAD_RIGHT || button === PAD_DOWN) cycleDifficulty(1);
+        else if (button === PAD_B) backToMenu();
+        else if (nameOk) startRun();
+      } else if (s === "running" && apiRef.current.paused && Date.now() - pausedAt > 600) resume();
+      else if (s === "finished" && Date.now() - resultShownAt > RESULT_INPUT_DELAY_MS) backToMenu();
     },
-    stage === "entry" || stage === "finished" || showPause
+    stage === "menu" || stage === "entry" || stage === "finished" || showPause
   );
 
-  // Physical keyboard on the name screen: Enter starts
+  // Physical keyboard: Enter goes on (menu, start, result), Esc goes back from the name screen
   useEffect(() => {
-    if (stage !== "entry" && stage !== "finished") return;
+    if (stage !== "menu" && stage !== "entry" && stage !== "finished") return;
     const onKey = (e: KeyboardEvent) => {
-      if (askPin || e.key !== "Enter") return;
-      if (stageRef.current === "entry") startRun();
-      else if (Date.now() - resultShownAt > RESULT_INPUT_DELAY_MS) nextPlayer();
+      if (askPin) return;
+      const s = stageRef.current;
+      if (e.key === "Escape" && s === "entry") backToMenu();
+      if (e.key !== "Enter") return;
+      if (s === "menu") goToEntry();
+      else if (s === "entry") startRun();
+      else if (Date.now() - resultShownAt > RESULT_INPUT_DELAY_MS) backToMenu();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [stage, startRun, nextPlayer, askPin, resultShownAt]);
+  }, [stage, startRun, goToEntry, backToMenu, askPin, resultShownAt]);
 
   // ---- Staff: five taps in the top-left corner, or Ctrl+Shift+K, then the PIN
   const staffTap = useStaffGesture(() => setAskPin(true));
@@ -336,12 +430,29 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
   const run = runRef.current;
   const c = run?.config ?? config;
   const rules = rulesText(c);
+  const carLabel = KIOSK_CARS.find((x) => x.id === config.carId)?.label ?? config.carId;
+  const trackLabel = KIOSK_TRACKS.find((t) => t.id === activeTrackId)?.label ?? activeTrackId;
+  const statusPills = (
+    <div className="flex flex-col items-start gap-1">
+      {activeTrackId !== config.trackId ? (
+        <span className="rounded-full border border-[#FFB300]/50 px-3 py-1 font-f1-mono text-[11px] text-[#FFB300]">
+          {KIOSK_TRACKS.find((t) => t.id === config.trackId)?.label ?? config.trackId} non caricato · in uso {trackLabel}
+        </span>
+      ) : null}
+      {configSource !== "server" ? (
+        <span className="rounded-full border border-[#FFB300]/50 px-3 py-1 font-f1-mono text-[11px] text-[#FFB300]">
+          server del kiosk non raggiungibile · config {configSource === "cache" ? "in cache" : "predefinita"} · classifica non disponibile
+        </span>
+      ) : null}
+    </div>
+  );
   const liveScore = run ? scoreSession(run.laps, { limitMode: c.limitMode, limitLaps: c.laps, invalidLaps: c.invalidLaps, penaltyS: c.penaltyS }) : null;
   const remainingMs = run && c.limitMode === "time" ? c.minutes * 60_000 - run.drivenMs : null;
   const capLeftMs = run && c.limitMode === "laps" && c.maxMinutes > 0 ? c.maxMinutes * 60_000 - run.drivenMs : null;
 
   return (
-    <>
+    // display: contents: no box of its own, only the kiosk's focus colours for everything inside (globals.css)
+    <div className="kiosk-ui contents">
       {/* The staff's corner */}
       <button
         type="button"
@@ -361,22 +472,49 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
         />
       ) : null}
 
-      {stage === "boot" ? (
-        <div className="pointer-events-none fixed bottom-6 left-1/2 z-[70] -translate-x-1/2 rounded-full bg-black/70 px-5 py-2 font-f1-italic text-sm font-bold uppercase tracking-[0.2em] text-white/80">
-          Preparazione del circuito…
+      {stage === "boot" ? <KioskBootScreen /> : null}
+
+      {stage === "menu" ? (
+        <div className="fixed inset-0 z-[70] flex flex-col overflow-y-auto bg-gradient-to-r from-black/90 via-black/70 to-black/25 px-[max(1.25rem,env(safe-area-inset-left))] py-6 text-white">
+          <BrandHeader />
+          <div className="mt-4 flex flex-1 flex-col gap-6 lg:flex-row lg:items-center 2xl:gap-10">
+            <section className="flex w-full max-w-4xl flex-col gap-4 2xl:gap-6">
+              <h1 className="font-f1-display text-4xl font-black uppercase leading-tight tracking-[0.06em] lg:text-5xl 2xl:text-7xl">{EVENT_BRAND.challenge}</h1>
+              <p className="font-f1-display text-2xl font-black uppercase tracking-[0.12em] text-[#FF3B30] 2xl:text-3xl">
+                {carLabel} · {trackLabel}
+              </p>
+              <div>
+                <p className="font-f1-italic text-2xl font-bold">{rules.headline}</p>
+                <p className="mt-1 max-w-2xl font-f1-italic text-base text-white/70">{rules.detail}</p>
+              </div>
+              <KioskButton big autoFocus onClick={goToEntry} disabled={!api.ready} className="mt-1 self-start !px-16 !py-5 !text-5xl 2xl:!px-20 2xl:!py-7 2xl:!text-6xl">
+                Gioca
+              </KioskButton>
+              <p className="font-f1-italic text-base text-white/60">Tocca GIOCA o premi un pulsante del controller</p>
+            </section>
+            <aside className="w-full max-w-xl rounded-2xl border border-white/10 bg-black/55 p-5 backdrop-blur-sm">
+              <LeaderboardTable board={board} limit={10} emptyText={boardError ? "Classifica non disponibile" : undefined} />
+            </aside>
+          </div>
+          <div className="mt-4 flex items-end justify-between gap-4">
+            {statusPills}
+            <button
+              type="button"
+              onClick={() => setAskPin(true)}
+              className="inline-flex shrink-0 items-center gap-2 rounded-full border border-white/15 px-4 py-2 font-f1-italic text-sm font-bold uppercase tracking-[0.2em] text-white/55 hover:bg-white/10"
+            >
+              <Settings className="h-4 w-4" aria-hidden /> Impostazioni
+            </button>
+          </div>
         </div>
       ) : null}
 
       {stage === "entry" ? (
-        <div className="fixed inset-0 z-[70] flex flex-col overflow-y-auto bg-gradient-to-r from-black/90 via-black/75 to-black/40 px-[max(1.25rem,env(safe-area-inset-left))] py-6 text-white">
-          <BrandHeader />
+        <div className="fixed inset-0 z-[70] flex flex-col overflow-y-auto bg-black/85 px-[max(1.25rem,env(safe-area-inset-left))] py-6 text-white backdrop-blur-sm">
+          <BrandHeader compact />
           <div className="mt-6 flex flex-1 flex-col gap-8 lg:flex-row lg:items-start">
             <section className="flex w-full max-w-3xl flex-col gap-5">
-              <div>
-                <h1 className="font-f1-display text-4xl font-black uppercase leading-tight tracking-[0.06em] sm:text-5xl">{EVENT_BRAND.challenge}</h1>
-                <p className="mt-2 font-f1-italic text-2xl font-bold text-[#FF3B30]">{rules.headline}</p>
-                <p className="mt-1 max-w-2xl font-f1-italic text-base text-white/70">{rules.detail}</p>
-              </div>
+              <h2 className="font-f1-display text-4xl font-black uppercase tracking-[0.06em] sm:text-5xl">Chi guida?</h2>
               {/* Not wrapped in its label: the game rings a label round a focused input (globals.css), in its own lime */}
               <div className="flex flex-col gap-2">
                 <label htmlFor="kiosk-player-name" className="font-f1-italic text-sm font-bold uppercase tracking-[0.25em] text-white/60">
@@ -405,41 +543,50 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
                 }}
                 onBackspace={() => setName((n) => n.slice(0, -1))}
               />
-              <div className="flex flex-wrap items-center gap-4">
-                <KioskButton big onClick={startRun} disabled={!nameOk || !api.ready}>
-                  Gioca
-                </KioskButton>
-                <p className="max-w-md font-f1-italic text-sm text-white/60">
-                  Acceleratore per partire · pulsante pausa o Esc per fermarti. Il nome comparirà nella classifica pubblica dell&apos;evento.
-                </p>
-              </div>
             </section>
-            <aside className="w-full max-w-xl rounded-2xl border border-white/10 bg-black/55 p-5 backdrop-blur-sm">
-              <LeaderboardTable board={board} limit={10} emptyText={boardError ? "Classifica non disponibile" : undefined} />
-            </aside>
+            <section className="flex w-full max-w-xl flex-col gap-4">
+              <h3 className="font-f1-italic text-sm font-bold uppercase tracking-[0.25em] text-white/60">Difficoltà</h3>
+              <div className="flex flex-col gap-2" role="radiogroup" aria-label="Difficoltà">
+                {KIOSK_DIFFICULTIES.map((d) => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={difficulty === d.id}
+                    onClick={() => onDifficulty(d.id)}
+                    className={`flex flex-col items-start rounded-xl border-2 px-5 py-3 text-left transition-colors ${difficulty === d.id ? "border-[#C7000B] bg-[#C7000B] text-white" : "border-white/15 bg-white/5 text-white/80 hover:bg-white/10"}`}
+                  >
+                    <span className="font-f1-display text-2xl font-black uppercase tracking-[0.1em]">{d.label}</span>
+                    <span className={`font-f1-italic text-sm ${difficulty === d.id ? "text-white/85" : "text-white/55"}`}>{d.hint}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="font-f1-italic text-base font-bold text-white/80">
+                {carLabel} · {trackLabel} · {rules.headline}
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                <KioskButton big onClick={startRun} disabled={!nameOk || !api.ready}>
+                  Via!
+                </KioskButton>
+                <KioskButton tone="ghost" onClick={backToMenu}>
+                  Indietro
+                </KioskButton>
+              </div>
+              <p className="max-w-md font-f1-italic text-sm text-white/60">
+                Controller: frecce per la difficoltà · A per partire · B per tornare al menu. In gara: RT accelera, LT frena, pulsante
+                pausa per fermarti. Il nome comparirà nella classifica pubblica dell&apos;evento.
+              </p>
+            </section>
           </div>
-          <div className="mt-6 flex items-end justify-between gap-4">
-            <KioskCredits className="max-w-4xl" />
-            <div className="flex shrink-0 flex-col items-end gap-1">
-              {activeTrackId !== config.trackId ? (
-                <span className="rounded-full border border-[#FFB300]/50 px-3 py-1 font-f1-mono text-[11px] text-[#FFB300]">
-                  {KIOSK_TRACKS.find((t) => t.id === config.trackId)?.label ?? config.trackId} non caricato · in uso{" "}
-                  {KIOSK_TRACKS.find((t) => t.id === activeTrackId)?.label ?? activeTrackId}
-                </span>
-              ) : null}
-              {configSource !== "server" ? (
-                <span className="rounded-full border border-[#FFB300]/50 px-3 py-1 font-f1-mono text-[11px] text-[#FFB300]">
-                  server offline · config {configSource === "cache" ? "in cache" : "predefinita"}
-                </span>
-              ) : null}
-            </div>
-          </div>
+          <div className="mt-6">{statusPills}</div>
         </div>
       ) : null}
 
       {stage === "countdown" && countdown !== null ? (
         <div className="pointer-events-none fixed inset-0 z-[70] flex flex-col items-center justify-center bg-black/30 text-white">
-          <p className="mb-4 font-f1-italic text-2xl font-bold uppercase tracking-[0.3em] text-white/80">{run?.name}</p>
+          <p className="mb-4 font-f1-italic text-2xl font-bold uppercase tracking-[0.3em] text-white/80">
+            {run?.name} · {difficultyLabel(run?.difficulty)}
+          </p>
           <div key={countdown} className="font-f1-display text-[12rem] font-black leading-none text-white drop-shadow-[0_8px_40px_rgba(199,0,11,0.9)]">
             {countdown > 0 ? countdown : "VIA!"}
           </div>
@@ -532,6 +679,9 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
             <section className="flex w-full max-w-2xl flex-col gap-4">
               <p className="font-f1-italic text-lg font-bold uppercase tracking-[0.3em] text-[#FF3B30]">{END_TITLES[outcome.reason]}</p>
               <h2 className="font-f1-display text-5xl font-black uppercase tracking-[0.05em]">{outcome.input.name}</h2>
+              <p className="-mt-2 font-f1-italic text-lg font-bold uppercase tracking-[0.2em] text-white/60">
+                {carLabel} · {KIOSK_TRACKS.find((t) => t.id === outcome.input.trackId)?.label ?? outcome.input.trackId} · {difficultyLabel(outcome.input.difficulty)}
+              </p>
               <div className="grid grid-cols-2 gap-3">
                 <Stat label="Miglior giro" value={formatLapTime(outcome.score.bestLapMs)} note={outcome.score.bestLapPenalised ? `con penalità +${outcome.input.penaltyS} s` : undefined} />
                 {outcome.input.limitMode === "laps" ? (
@@ -557,8 +707,8 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
                 )}
               </div>
               <div className="flex flex-wrap items-center gap-4">
-                <KioskButton big onClick={nextPlayer}>
-                  Prossimo giocatore
+                <KioskButton big onClick={backToMenu}>
+                  Menu
                 </KioskButton>
                 <span className="font-f1-mono text-lg text-white/60">tra {holdLeft} s</span>
               </div>
@@ -575,7 +725,61 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
           </div>
         </div>
       ) : null}
-    </>
+    </div>
+  );
+};
+
+/** While the circuit and the car load: the event's screen with the progress (the game's own loading screen is not shown) */
+const KioskBootScreen: React.FC = () => {
+  const progress = useAssetProgress();
+  const [startedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const elapsed = now - startedAt;
+  const failed = progress.settled && progress.anyFailed;
+  // A download with no data for a while (not the shaders: they report nothing until done, and take long on a weak GPU)
+  const downloading = progress.tasks.filter((t) => t.status === "loading" && t.id !== "shaders");
+  const lastData = downloading.length ? Math.max(...downloading.map((t) => t.lastProgressMs)) : null;
+  const stalled = lastData !== null && lastData > 0 && performance.now() - lastData > BOOT_STALL_MS;
+  // A failed or stuck load starts again by itself: nobody may be there to press anything
+  useEffect(() => {
+    if (!failed && !stalled) return;
+    const id = window.setTimeout(() => window.location.reload(), 15_000);
+    return () => window.clearTimeout(id);
+  }, [failed, stalled]);
+  const pct = Math.round(Math.min(1, Math.max(0, progress.progress)) * 100);
+  return (
+    <div className="kiosk-ui fixed inset-0 z-[72] flex flex-col items-center justify-center gap-8 bg-[radial-gradient(ellipse_at_top_left,#3a0306_0%,#08090D_60%)] px-6 text-white">
+      <BrandHeader />
+      <h1 className="text-center font-f1-display text-4xl font-black uppercase tracking-[0.08em] sm:text-6xl">{EVENT_BRAND.challenge}</h1>
+      <div className="w-[min(90vw,36rem)]">
+        <div className="h-3 overflow-hidden rounded-full bg-white/10">
+          <div className="h-full rounded-full bg-[#C7000B]" style={{ width: `${failed || stalled ? 100 : pct}%` }} />
+        </div>
+        <p className="mt-3 text-center font-f1-italic text-lg font-bold uppercase tracking-[0.25em] text-white/70">
+          {failed || stalled
+            ? "Caricamento non riuscito · nuovo tentativo tra poco"
+            : progress.settled
+              ? "Preparazione della pista…"
+              : `Caricamento ${pct}%`}
+        </p>
+      </div>
+      {failed || stalled || elapsed > BOOT_SLOW_MS ? (
+        <div className="flex flex-col items-center gap-3">
+          {!failed && !stalled ? (
+            <p className="max-w-xl text-center font-f1-italic text-sm text-white/60">
+              Il caricamento sta richiedendo molto tempo. Se succede sempre, abbassa la qualità grafica nelle impostazioni del kiosk.
+            </p>
+          ) : null}
+          <KioskButton tone="ghost" onClick={() => window.location.reload()}>
+            Riprova
+          </KioskButton>
+        </div>
+      ) : null}
+    </div>
   );
 };
 

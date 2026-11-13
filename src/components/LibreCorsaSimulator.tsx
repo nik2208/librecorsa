@@ -1798,7 +1798,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
           the controls setup opened from it), never mid-lap */}
       <FfbPairPrompt wanted={hidFfbWanted && settings.wheel.steer !== null && (phase === "title" || (phase === "driving" && paused))} />
 
-      {loadingVisible ? (
+      {/* Kiosk mode draws its own loading screen, in the event's colours (KioskOverlay) */}
+      {loadingVisible && !kioskOn ? (
         <LoadingScreen track={track} ready={assetsReady} onStart={handleLoadingStart} onDone={handleLoadingDone} />
       ) : null}
 

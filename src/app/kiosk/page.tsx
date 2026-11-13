@@ -1,12 +1,15 @@
 import type { Metadata } from "next";
-import { KioskLauncher } from "@/components/kiosk/KioskLauncher";
+import { KioskPlay } from "@/components/kiosk/KioskPlay";
 
 export const metadata: Metadata = {
-  title: "Kiosk",
   robots: { index: false, follow: false },
 };
 
-/** Event branch: the kiosk opens here (kiosk/server.mjs sends "/" here) and picks the game or the admin page */
+/** Event branch: the kiosk, as on the home page (older links and bookmarks) */
 export default function KioskPage() {
-  return <KioskLauncher />;
+  return (
+    <main className="h-screen w-screen overflow-hidden bg-[#07070c]">
+      <KioskPlay />
+    </main>
+  );
 }

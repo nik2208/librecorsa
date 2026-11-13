@@ -61,8 +61,11 @@ UI-RESEARCH-*.md
 !/public/tracks/rwanda_official/
 !/public/tracks/rwanda_official_short/
 !/public/tracks/index.json
+# Event branch: Monza and the Ferrari SF-26 are part of the kiosk (the fork's owner asked for them in the repository)
+!/public/tracks/monza/
 /public/cars/*
 !/public/cars/f12026/
+!/public/cars/sf26/
 /public/gt3/
 
 # F1 2026 local reference datasets & headless Blender audit outputs

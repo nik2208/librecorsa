@@ -13,24 +13,26 @@ export type KioskLimitMode = "laps" | "time";
 export type KioskInvalidLapRule = "penalty" | "exclude";
 
 /**
- * The circuits a kiosk can run: the ones the repository carries, plus Monza when a build lists it
- * (NEXT_PUBLIC_EXTRA_CONTENT, src/lib/hosted-content.ts; its files are restored by scripts/kiosk/restore-extra-content.mjs)
+ * The circuits a kiosk can run: Monza (the event's circuit, committed on this branch) and RISE Motordrome's two
+ * layouts. A build can leave Monza out (NEXT_PUBLIC_EXTRA_CONTENT, src/lib/hosted-content.ts)
  */
 export const KIOSK_TRACKS = [
-  { id: "rwanda_official_short", label: "Circuito corto", extra: false },
-  { id: "rwanda_official", label: "Circuito Grand Prix", extra: false },
   { id: "monza", label: "Monza", extra: true },
+  { id: "rwanda_official_short", label: "RISE corto", extra: false },
+  { id: "rwanda_official", label: "RISE Grand Prix", extra: false },
 ] as const;
 export type KioskTrackId = (typeof KIOSK_TRACKS)[number]["id"];
 
-/** The 2026 Prototype (CC BY body by Qvist Designs), in the event livery: the default car */
+/** The 2026 Prototype (CC BY body by Qvist Designs), in the event livery: the car of a build without the extras */
 export const KIOSK_CAR_ID = "vf26";
 export const KIOSK_LIVERY_ID = "huawei_mgw";
+/** RISE Motordrome's short layout: the circuit of a build without the extras */
+export const KIOSK_FALLBACK_TRACK_ID = "rwanda_official_short";
 
-/** The cars a kiosk can run: the event car, plus the Ferrari SF-26 when a build lists it (as Monza above) */
+/** The cars a kiosk can run: the Ferrari SF-26 (the event's car), and the 2026 Prototype in the event livery */
 export const KIOSK_CARS = [
-  { id: "vf26", label: "Monoposto 2026 Huawei", extra: false },
   { id: "sf26", label: "Ferrari SF-26", extra: true },
+  { id: "vf26", label: "Monoposto 2026 Huawei", extra: false },
 ] as const;
 export type KioskCarId = (typeof KIOSK_CARS)[number]["id"];
 
@@ -38,14 +40,32 @@ export type KioskCarId = (typeof KIOSK_CARS)[number]["id"];
 export const listedKioskTracks = () => KIOSK_TRACKS.filter((t) => trackListed(t.id));
 export const listedKioskCars = () => KIOSK_CARS.filter((c) => carListed(c.id));
 
-/** The config's circuit and car when this build has them, else the defaults (a build without the extras) */
-export const runnableTrackId = (id: KioskTrackId): KioskTrackId => (trackListed(id) ? id : DEFAULT_KIOSK_CONFIG.trackId);
+/** The config's circuit and car when this build has them, else the ones every build has */
+export const runnableTrackId = (id: KioskTrackId): KioskTrackId => (trackListed(id) ? id : KIOSK_FALLBACK_TRACK_ID);
 export const runnableCarId = (id: KioskCarId): KioskCarId => (carListed(id) ? id : KIOSK_CAR_ID);
 
-export const KIOSK_DIFFICULTIES: readonly { id: AssistPreset; label: string; hint: string }[] = [
-  { id: "assisted", label: "Facile", hint: "Tutti gli aiuti attivi" },
-  { id: "semi_pro", label: "Media", hint: "Aiuti ridotti" },
-  { id: "pro", label: "Difficile", hint: "Nessun aiuto" },
+/** The levels a player picks before the start (the admin's choice is the one picked at first) */
+export const KIOSK_DIFFICULTIES: readonly { id: AssistPreset; label: string; short: string; hint: string }[] = [
+  { id: "assisted", label: "Facile", short: "F", hint: "Tutti gli aiuti: frenata, trazione, cambio automatico" },
+  { id: "semi_pro", label: "Medio", short: "M", hint: "Aiuti ridotti, cambio automatico" },
+  { id: "pro", label: "Difficile", short: "D", hint: "Nessun aiuto" },
+];
+export const difficultyLabel = (id: string | null | undefined): string | null => KIOSK_DIFFICULTIES.find((d) => d.id === id)?.label ?? null;
+
+/** What the visitors drive with: set once by the staff (the kiosk ignores what the full game saved) */
+export type KioskInputDevice = "controller" | "wheel" | "keyboard";
+export const KIOSK_DEVICES: readonly { id: KioskInputDevice; label: string; hint: string }[] = [
+  { id: "controller", label: "Controller USB", hint: "Gamepad standard (Xbox, PlayStation…): RT accelera, LT frena, levetta sinistra sterza" },
+  { id: "wheel", label: "Volante", hint: "Volante e pedaliera: vanno abbinati una volta in «Configura volante»" },
+  { id: "keyboard", label: "Tastiera", hint: "Frecce per guidare (per le prove)" },
+];
+
+/** Graphics quality on the kiosk: lower on a PC without a strong graphics card (high can stall the loading there) */
+export type KioskGraphics = "low" | "medium" | "high";
+export const KIOSK_GRAPHICS: readonly { id: KioskGraphics; label: string }[] = [
+  { id: "low", label: "Bassa" },
+  { id: "medium", label: "Media" },
+  { id: "high", label: "Alta" },
 ];
 
 /** The admin's settings for every session on the kiosk */
@@ -59,7 +79,11 @@ export interface KioskConfig {
   maxMinutes: number;
   trackId: KioskTrackId;
   carId: KioskCarId;
+  /** The level picked at first on the start screen (each player can change it) */
   difficulty: AssistPreset;
+  /** What the visitors drive with */
+  device: KioskInputDevice;
+  graphics: KioskGraphics;
   /** Laps outside the track limits: timed with a penalty, or not counted for the ranking */
   invalidLaps: KioskInvalidLapRule;
   /** Seconds added to a lap that left the track limits ("penalty") */
@@ -79,9 +103,11 @@ export const DEFAULT_KIOSK_CONFIG: KioskConfig = {
   laps: 3,
   minutes: 5,
   maxMinutes: 10,
-  trackId: "rwanda_official_short",
-  carId: KIOSK_CAR_ID,
+  trackId: "monza",
+  carId: "sf26",
   difficulty: "assisted",
+  device: "controller",
+  graphics: "medium",
   invalidLaps: "penalty",
   penaltyS: 5,
   racingLine: true,
@@ -103,6 +129,8 @@ export function sanitizeKioskConfig(raw: unknown): KioskConfig {
   const trackId = KIOSK_TRACKS.some((t) => t.id === r.trackId) ? (r.trackId as KioskTrackId) : d.trackId;
   const carId = KIOSK_CARS.some((c) => c.id === r.carId) ? (r.carId as KioskCarId) : d.carId;
   const difficulty = KIOSK_DIFFICULTIES.some((x) => x.id === r.difficulty) ? (r.difficulty as AssistPreset) : d.difficulty;
+  const device = KIOSK_DEVICES.some((x) => x.id === r.device) ? (r.device as KioskInputDevice) : d.device;
+  const graphics = KIOSK_GRAPHICS.some((x) => x.id === r.graphics) ? (r.graphics as KioskGraphics) : d.graphics;
   return {
     limitMode: r.limitMode === "laps" || r.limitMode === "time" ? r.limitMode : d.limitMode,
     laps: num(r.laps, 1, 20, d.laps),
@@ -111,6 +139,8 @@ export function sanitizeKioskConfig(raw: unknown): KioskConfig {
     trackId,
     carId,
     difficulty,
+    device,
+    graphics,
     invalidLaps: r.invalidLaps === "exclude" || r.invalidLaps === "penalty" ? r.invalidLaps : d.invalidLaps,
     penaltyS: num(r.penaltyS, 0, 60, d.penaltyS, 0.5),
     racingLine: typeof r.racingLine === "boolean" ? r.racingLine : d.racingLine,
@@ -133,6 +163,8 @@ export interface KioskResultInput {
   name: string;
   trackId: string;
   carId: string;
+  /** The level the player picked */
+  difficulty?: AssistPreset;
   limitMode: KioskLimitMode;
   /** The limit the session ran to (the config at its start) */
   limitLaps: number;
@@ -166,6 +198,8 @@ export interface KioskLeaderboardRow {
   rank: number;
   id: string;
   name: string;
+  /** The level the player picked (null for results from before the choice existed) */
+  difficulty: AssistPreset | null;
   bestLapMs: number | null;
   bestLapPenalised: boolean;
   totalTimeMs: number | null;

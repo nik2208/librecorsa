@@ -4,11 +4,12 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { BrandHeader, KioskButton, PinDialog } from "@/components/kiosk/kiosk-ui";
+import { BrandHeader, KioskButton, KioskCredits, PinDialog } from "@/components/kiosk/kiosk-ui";
 import {
   checkPin,
   deleteResult,
   downloadResultsCsv,
+  fetchNetworkInfo,
   kioskApiUrl,
   listResults,
   loadKioskConfig,
@@ -16,14 +17,18 @@ import {
   resetResults,
   saveKioskConfig,
   storedPin,
+  type KioskNetworkInfo,
 } from "@/lib/kiosk/kiosk-api";
 import { formatClock, formatLapTime } from "@/lib/kiosk/kiosk-score";
 import { withBasePath } from "@/lib/base-path";
 import {
   DEFAULT_KIOSK_CONFIG,
   KIOSK_CARS,
+  KIOSK_DEVICES,
   KIOSK_DIFFICULTIES,
+  KIOSK_GRAPHICS,
   KIOSK_TRACKS,
+  difficultyLabel,
   listedKioskCars,
   listedKioskTracks,
   runnableCarId,
@@ -69,6 +74,8 @@ export const KioskAdmin: React.FC = () => {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [network, setNetwork] = useState<KioskNetworkInfo | null>(null);
+  const [networkError, setNetworkError] = useState(false);
 
   // A PIN remembered from earlier in this tab is checked again (the server may have restarted with another)
   useEffect(() => {
@@ -100,6 +107,16 @@ export const KioskAdmin: React.FC = () => {
   useEffect(() => {
     if (pin) void reload(pin);
   }, [pin, reload]);
+  // Where the leaderboard is reached from other screens and phones on the local network
+  useEffect(() => {
+    if (!pin) return;
+    void fetchNetworkInfo()
+      .then((info) => {
+        setNetwork(info);
+        setNetworkError(false);
+      })
+      .catch(() => setNetworkError(true));
+  }, [pin]);
 
   const update = <K extends keyof KioskConfig>(key: K, value: KioskConfig[K]) => setConfig((c) => ({ ...c, [key]: value }));
   const dirty = saved !== null && JSON.stringify(sanitizeKioskConfig(config)) !== JSON.stringify(sanitizeKioskConfig(saved));
@@ -148,10 +165,10 @@ export const KioskAdmin: React.FC = () => {
 
   if (!pin) {
     return (
-      <main className="min-h-dvh bg-[#08090D] px-6 py-8 text-white">
+      <main className="kiosk-ui min-h-dvh bg-[#08090D] px-6 py-8 text-white">
         <BrandHeader compact />
         {checking ? null : (
-          <PinDialog onSuccess={(p) => setPin(p)} onCancel={() => window.location.assign(withBasePath("/kiosk"))} />
+          <PinDialog onSuccess={(p) => setPin(p)} onCancel={() => window.location.assign(withBasePath("/"))} />
         )}
         {notice ? <p className="mt-6 font-f1-italic text-[#FF6B60]">{notice.text}</p> : null}
       </main>
@@ -159,23 +176,26 @@ export const KioskAdmin: React.FC = () => {
   }
 
   const leaderboardUrl = typeof window !== "undefined" ? new URL(kioskApiUrl("/leaderboard"), window.location.href).toString() : kioskApiUrl("/leaderboard");
+  // The LAN's addresses first; the virtual ones (Docker, VPN…) only when there is nothing else
+  const lanUrls = network ? (network.urls.some((u) => !u.virtual) ? network.urls.filter((u) => !u.virtual) : network.urls) : [];
 
   return (
-    <main className="min-h-dvh bg-[#08090D] px-[max(1.25rem,env(safe-area-inset-left))] py-6 text-white">
+    <main className="kiosk-ui min-h-dvh bg-[#08090D] px-[max(1.25rem,env(safe-area-inset-left))] py-6 text-white">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <BrandHeader compact />
         <div className="flex flex-wrap gap-2">
-          <Link href="/kiosk/play" className="rounded-lg bg-[#C7000B] px-4 py-2 font-f1-display text-sm font-bold uppercase tracking-[0.1em]">
-            Avvia gioco
-          </Link>
-          <Link href="/kiosk" className="rounded-lg border border-white/20 px-4 py-2 font-f1-display text-sm font-bold uppercase tracking-[0.1em] text-white/80">
-            Selezione
-          </Link>
+          <button
+            type="button"
+            onClick={() => window.location.assign(withBasePath("/"))}
+            className="rounded-lg bg-[#C7000B] px-4 py-2 font-f1-display text-sm font-bold uppercase tracking-[0.1em]"
+          >
+            Torna al gioco
+          </button>
           <button
             type="button"
             onClick={() => {
               rememberPin(null);
-              window.location.assign(withBasePath("/kiosk"));
+              window.location.assign(withBasePath("/"));
             }}
             className="rounded-lg border border-white/20 px-4 py-2 font-f1-display text-sm font-bold uppercase tracking-[0.1em] text-white/60"
           >
@@ -183,7 +203,7 @@ export const KioskAdmin: React.FC = () => {
           </button>
         </div>
       </div>
-      <h1 className="mt-6 font-f1-display text-3xl font-black uppercase tracking-[0.08em]">Admin · Configurazione kiosk</h1>
+      <h1 className="mt-6 font-f1-display text-3xl font-black uppercase tracking-[0.08em]">Impostazioni del kiosk</h1>
       {notice ? (
         <p className={`mt-3 rounded-lg px-4 py-2 font-f1-italic font-bold ${notice.tone === "ok" ? "bg-[#14532D]/60 text-[#86EFAC]" : "bg-[#7F1D1D]/60 text-[#FCA5A5]"}`}>{notice.text}</p>
       ) : null}
@@ -219,10 +239,8 @@ export const KioskAdmin: React.FC = () => {
             label="Circuito"
             hint={
               runnableTrackId(config.trackId) !== config.trackId
-                ? `${KIOSK_TRACKS.find((t) => t.id === config.trackId)?.label} non è in questa build: il kiosk usa il circuito corto`
-                : config.trackId === "monza"
-                  ? "Contenuto extra non licenziato: leggi kiosk/README.md prima di usarlo all'evento"
-                  : undefined
+                ? `${KIOSK_TRACKS.find((t) => t.id === config.trackId)?.label} non è in questa build: il kiosk usa RISE corto`
+                : "Classifica separata per circuito."
             }
           >
             <Segmented value={config.trackId} options={listedKioskTracks()} onChange={(v) => update("trackId", v)} />
@@ -233,15 +251,13 @@ export const KioskAdmin: React.FC = () => {
               hint={
                 runnableCarId(config.carId) !== config.carId
                   ? `${KIOSK_CARS.find((c) => c.id === config.carId)?.label} non è in questa build: il kiosk usa la monoposto Huawei`
-                  : config.carId === "sf26"
-                    ? "Contenuto extra non licenziato: leggi kiosk/README.md prima di usarlo all'evento. Classifica separata per auto."
-                    : "Classifica separata per auto."
+                  : "Classifica separata per auto."
               }
             >
               <Segmented value={config.carId} options={listedKioskCars()} onChange={(v) => update("carId", v)} />
             </Field>
           ) : null}
-          <Field label="Difficoltà" hint={KIOSK_DIFFICULTIES.find((d) => d.id === config.difficulty)?.hint}>
+          <Field label="Difficoltà proposta" hint="Ogni giocatore sceglie Facile, Medio o Difficile prima di partire: questa è quella già selezionata.">
             <Segmented value={config.difficulty} options={KIOSK_DIFFICULTIES} onChange={(v) => update("difficulty", v)} />
           </Field>
           <details className="rounded-lg border border-white/10 px-4 py-3">
@@ -280,6 +296,24 @@ export const KioskAdmin: React.FC = () => {
               </Field>
             </div>
           </details>
+          <h2 className="mt-2 font-f1-display text-lg font-bold uppercase tracking-[0.12em]">Controlli e grafica</h2>
+          <Field label="Comandi dei giocatori" hint={KIOSK_DEVICES.find((d) => d.id === config.device)?.hint}>
+            <Segmented value={config.device} options={KIOSK_DEVICES} onChange={(v) => update("device", v)} />
+          </Field>
+          {config.device === "wheel" ? (
+            <div className="flex flex-col gap-2 rounded-lg border border-white/10 bg-black/30 p-4">
+              <p className="font-f1-italic text-sm text-white/70">
+                Il volante va abbinato una volta (sterzo, pedali, pulsanti) nel simulatore completo, su questo PC: il kiosk usa quella
+                configurazione. Poi torna qui con il pulsante «Impostazioni kiosk» in basso a sinistra.
+              </p>
+              <Link href="/play" className="self-start rounded-lg border border-white/20 px-4 py-2 font-f1-display text-sm font-bold uppercase tracking-[0.1em] hover:bg-white/10">
+                Configura volante
+              </Link>
+            </div>
+          ) : null}
+          <Field label="Qualità grafica" hint="Bassa o Media su un PC senza scheda video dedicata: la grafica Alta può bloccare il caricamento.">
+            <Segmented value={config.graphics} options={KIOSK_GRAPHICS} onChange={(v) => update("graphics", v)} />
+          </Field>
           <div className="flex flex-wrap items-center gap-3">
             <KioskButton onClick={() => void save()} disabled={busy || !dirty}>
               Salva
@@ -291,16 +325,6 @@ export const KioskAdmin: React.FC = () => {
             ) : (
               <span className="font-f1-italic text-sm text-white/50">{saved?.updatedAt ? `Salvata il ${new Date(saved.updatedAt).toLocaleString("it-IT")}` : "Valori predefiniti"}</span>
             )}
-          </div>
-
-          <div className="mt-2 flex flex-col gap-2 rounded-lg border border-white/10 bg-black/30 p-4">
-            <h3 className="font-f1-italic text-xs font-bold uppercase tracking-[0.2em] text-white/60">Controlli e grafica</h3>
-            <p className="font-f1-italic text-sm text-white/70">
-              Volante, pedaliera, controller, telecamera e qualità grafica si impostano una volta nel gioco completo: il kiosk usa quelle impostazioni (salvate in questo browser).
-            </p>
-            <Link href="/play" className="self-start rounded-lg border border-white/20 px-4 py-2 font-f1-display text-sm font-bold uppercase tracking-[0.1em] hover:bg-white/10">
-              Apri il gioco completo (impostazioni)
-            </Link>
           </div>
         </section>
 
@@ -340,6 +364,7 @@ export const KioskAdmin: React.FC = () => {
                   <th className="py-2 pr-3">Data</th>
                   <th className="py-2 pr-3">Nome</th>
                   <th className="py-2 pr-3">Sessione</th>
+                  <th className="py-2 pr-3">Difficoltà</th>
                   <th className="py-2 pr-3">Giri (validi)</th>
                   <th className="py-2 pr-3">Miglior giro</th>
                   <th className="py-2 pr-3">Totale</th>
@@ -353,8 +378,9 @@ export const KioskAdmin: React.FC = () => {
                     <td className="py-2 pr-3 font-bold uppercase">{r.name}</td>
                     <td className="py-2 pr-3 text-white/70">
                       {r.limitMode === "laps" ? `${r.limitLaps} giri` : `${r.limitMinutes} min`} · {KIOSK_TRACKS.find((t) => t.id === r.trackId)?.label ?? r.trackId}
-                      {r.carId && r.carId !== "vf26" ? ` · ${KIOSK_CARS.find((c) => c.id === r.carId)?.label ?? r.carId}` : ""}
+                      {` · ${KIOSK_CARS.find((c) => c.id === (r.carId ?? "vf26"))?.label ?? r.carId}`}
                     </td>
+                    <td className="py-2 pr-3 text-white/70">{difficultyLabel(r.difficulty) ?? "—"}</td>
                     <td className="py-2 pr-3 font-f1-mono">
                       {r.laps.length} ({r.validLaps})
                     </td>
@@ -378,11 +404,39 @@ export const KioskAdmin: React.FC = () => {
             </table>
             {results.length === 0 ? <p className="py-6 text-center font-f1-italic text-white/50">Ancora nessun risultato.</p> : null}
           </div>
-          <div className="rounded-lg border border-white/10 bg-black/30 p-4 font-f1-mono text-xs leading-relaxed text-white/70">
-            <p className="mb-1 font-f1-italic text-xs font-bold uppercase tracking-[0.2em] text-white/50">Endpoint classifica (JSON)</p>
-            <p className="break-all text-white">{leaderboardUrl}</p>
-            <p className="mt-1">?mode=best|total · &amp;track=rwanda_official_short · &amp;laps=3 · &amp;limit=20 · &amp;unique=0</p>
+          <div className="flex flex-col gap-3 rounded-lg border border-[#C7000B]/40 bg-[#C7000B]/10 p-4">
+            <p className="font-f1-italic text-xs font-bold uppercase tracking-[0.2em] text-white/70">Classifica in rete locale</p>
+            {lanUrls.length > 0 ? (
+              <ul className="flex flex-col gap-2">
+                {lanUrls.map((u) => (
+                  <li key={u.url} className="flex flex-col">
+                    <span className="break-all font-f1-mono text-2xl font-bold text-white">
+                      {u.url}
+                      {network?.paths.leaderboardPage}
+                    </span>
+                    <span className="font-f1-mono text-xs text-white/60">
+                      JSON: {u.url}
+                      {network?.paths.leaderboardApi} · rete {u.iface}
+                      {u.virtual ? " (virtuale)" : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="font-f1-italic text-sm text-white/70">
+                {networkError
+                  ? "Server del kiosk non raggiungibile: avvialo con npm start sul PC del kiosk."
+                  : network
+                    ? "Nessun indirizzo di rete locale trovato: collega il PC alla rete (o imposta KIOSK_PUBLIC_URL)."
+                    : "…"}
+              </p>
+            )}
+            <p className="font-f1-italic text-xs text-white/55">
+              Aprila da un altro schermo o da un telefono collegato alla stessa rete. Indirizzo usato da questo browser: {leaderboardUrl}
+            </p>
+            <p className="font-f1-mono text-[11px] text-white/45">JSON: ?mode=best|total · &amp;track=monza · &amp;car=sf26 · &amp;laps=3 · &amp;limit=20 · &amp;unique=0</p>
           </div>
+          <KioskCredits className="mt-2" />
         </section>
       </div>
     </main>

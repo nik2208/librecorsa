@@ -7,7 +7,7 @@ import { withBasePath } from "@/lib/base-path";
 import { BRAND_FILES, EVENT_BRAND } from "@/lib/kiosk/event-brand";
 import { checkPin, rememberPin } from "@/lib/kiosk/kiosk-api";
 import { formatLapTime } from "@/lib/kiosk/kiosk-score";
-import type { KioskLeaderboard } from "@/lib/kiosk/kiosk-types";
+import { KIOSK_DIFFICULTIES, type KioskLeaderboard } from "@/lib/kiosk/kiosk-types";
 
 export const RED = EVENT_BRAND.red;
 
@@ -107,6 +107,14 @@ export const LeaderboardTable: React.FC<{
               >
                 <span className={`w-12 shrink-0 text-center font-f1-mono font-bold ${r.rank === 1 && !mine ? "text-[#FFD34D]" : ""}`}>{r.rank}</span>
                 <span className="min-w-0 flex-1 truncate font-f1-italic font-bold uppercase">{r.name}</span>
+                {r.difficulty ? (
+                  <span
+                    title={KIOSK_DIFFICULTIES.find((d) => d.id === r.difficulty)?.label}
+                    className={`shrink-0 rounded px-1.5 font-f1-mono text-[0.6em] font-bold leading-relaxed ${mine ? "bg-white/25 text-white" : "bg-white/10 text-white/70"}`}
+                  >
+                    {KIOSK_DIFFICULTIES.find((d) => d.id === r.difficulty)?.short}
+                  </span>
+                ) : null}
                 <span className="shrink-0 font-f1-mono font-bold tabular-nums">
                   {formatLapTime(time)}
                   {board?.mode === "best" && r.bestLapPenalised ? <span className="ml-1 text-[0.6em] opacity-70">*</span> : null}
@@ -118,6 +126,11 @@ export const LeaderboardTable: React.FC<{
       )}
       {board && rows.some((r) => r.bestLapPenalised) && board.mode === "best" ? (
         <p className="mt-2 font-f1-italic text-xs text-white/50">* giro fuori dai limiti della pista, con penalità</p>
+      ) : null}
+      {rows.some((r) => r.difficulty) ? (
+        <p className={`mt-1 font-f1-italic text-white/50 ${large ? "text-base" : "text-xs"}`}>
+          Difficoltà: {KIOSK_DIFFICULTIES.map((d) => `${d.short} ${d.label.toLowerCase()}`).join(" · ")}
+        </p>
       ) : null}
     </div>
   );
@@ -276,10 +289,11 @@ export function useStaffGesture(onTrigger: () => void, enabled = true): () => vo
   }, []);
 }
 
-/** Credits the licences ask for, in small print */
+/** Credits and provenance, for the staff (the admin page): the visitors' screens carry the event's brand only */
 export const KioskCredits: React.FC<{ className?: string }> = ({ className = "" }) => (
-  <p className={`font-f1-italic text-[11px] leading-snug text-white/40 ${className}`}>
-    LibreCorsa (MIT) · Circuito: RISE Motordrome di Alp Yalay (LibreCorsa, librecorsa.org), CC BY-NC-SA 4.0, con grafiche dell&apos;evento ·
-    Monoposto: F1 2026 concept di Qvist Designs, CC BY 4.0 · Evento non affiliato a Formula 1 o FIA.
+  <p className={`font-f1-italic text-xs leading-snug text-white/50 ${className}`}>
+    Motore di gioco: LibreCorsa di KhazP (MIT, github.com/KhazP/librecorsa) · Monza e Ferrari SF-26: modelli recuperati dalla
+    storia del progetto LibreCorsa, senza licenza (vedi kiosk/README.md) · RISE Motordrome di Alp Yalay, CC BY-NC-SA 4.0 ·
+    Monoposto 2026 di Qvist Designs, CC BY 4.0 · Evento non affiliato a Formula 1, FIA o Ferrari.
   </p>
 );

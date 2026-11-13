@@ -2,8 +2,11 @@ import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
 import { withBasePath } from "@/lib/base-path";
-import { FORWARD_TO_GAME } from "@/lib/home/forward-to-game";
-import { REPO_URL, SITE_DESCRIPTION, SITE_NAME, SITE_TITLE, SITE_URL } from "@/lib/site";
+import { EVENT_BRAND } from "@/lib/kiosk/event-brand";
+import { REPO_URL, SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
+
+// Event branch: the kiosk's own name in the browser's title bar (no LibreCorsa on the stand's screens)
+const EVENT_TITLE = `${EVENT_BRAND.challenge} · ${EVENT_BRAND.eventShort} ${EVENT_BRAND.year}`;
 
 /*
  * The UI fonts ship with the app (Latin subsets, as Google Fonts serves them; SIL OFL 1.1, licences in ./fonts).
@@ -47,9 +50,9 @@ const orbitron = localFont({
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
-  title: { default: SITE_TITLE, template: `%s | ${SITE_NAME}` },
+  title: { default: EVENT_TITLE, template: `%s · ${EVENT_BRAND.challenge}` },
   description: SITE_DESCRIPTION,
-  applicationName: SITE_NAME,
+  applicationName: EVENT_BRAND.challenge,
   keywords: [
     "sim racing",
     "racing simulator",
@@ -66,29 +69,23 @@ export const metadata: Metadata = {
   creator: "KhazP",
   category: "games",
   alternates: { canonical: "/" },
-  robots: {
-    index: true,
-    follow: true,
-    googleBot: { index: true, follow: true, "max-image-preview": "large", "max-snippet": -1, "max-video-preview": -1 },
-  },
+  // An event kiosk, not a public site
+  robots: { index: false, follow: false },
   openGraph: {
     type: "website",
     url: "/",
     siteName: SITE_NAME,
-    title: SITE_TITLE,
+    title: EVENT_TITLE,
     description: SITE_DESCRIPTION,
     locale: "en_US",
   },
-  twitter: { card: "summary_large_image", title: SITE_TITLE, description: SITE_DESCRIPTION },
+  twitter: { card: "summary_large_image", title: EVENT_TITLE, description: SITE_DESCRIPTION },
   // The deployed build's commit (NEXT_PUBLIC_BUILD), read by the usage counter from the page rather than built into
   // the game's script, so a deploy doesn't change the game's cached files
   ...(process.env.NEXT_PUBLIC_BUILD ? { other: { "lc-build": process.env.NEXT_PUBLIC_BUILD.slice(0, 7) } } : {}),
   // Metadata URLs don't get a base path on their own
   icons: {
-    icon: [
-      { url: withBasePath("/branding/librecorsa-mark.svg"), type: "image/svg+xml" },
-      { url: withBasePath("/favicon.ico"), sizes: "16x16 32x32 48x48" },
-    ],
+    icon: [{ url: withBasePath("/kiosk/event-mark.svg"), type: "image/svg+xml" }],
     apple: [{ url: withBasePath("/branding/apple-touch-icon.png"), sizes: "180x180" }],
   },
 };
@@ -129,12 +126,11 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
+      lang="it"
       className={`dark ${geist.variable} ${geistMono.variable} ${chakraPetch.variable} ${orbitron.variable}`}
     >
       <body className="antialiased bg-[#08090D] text-[#F5F7FA] selection:bg-[#CCFF00] selection:text-[#08090D]">
-        {/* Old links to "/" go on to the game at /play before the home page is drawn (forward-to-game.ts) */}
-        <script dangerouslySetInnerHTML={{ __html: FORWARD_TO_GAME }} />
+        {/* Event branch: no forward from "/" to /play (forward-to-game.ts): "/" is the kiosk, framed or installed too */}
         <script
           type="application/ld+json"
           // Static data, escaped so it can't close the script element

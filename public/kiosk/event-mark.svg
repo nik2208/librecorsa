@@ -1,0 +1,6 @@
+<svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M28 6H110Q122 6 122 18V98L98 122H18Q6 122 6 110V28Z" fill="#C7000B"/>
+  <path d="M28 6H110Q122 6 122 18V98L98 122H18Q6 122 6 110V28Z" stroke="#FFFFFF" stroke-opacity="0.25" stroke-width="3"/>
+  <text x="64" y="70" text-anchor="middle" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="900" font-style="italic">MGW</text>
+  <text x="64" y="102" text-anchor="middle" fill="#FFFFFF" fill-opacity="0.85" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700" letter-spacing="4">2026</text>
+</svg>
