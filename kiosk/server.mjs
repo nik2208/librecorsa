@@ -17,8 +17,10 @@
  *   KIOSK_HOME             a page "/" redirects to (empty, the default: "/" is the kiosk itself)
  *   KIOSK_PUBLIC_URL       the address other devices reach this server at, shown on the admin page with the leaderboard's
  *                          (e.g. http://192.168.1.50:8787 behind Docker or a proxy; by default the LAN addresses found)
- *   KIOSK_BRAND=0          don't make the brand pictures at start (kiosk/brand.mjs: logos and banners from the
- *                          sponsor's and the event's logos, downloaded once or taken from kiosk/brand/)
+ *   KIOSK_BRAND=0          don't make the brand pictures at start (kiosk/brand.mjs: logos and banners from HUAWEI's,
+ *                          the event's and WINDTRE's logos, downloaded once or taken from kiosk/brand/)
+ *
+ * The logos shown (which, in what order, and the staff's own uploads) are kept by kiosk/logos.mjs and change live.
  *
  * The scoring rules mirror src/lib/kiosk/kiosk-score.ts and the config rules src/lib/kiosk/kiosk-types.ts.
  */
@@ -31,6 +33,7 @@ import crypto from "node:crypto";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { describeBrandResult, ensureBrandAssets } from "./brand.mjs";
+import { MAX_UPLOAD_BYTES, createLogoRegistry } from "./logos.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, "..");
@@ -296,6 +299,9 @@ let results = (() => {
   return Array.isArray(raw) ? raw.filter((r) => r && typeof r.id === "string" && Array.isArray(r.laps)) : [];
 })();
 
+// The logos shown on the screens and the trackside boards (built-in and uploaded)
+const logos = createLogoRegistry({ dataDir: DATA_DIR, servedBrandDir: path.join(STATIC_DIR, "kiosk", "brand"), log: console });
+
 let writeChain = Promise.resolve();
 function persist(file, value) {
   const data = JSON.stringify(value, null, 1);
@@ -349,6 +355,41 @@ function readBody(req) {
     });
     req.on("error", reject);
   });
+}
+
+/**
+ * A request's body as it came (an uploaded picture), up to `limit` bytes. A body announced as larger is refused before
+ * it is read
+ */
+function readRawBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    if (Number(req.headers["content-length"]) > limit) {
+      reject(Object.assign(new Error(`File troppo grande (massimo ${Math.round(limit / 1048576)} MB)`), { status: 413 }));
+      return;
+    }
+    let size = 0;
+    const chunks = [];
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(Object.assign(new Error(`File troppo grande (massimo ${Math.round(limit / 1048576)} MB)`), { status: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+/**
+ * A refused upload is never kept: the answer goes out at once and the rest of the file is read and dropped (a browser
+ * still sending it would otherwise see a broken connection instead of the answer)
+ */
+function refuseUpload(req, res, status, error) {
+  sendJson(res, status, { ok: false, error });
+  req.resume();
 }
 
 /** Constant-time PIN check */
@@ -539,6 +580,51 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true });
   }
 
+  // ---- Logos: anyone reads the list (the game asks every few seconds), only the PIN changes it
+
+  if (route === "/api/kiosk/logos") {
+    if (method === "GET") return sendJson(res, 200, logos.publicList());
+    if (method === "PUT") {
+      if (!pinOk(req)) return sendJson(res, 401, { error: "PIN non valido" });
+      const body = await readBody(req);
+      return sendJson(res, 200, await logos.update(body && typeof body === "object" ? body : {}));
+    }
+    if (method === "POST") {
+      // The PIN before the file: a stranger's upload is never read
+      if (!pinOk(req)) return refuseUpload(req, res, 401, "PIN non valido");
+      if (Number(req.headers["content-length"]) > MAX_UPLOAD_BYTES) {
+        return refuseUpload(req, res, 413, `File troppo grande (massimo ${Math.round(MAX_UPLOAD_BYTES / 1048576)} MB)`);
+      }
+      const raw = await readRawBody(req, MAX_UPLOAD_BYTES);
+      if (raw.length === 0) return sendJson(res, 400, { ok: false, error: "Nessun file ricevuto" });
+      return sendJson(res, 201, { ok: true, ...(await logos.add(raw, url.searchParams.get("name") ?? "")) });
+    }
+  }
+
+  // An uploaded logo's pictures (drawn PNGs only, never the uploaded file)
+  const picture = route.match(/^\/api\/kiosk\/logos\/(u-[a-z0-9]{8})\/(logo|banner)\.png$/);
+  if (picture && (method === "GET" || method === "HEAD")) {
+    const file = logos.picturePath(picture[1], picture[2]);
+    const stat = file ? await fileAt(file) : null;
+    if (!stat) return sendJson(res, 404, { error: "Logo non trovato" });
+    res.writeHead(200, {
+      ...CORS,
+      "Content-Type": "image/png",
+      "Content-Length": stat.size,
+      "X-Content-Type-Options": "nosniff",
+      // Its address changes with its picture (?v=): a copy can be kept
+      "Cache-Control": url.searchParams.has("v") ? "public, max-age=31536000, immutable" : "no-cache",
+    });
+    if (method === "HEAD") return res.end();
+    return fs.createReadStream(file).on("error", () => res.destroy()).pipe(res);
+  }
+
+  const oneLogo = route.match(/^\/api\/kiosk\/logos\/([a-z0-9-]{1,40})$/);
+  if (oneLogo && method === "DELETE") {
+    if (!pinOk(req)) return sendJson(res, 401, { error: "PIN non valido" });
+    return sendJson(res, 200, await logos.remove(oneLogo[1]));
+  }
+
   // Anything else under /api (the usage counter, lap boards, rooms…) is not on the kiosk: a quick 404
   return sendJson(res, 404, { error: "Not found" });
 }
@@ -668,6 +754,13 @@ if (brand) console.log(`[kiosk] brand pictures: ${describeBrandResult(brand)}`);
 else {
   console.log("[kiosk] brand pictures: still being made after 20 s, the kiosk starts meanwhile");
   void brandWork.then((late) => console.log(`[kiosk] brand pictures (late): ${describeBrandResult(late)}`));
+}
+// The staff's uploaded logos: pictures missing or drawn by another version are drawn again
+try {
+  const uploads = await logos.ensurePictures();
+  if (uploads > 0) console.log(`[kiosk] uploaded logos: ${uploads}`);
+} catch (err) {
+  console.warn(`[kiosk] uploaded logos not checked: ${err.message}`);
 }
 
 server.listen(PORT, HOST, () => {

@@ -1,5 +1,6 @@
 import React from "react";
 import { EVENT_BRAND, EVENT_BRANDING_ON } from "@/lib/kiosk/event-brand";
+import { EventMark } from "@/components/kiosk/EventMark";
 
 export interface LibreCorsaLogoProps {
   /**
@@ -71,19 +72,8 @@ export const LibreCorsaMark: React.FC<{ className?: string; title?: string }> = 
   );
 };
 
-/** Event branch: a red number board with the event's initials, in place of the game's emblem (public/kiosk/event-mark.svg) */
-export const EventMark: React.FC<{ className?: string }> = ({ className = "h-10 w-10" }) => (
-  <svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" className={className} role="img" aria-label={`${EVENT_BRAND.eventShort} ${EVENT_BRAND.year}`}>
-    <path d="M28 6H110Q122 6 122 18V98L98 122H18Q6 122 6 110V28Z" fill={EVENT_BRAND.red} />
-    <path d="M28 6H110Q122 6 122 18V98L98 122H18Q6 122 6 110V28Z" stroke="#FFFFFF" strokeOpacity="0.25" strokeWidth="3" />
-    <text x="64" y="70" textAnchor="middle" fill="#FFFFFF" fontFamily="Arial, Helvetica, sans-serif" fontSize="44" fontWeight="900" fontStyle="italic">
-      MGW
-    </text>
-    <text x="64" y="102" textAnchor="middle" fill="#FFFFFF" fillOpacity="0.85" fontFamily="Arial, Helvetica, sans-serif" fontSize="26" fontWeight="700" letterSpacing="4">
-      {EVENT_BRAND.year}
-    </text>
-  </svg>
-);
+/** Event branch: the event's badge (src/components/kiosk/EventMark.tsx), in place of the game's emblem */
+export { EventMark };
 
 export const LibreCorsaLogo: React.FC<LibreCorsaLogoProps> = ({
   variant = "full",

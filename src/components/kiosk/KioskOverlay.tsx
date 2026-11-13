@@ -29,7 +29,8 @@ import {
   type KioskResultInput,
 } from "@/lib/kiosk/kiosk-types";
 import { EVENT_BRAND } from "@/lib/kiosk/event-brand";
-import { BrandHeader, KioskButton, LeaderboardTable, OnScreenKeyboard, PinDialog, useGamepadPress, useStaffGesture } from "@/components/kiosk/kiosk-ui";
+import { challengeName, shownLogos, type KioskLogo } from "@/lib/kiosk/kiosk-logos";
+import { BrandHeader, KioskButton, LeaderboardTable, OnScreenKeyboard, PinDialog, useGamepadPress, useKioskLogos, useStaffGesture } from "@/components/kiosk/kiosk-ui";
 
 type Stage = "boot" | "menu" | "entry" | "countdown" | "running" | "finished";
 type EndReason = "time" | "laps" | "cap" | "staff";
@@ -78,6 +79,9 @@ const ENTRY_IDLE_MS = 90_000;
 const BOOT_SLOW_MS = 120_000;
 /** A download that has received nothing for this long is stuck: the page starts again by itself */
 const BOOT_STALL_MS = 90_000;
+
+/** A logo's name in the race clock's badge (the event's, short) */
+const badgeName = (logo: KioskLogo): string => (logo.id === "mgw" ? `MGW ${EVENT_BRAND.year}` : logo.name);
 
 const END_TITLES: Record<EndReason, string> = {
   time: "Tempo scaduto!",
@@ -133,6 +137,10 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
   const [boardError, setBoardError] = useState(false);
   const [askPin, setAskPin] = useState(false);
   const [pausedAt, setPausedAt] = useState(0);
+  // The logos the staff turned on, for the race clock's badge (kept up to date mid-race), and the game's name with them
+  const logoList = useKioskLogos();
+  const brands = shownLogos(logoList);
+  const challenge = challengeName(logoList);
 
   // ---- Loaded: the menu. A circuit or car that failed to download keeps the loading screen up, which starts the
   // page again (the game would otherwise go on without it)
@@ -486,7 +494,7 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
           <BrandHeader />
           <div className="mt-4 flex flex-1 flex-col gap-6 lg:flex-row lg:items-center 2xl:gap-10">
             <section className="flex w-full max-w-4xl flex-col gap-4 2xl:gap-6">
-              <h1 className="font-f1-display text-4xl font-black uppercase leading-tight tracking-[0.06em] lg:text-5xl 2xl:text-7xl">{EVENT_BRAND.challenge}</h1>
+              <h1 className="font-f1-display text-4xl font-black uppercase leading-tight tracking-[0.06em] lg:text-5xl 2xl:text-7xl">{challenge}</h1>
               <p className="font-f1-display text-2xl font-black uppercase tracking-[0.12em] text-[#FF3B30] 2xl:text-3xl">
                 {carLabel} · {trackLabel}
               </p>
@@ -603,10 +611,15 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
       {(stage === "running" || stage === "countdown") && run ? (
         <div className="pointer-events-none fixed left-1/2 top-[max(0.75rem,env(safe-area-inset-top))] z-[65] -translate-x-1/2">
           <div className="flex items-stretch overflow-hidden rounded-xl border border-white/15 bg-black/75 text-white shadow-[0_10px_40px_rgba(0,0,0,0.5)] backdrop-blur-md">
-            <div className="flex flex-col justify-center bg-[#C7000B] px-3 py-1 font-f1-display text-[10px] font-black uppercase leading-tight tracking-[0.15em]">
-              <span>{EVENT_BRAND.sponsor}</span>
-              <span className="opacity-80">MGW {EVENT_BRAND.year}</span>
-            </div>
+            {brands.length > 0 ? (
+              <div className="flex flex-col justify-center bg-[#C7000B] px-3 py-1 font-f1-display text-[10px] font-black uppercase leading-tight tracking-[0.15em]">
+                {brands.slice(0, 3).map((logo, i) => (
+                  <span key={logo.id} className={`max-w-[9rem] truncate ${i > 0 ? "opacity-80" : ""}`}>
+                    {badgeName(logo)}
+                  </span>
+                ))}
+              </div>
+            ) : null}
             <div className="flex flex-col items-center px-4 py-1">
               <span className="font-f1-italic text-[10px] font-bold uppercase tracking-[0.25em] text-white/60">
                 {c.limitMode === "time" ? "Tempo rimasto" : "Tempo"}
@@ -738,6 +751,7 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
 
 /** While the circuit and the car load: the event's screen with the progress (the game's own loading screen is not shown) */
 const KioskBootScreen: React.FC<{ progress: AssetProgressSnapshot; downloadFailed: boolean }> = ({ progress, downloadFailed }) => {
+  const challenge = challengeName(useKioskLogos());
   const [startedAt] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -762,7 +776,7 @@ const KioskBootScreen: React.FC<{ progress: AssetProgressSnapshot; downloadFaile
   return (
     <div className="kiosk-ui fixed inset-0 z-[72] flex flex-col items-center justify-center gap-8 bg-[radial-gradient(ellipse_at_top_left,#3a0306_0%,#08090D_60%)] px-6 text-white">
       <BrandHeader />
-      <h1 className="text-center font-f1-display text-4xl font-black uppercase tracking-[0.08em] sm:text-6xl">{EVENT_BRAND.challenge}</h1>
+      <h1 className="text-center font-f1-display text-4xl font-black uppercase tracking-[0.08em] sm:text-6xl">{challenge}</h1>
       <div className="w-[min(90vw,36rem)]">
         <div className="h-3 overflow-hidden rounded-full bg-white/10">
           <div className="h-full rounded-full bg-[#C7000B]" style={{ width: `${failed || stalled ? 100 : pct}%` }} />

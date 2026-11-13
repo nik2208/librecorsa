@@ -55,22 +55,30 @@ function writeJson(kind: "local" | "session", key: string, value: unknown): void
 export class KioskApiError extends Error {
   constructor(
     message: string,
-    readonly status: number
+    readonly status: number,
+    /** The HTTP status of an answer that wasn't the kiosk server's (`status` 0: a static host's 404 page) */
+    readonly httpStatus: number | null = null
   ) {
     super(message);
   }
 }
 
-async function request<T>(path: string, init: RequestInit & { pin?: string | null } = {}): Promise<T> {
+async function request<T>(path: string, { pin, timeoutMs = TIMEOUT_MS, ...init }: RequestInit & { pin?: string | null; timeoutMs?: number } = {}): Promise<T> {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   const headers = new Headers(init.headers);
   if (init.body !== undefined && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  if (init.pin) headers.set("X-Kiosk-Pin", init.pin);
+  if (pin) headers.set("X-Kiosk-Pin", pin);
   try {
     const res = await fetch(kioskApiUrl(path), { ...init, headers, signal: controller.signal, cache: "no-store" });
     const text = await res.text();
-    const body = text ? (JSON.parse(text) as unknown) : null;
+    let body: unknown = null;
+    try {
+      body = text ? (JSON.parse(text) as unknown) : null;
+    } catch {
+      // Not the kiosk server answering (a static host's page): reached, but no kiosk there
+      throw new KioskApiError("Server del kiosk non raggiungibile", 0, res.status);
+    }
     if (!res.ok) {
       const error = typeof body === "object" && body !== null && "error" in body ? String((body as { error: unknown }).error) : res.statusText;
       throw new KioskApiError(error || `HTTP ${res.status}`, res.status);
@@ -83,6 +91,9 @@ async function request<T>(path: string, init: RequestInit & { pin?: string | nul
     window.clearTimeout(timer);
   }
 }
+
+/** A call to the kiosk server's API (`path` under /api/kiosk), for the other kiosk modules (kiosk-logos.ts) */
+export const kioskRequest = request;
 
 // ---- Config
 

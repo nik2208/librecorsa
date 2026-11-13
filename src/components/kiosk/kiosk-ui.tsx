@@ -2,51 +2,82 @@
 
 /** Pieces shared by the kiosk's screens: the event header, buttons, the leaderboard, keyboards and pad input */
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { withBasePath } from "@/lib/base-path";
-import { BRAND_FILES, EVENT_BRAND } from "@/lib/kiosk/event-brand";
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { EVENT_BRAND, WINDTRE_BRAND } from "@/lib/kiosk/event-brand";
 import { checkPin, rememberPin } from "@/lib/kiosk/kiosk-api";
+import { getLogosSnapshot, logoAssetUrl, shownLogos, subscribeLogos, type KioskLogo } from "@/lib/kiosk/kiosk-logos";
 import { formatLapTime } from "@/lib/kiosk/kiosk-score";
 import { KIOSK_DIFFICULTIES, type KioskLeaderboard } from "@/lib/kiosk/kiosk-types";
 
 export const RED = EVENT_BRAND.red;
 
 /**
- * The official logo when it is in public/kiosk/brand/, else its name as a text placeholder. The text shows until the
- * picture has loaded (a static page's <img> can fail before React is there to see it, leaving a broken image)
+ * The logos the staff chose to show (src/lib/kiosk/kiosk-logos.ts), kept up to date. Null until the server has
+ * answered: a page drawn on the server, or before that, shows none
  */
-export const BrandMark: React.FC<{ kind: "sponsor" | "event"; className?: string; textClassName?: string }> = ({ kind, className, textClassName }) => {
-  const src = withBasePath(kind === "sponsor" ? BRAND_FILES.sponsorLogo : BRAND_FILES.eventLogo);
-  const text = kind === "sponsor" ? EVENT_BRAND.sponsor : EVENT_BRAND.eventShort;
-  const [loaded, setLoaded] = useState(false);
+export const useKioskLogos = (): KioskLogo[] | null => useSyncExternalStore(subscribeLogos, getLogosSnapshot, () => null);
+
+/** Each built-in logo's text, while (or when) its picture isn't there */
+const BUILTIN_TEXT: Record<string, { text: string; className: string; compact: string; full: string }> = {
+  huawei: { text: EVENT_BRAND.sponsor, className: "font-f1-display font-black tracking-[0.18em] text-[#C7000B]", compact: "text-xl", full: "text-3xl" },
+  mgw: { text: EVENT_BRAND.eventShort, className: "font-f1-display font-extrabold tracking-[0.08em] text-white", compact: "text-lg", full: "text-2xl" },
+  windtre: { text: WINDTRE_BRAND.name, className: "font-f1-display font-black tracking-[0.1em] text-[#FF6B00]", compact: "text-lg", full: "text-2xl" },
+};
+/** Logos with a line of small text under a mark (the event's tagline, WINDTRE's name) stand taller to keep it readable */
+const TALL_LOGOS = new Set(["mgw", "windtre"]);
+
+/**
+ * One logo: its picture, else its name as a text placeholder. The text shows until the picture has loaded (a static
+ * page's <img> can fail before React is there to see it, leaving a broken image). A dark logo the staff uploaded sits on
+ * a white card, so it shows on the dark screens
+ */
+export const LogoMark: React.FC<{ logo: KioskLogo; compact?: boolean }> = ({ logo, compact }) => {
+  const src = logo.logo ? logoAssetUrl(logo.logo) : null;
+  const [loaded, setLoaded] = useState<string | null>(null);
   useEffect(() => {
+    if (!src) return;
     let live = true;
     const img = new Image();
-    img.onload = () => live && setLoaded(true);
+    img.onload = () => live && setLoaded(src);
     img.src = src;
     return () => {
       live = false;
     };
   }, [src]);
-  if (!loaded) return <span className={textClassName}>{text}</span>;
+  if (!src || loaded !== src) {
+    const t = BUILTIN_TEXT[logo.id];
+    return t ? (
+      <span className={`${t.className} ${compact ? t.compact : t.full}`}>{t.text}</span>
+    ) : (
+      <span className={`font-f1-display font-bold uppercase tracking-[0.08em] text-white ${compact ? "text-lg" : "text-2xl"}`}>{logo.name}</span>
+    );
+  }
+  const height = TALL_LOGOS.has(logo.id) ? (compact ? "h-10" : "h-16") : logo.builtin ? (compact ? "h-7" : "h-10") : compact ? "h-8" : "h-12";
+  const card = logo.builtin ? "" : logo.boxed ? "rounded-md" : logo.ground === "light" ? "rounded-md bg-white px-2 py-1" : "";
   // eslint-disable-next-line @next/next/no-img-element -- a static export with no image optimiser
-  return <img src={src} alt={text} className={className} draggable={false} />;
+  return <img src={src} alt={logo.name} className={`${height} w-auto max-w-[16rem] object-contain ${card}`} draggable={false} />;
 };
 
-/** Sponsor × event, with the dates and the venue */
-export const BrandHeader: React.FC<{ compact?: boolean }> = ({ compact }) => (
-  <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-    <BrandMark kind="sponsor" className={compact ? "h-7 w-auto" : "h-10 w-auto"} textClassName={`font-f1-display font-black tracking-[0.18em] text-[#C7000B] ${compact ? "text-xl" : "text-3xl"}`} />
-    <span className={`font-f1-display text-white/50 ${compact ? "text-lg" : "text-2xl"}`}>×</span>
-    {/* The event's logo is taller than wide words: a little more height keeps its tagline readable */}
-    <BrandMark kind="event" className={compact ? "h-10 w-auto" : "h-16 w-auto"} textClassName={`font-f1-display font-extrabold tracking-[0.08em] text-white ${compact ? "text-lg" : "text-2xl"}`} />
-    {!compact ? (
-      <span className="font-f1-italic text-sm font-bold uppercase tracking-[0.2em] text-white/60">
-        {EVENT_BRAND.dates} · {EVENT_BRAND.venue}
-      </span>
-    ) : null}
-  </div>
-);
+/** The logos turned on, side by side, with the event's dates and venue while its logo is one of them */
+export const BrandHeader: React.FC<{ compact?: boolean }> = ({ compact }) => {
+  const logos = shownLogos(useKioskLogos());
+  const eventShown = logos.some((l) => l.id === "mgw");
+  return (
+    <div className={`flex flex-wrap items-center gap-x-4 gap-y-1 ${compact ? "min-h-10" : "min-h-16"}`}>
+      {logos.map((logo, i) => (
+        <React.Fragment key={logo.id}>
+          {i > 0 ? <span className={`font-f1-display text-white/50 ${compact ? "text-lg" : "text-2xl"}`}>×</span> : null}
+          <LogoMark logo={logo} compact={compact} />
+        </React.Fragment>
+      ))}
+      {!compact && eventShown ? (
+        <span className="font-f1-italic text-sm font-bold uppercase tracking-[0.2em] text-white/60">
+          {EVENT_BRAND.dates} · {EVENT_BRAND.venue}
+        </span>
+      ) : null}
+    </div>
+  );
+};
 
 export const KioskButton: React.FC<
   React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "primary" | "ghost" | "danger"; big?: boolean }
@@ -297,6 +328,7 @@ export const KioskCredits: React.FC<{ className?: string }> = ({ className = "" 
   <p className={`font-f1-italic text-xs leading-snug text-white/50 ${className}`}>
     Motore di gioco: LibreCorsa di KhazP (MIT, github.com/KhazP/librecorsa) · Monza e Ferrari SF-26: modelli recuperati dalla
     storia del progetto LibreCorsa, senza licenza (vedi kiosk/README.md) · RISE Motordrome di Alp Yalay, CC BY-NC-SA 4.0 ·
-    Monoposto 2026 di Qvist Designs, CC BY 4.0 · Evento non affiliato a Formula 1, FIA o Ferrari.
+    Monoposto 2026 di Qvist Designs, CC BY 4.0 · Loghi HUAWEI e WINDTRE: marchi dei rispettivi titolari (file da Wikimedia
+    Commons) · Evento non affiliato a Formula 1, FIA o Ferrari.
   </p>
 );

@@ -5,6 +5,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { BrandHeader, KioskButton, KioskCredits, PinDialog } from "@/components/kiosk/kiosk-ui";
+import { KioskLogosPanel } from "@/components/kiosk/KioskLogos";
 import {
   checkPin,
   deleteResult,
@@ -165,7 +166,7 @@ export const KioskAdmin: React.FC = () => {
 
   if (!pin) {
     return (
-      <main className="kiosk-ui min-h-dvh bg-[#08090D] px-6 py-8 text-white">
+      <main className="kiosk-ui h-dvh overflow-y-auto bg-[#08090D] px-6 py-8 text-white">
         <BrandHeader compact />
         {checking ? null : (
           <PinDialog onSuccess={(p) => setPin(p)} onCancel={() => window.location.assign(withBasePath("/"))} />
@@ -180,7 +181,8 @@ export const KioskAdmin: React.FC = () => {
   const lanUrls = network ? (network.urls.some((u) => !u.virtual) ? network.urls.filter((u) => !u.virtual) : network.urls) : [];
 
   return (
-    <main className="kiosk-ui min-h-dvh bg-[#08090D] px-[max(1.25rem,env(safe-area-inset-left))] py-6 text-white">
+    // Its own scroll: the game's body never scrolls (globals.css), and the settings run well below one screen
+    <main className="kiosk-ui h-dvh overflow-y-auto overscroll-contain bg-[#08090D] px-[max(1.25rem,env(safe-area-inset-left))] py-6 text-white">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <BrandHeader compact />
         <div className="flex flex-wrap gap-2">
@@ -209,6 +211,7 @@ export const KioskAdmin: React.FC = () => {
       ) : null}
 
       <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,32rem)_minmax(0,1fr)]">
+        <div className="flex min-w-0 flex-col gap-6">
         <section className="flex flex-col gap-5 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
           <h2 className="font-f1-display text-lg font-bold uppercase tracking-[0.12em]">Sessione di gioco</h2>
           <Field label="Limite della sessione" hint="A giri: vince il tempo totale. A tempo: vince il miglior giro.">
@@ -327,6 +330,9 @@ export const KioskAdmin: React.FC = () => {
             )}
           </div>
         </section>
+        {/* Saved at once, apart from the settings above: a logo shows on the boards while a race is on */}
+        <KioskLogosPanel pin={pin} />
+        </div>
 
         <section className="flex min-w-0 flex-col gap-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">

@@ -2,15 +2,18 @@
  * Dresses RISE Motordrome for the event: its trackside banners, big screens, start gantry, flags and flag-coloured
  * kerbs (Rwanda's, from scripts/rwanda-official) take the sponsor's and the event's colours and names.
  *
- * The banners and screens are drawn here as text placeholders unless the official artwork is in public/kiosk/brand/
- * (event-brand.ts BRAND_FILES). RISE's model itself is not changed, only its materials once loaded; a circuit without
- * RISE's banners (a converted scan such as Monza) gets a group of boards along its straights (addTracksideBoards).
+ * The banners show the logos the staff turned on (src/lib/kiosk/kiosk-logos.ts), each on its own board: its picture
+ * from the kiosk server, else its name drawn here. RISE's model itself is not changed, only its materials once loaded; a
+ * circuit without RISE's banners (a converted scan such as Monza) gets a group of boards along its straights
+ * (addTracksideBoards). When the staff change the logos the boards change with them, mid-race: only their pictures are
+ * swapped, nothing of the scene is rebuilt.
  */
 
 import * as THREE from "three";
 import { withBasePath } from "@/lib/base-path";
-import { BRAND_FILES, EVENT_BRAND, EVENT_BRANDING_ON } from "@/lib/kiosk/event-brand";
+import { BRAND_FILES, EVENT_BRAND, EVENT_BRANDING_ON, WINDTRE_BRAND } from "@/lib/kiosk/event-brand";
 import { fetchLeaderboard, loadKioskConfig } from "@/lib/kiosk/kiosk-api";
+import { challengeName, getLogosSnapshot, logoAssetUrl, shownLogos, subscribeLogos, type KioskLogo, type LogoGround } from "@/lib/kiosk/kiosk-logos";
 import { rankingModeFor, runnableCarId } from "@/lib/kiosk/kiosk-types";
 import { formatLapTime } from "@/lib/kiosk/kiosk-score";
 import type { BuiltTrackData } from "@/lib/track-data";
@@ -86,14 +89,34 @@ const paintEventBanner: Painter = (ctx, w, h, f) => {
   fitText(ctx, `${EVENT_BRAND.dates} · ${EVENT_BRAND.venue}`, w / 2, h * 0.77, w - 160, 30, `700 {size} ${f.text}`, "#FF3B30", 4);
 };
 
-const paintComboBanner: Painter = (ctx, w, h, f) => {
-  ctx.fillStyle = EVENT_BRAND.red;
+const paintWindtreBanner: Painter = (ctx, w, h, f) => {
+  ctx.fillStyle = "#FFFFFF";
   ctx.fillRect(0, 0, w, h);
-  ctx.fillStyle = EVENT_BRAND.white;
-  ctx.fillRect(0, 10, w, 4);
-  ctx.fillRect(0, h - 14, w, 4);
-  fitText(ctx, `${EVENT_BRAND.sponsor}  ×  ${EVENT_BRAND.eventShort} ${EVENT_BRAND.year}`, w / 2, h / 2 + 2, w - 90, 56, `900 {size} ${f.display}`, EVENT_BRAND.white, 4);
+  ctx.fillStyle = WINDTRE_BRAND.orange;
+  ctx.fillRect(0, 0, 36, h);
+  ctx.fillRect(w - 36, 0, 36, h);
+  fitText(ctx, WINDTRE_BRAND.name, w / 2, h / 2 + 3, w - 160, 84, `900 {size} ${f.display}`, WINDTRE_BRAND.orange, 14);
 };
+
+/** A board with a logo's name, for an uploaded logo whose picture can't be loaded */
+const paintNameBanner =
+  (name: string, ground: LogoGround): Painter =>
+  (ctx, w, h, f) => {
+    ctx.fillStyle = ground === "light" ? "#F7F7F5" : EVENT_BRAND.black;
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = ground === "light" ? "#1C1C22" : "#34343C";
+    ctx.fillRect(0, 0, 28, h);
+    ctx.fillRect(w - 28, 0, 28, h);
+    fitText(ctx, name.toUpperCase(), w / 2, h / 2 + 3, w - 120, 72, `900 {size} ${f.display}`, ground === "light" ? EVENT_BRAND.black : EVENT_BRAND.white, 6);
+  };
+
+/** The board of each built-in logo while (or when) its picture isn't there */
+const BUILTIN_BANNERS: Record<string, Painter> = {
+  huawei: paintSponsorBanner,
+  mgw: paintEventBanner,
+  windtre: paintWindtreBanner,
+};
+const bannerPainter = (logo: KioskLogo): Painter => BUILTIN_BANNERS[logo.id] ?? paintNameBanner(logo.name, logo.ground);
 
 interface ScreenRow {
   rank: number;
@@ -101,7 +124,11 @@ interface ScreenRow {
   time: string;
 }
 
-function paintScreen(rows: readonly ScreenRow[]): Painter {
+/**
+ * The screens' card: `title` names the logos shown, and the leaderboard's first rows when there are any; the game's name
+ * (`challenge`); the event's name, dates and venue only while its logo is shown (`eventShown`)
+ */
+function paintScreen(rows: readonly ScreenRow[], title: string, eventShown = true, challenge: string = EVENT_BRAND.challengeNeutral): Painter {
   return (ctx, w, h, f) => {
     ctx.fillStyle = EVENT_BRAND.black;
     ctx.fillRect(0, 0, w, h);
@@ -110,12 +137,12 @@ function paintScreen(rows: readonly ScreenRow[]): Painter {
     ctx.fillRect(0, 0, w, 44);
     ctx.fillStyle = EVENT_BRAND.red;
     ctx.fillRect(0, 0, 8, 44);
-    fitText(ctx, `${EVENT_BRAND.sponsor} × ${EVENT_BRAND.eventShort}`, 20, 23, w - 130, 22, `800 {size} ${f.display}`, EVENT_BRAND.white, 1, "left");
+    fitText(ctx, title, 20, 23, w - 130, 22, `800 {size} ${f.display}`, EVENT_BRAND.white, 1, "left");
     ctx.fillStyle = EVENT_BRAND.red;
     ctx.fillRect(w - 92, 9, 80, 26);
     fitText(ctx, "LIVE", w - 52, 23, 70, 18, `900 {size} ${f.display}`, EVENT_BRAND.white, 2);
     if (rows.length > 0) {
-      fitText(ctx, "CLASSIFICA · " + EVENT_BRAND.challenge, 20, 64, w - 40, 15, `700 {size} ${f.text}`, "#FF3B30", 2, "left");
+      fitText(ctx, "CLASSIFICA · " + challenge, 20, 64, w - 40, 15, `700 {size} ${f.text}`, "#FF3B30", 2, "left");
       rows.slice(0, 8).forEach((r, i) => {
         const y = 92 + i * 24;
         ctx.fillStyle = i % 2 === 0 ? "#15151B" : "#101015";
@@ -127,23 +154,35 @@ function paintScreen(rows: readonly ScreenRow[]): Painter {
         fitText(ctx, r.time, w - 24, y + 1, 140, 16, `700 {size} ${f.mono}`, "#E8E8EA", 0, "right");
       });
     } else {
-      fitText(ctx, EVENT_BRAND.challenge, w / 2, 118, w - 50, 30, `900 {size} ${f.display}`, EVENT_BRAND.white, 2);
+      fitText(ctx, challenge, w / 2, 118, w - 50, 30, `900 {size} ${f.display}`, EVENT_BRAND.white, 2);
       fitText(ctx, "SFIDA IL CRONOMETRO!", w / 2, 162, w - 60, 22, `700 {size} ${f.text}`, "#FF3B30", 4);
-      fitText(ctx, EVENT_BRAND.event, w / 2, 206, w - 60, 17, `700 {size} ${f.text}`, "#C9C9CF", 2);
+      if (eventShown) fitText(ctx, EVENT_BRAND.event, w / 2, 206, w - 60, 17, `700 {size} ${f.text}`, "#C9C9CF", 2);
     }
     ctx.fillStyle = "#16161C";
     ctx.fillRect(0, h - 30, w, 30);
-    fitText(ctx, `${EVENT_BRAND.dates} · ${EVENT_BRAND.venue}`, w / 2, h - 15, w - 30, 14, `700 {size} ${f.text}`, "#BDBDC4", 2);
+    if (eventShown) fitText(ctx, `${EVENT_BRAND.dates} · ${EVENT_BRAND.venue}`, w / 2, h - 15, w - 30, 14, `700 {size} ${f.text}`, "#BDBDC4", 2);
   };
 }
 
 interface BrandTexture {
   texture: THREE.CanvasTexture;
   setPainter: (paint: Painter) => void;
+  /** Its picture is drawn, or there is none to wait for (none given, it failed, or it took too long) */
+  ready: () => boolean;
+  /** Calls `fn` once it is ready (at once when it is) */
+  whenReady: (fn: () => void) => void;
+  /** Frees it (a logo taken off the boards); a picture still on its way is then ignored */
+  dispose: () => void;
 }
 
-/** A canvas texture the glTF way round (no flip), painted now and again once the web fonts have loaded */
-function brandTexture(width: number, height: number, paint: Painter, artworkUrl: string): BrandTexture {
+/** A picture that hasn't loaded after this long gives way to the drawn text (ms) */
+const PICTURE_WAIT_MS = 4000;
+
+/**
+ * A canvas texture the glTF way round (no flip), painted now and again once the web fonts have loaded, then covered by
+ * its picture (`artworkUrl`, an address for the browser) once that has loaded
+ */
+function brandTexture(width: number, height: number, paint: Painter, artworkUrl: string | null): BrandTexture {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
@@ -154,8 +193,9 @@ function brandTexture(width: number, height: number, paint: Painter, artworkUrl:
   texture.anisotropy = 8;
   let painter = paint;
   let artwork: HTMLImageElement | null = null;
+  let disposed = false;
   const draw = () => {
-    if (!ctx) return;
+    if (!ctx || disposed) return;
     ctx.clearRect(0, 0, width, height);
     if (artwork) ctx.drawImage(artwork, 0, 0, width, height);
     else painter(ctx, width, height, pageFonts());
@@ -169,27 +209,82 @@ function brandTexture(width: number, height: number, paint: Painter, artworkUrl:
       if (!artwork) draw();
     });
   }
-  // The official artwork, when it has been put in public/kiosk/brand/
-  const img = new Image();
-  img.onload = () => {
-    artwork = img;
-    draw();
+  // The picture, when the kiosk server has one (an upload comes from the server's API: another origin under `next dev`)
+  let ready = !artworkUrl;
+  const waiting: (() => void)[] = [];
+  const settle = () => {
+    if (ready || disposed) return;
+    ready = true;
+    for (const fn of waiting.splice(0)) fn();
   };
-  img.src = withBasePath(artworkUrl);
+  if (artworkUrl) {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      if (disposed) return;
+      artwork = img;
+      draw();
+      settle();
+    };
+    img.onerror = settle;
+    window.setTimeout(settle, PICTURE_WAIT_MS);
+    img.src = artworkUrl;
+  }
   return {
     texture,
     setPainter: (next) => {
       painter = next;
       if (!artwork) draw();
     },
+    ready: () => ready,
+    whenReady: (fn) => {
+      if (ready) fn();
+      else waiting.push(fn);
+    },
+    dispose: () => {
+      disposed = true;
+      waiting.length = 0;
+      texture.dispose();
+    },
   };
 }
 
-const BANNERS: Record<string, { paint: Painter; artwork: string }> = {
-  Banner_Rwanda: { paint: paintSponsorBanner, artwork: BRAND_FILES.bannerSponsor },
-  Banner_Bugesera: { paint: paintEventBanner, artwork: BRAND_FILES.bannerEvent },
-  Banner_Kigali: { paint: paintComboBanner, artwork: BRAND_FILES.bannerCombo },
-};
+/** RISE Motordrome's three banner materials, in the order the logos are dealt to them */
+const RISE_BANNERS = ["Banner_Rwanda", "Banner_Bugesera", "Banner_Kigali"] as const;
+
+/**
+ * The boards' pictures, one per logo shown (a logo's new picture is a new texture), kept while it is shown (logos
+ * taking turns come back to theirs) and freed once nothing shows it
+ */
+class LogoTextures {
+  private readonly byKey = new Map<string, BrandTexture>();
+
+  get(logo: KioskLogo): BrandTexture {
+    const key = `${logo.id}|${logo.banner ?? ""}|${logo.name}|${logo.ground}`;
+    let tex = this.byKey.get(key);
+    if (!tex) {
+      tex = brandTexture(1024, 128, bannerPainter(logo), logo.banner ? logoAssetUrl(logo.banner) : null);
+      this.byKey.set(key, tex);
+    }
+    return tex;
+  }
+
+  /** The logo a texture is the picture of (one just hidden too, while it is still up somewhere) */
+  idOf(texture: THREE.Texture | null): string | null {
+    if (!texture) return null;
+    for (const [key, tex] of this.byKey) if (tex.texture === texture) return key.slice(0, key.indexOf("|"));
+    return null;
+  }
+
+  /** Frees every texture not in `keep` */
+  keepOnly(keep: ReadonlySet<THREE.Texture>): void {
+    for (const [key, tex] of this.byKey) {
+      if (keep.has(tex.texture)) continue;
+      tex.dispose();
+      this.byKey.delete(key);
+    }
+  }
+}
 
 /** Linear-space colours for the flags' three bands (vertex colours are linear in glTF) */
 const FLAG_BANDS = {
@@ -220,7 +315,7 @@ let screenTimer: number | null = null;
  * Keeps the circuit's screens on the kiosk's leaderboard, when a kiosk server answers: the board of this circuit (the
  * one loaded, whatever the stored config names) and of the car the kiosk runs
  */
-function followLeaderboard(screen: BrandTexture, trackId: string | undefined): void {
+function followLeaderboard(screen: BrandTexture, trackId: string | undefined, onRows: (rows: ScreenRow[]) => void): void {
   if (screenTimer !== null) window.clearInterval(screenTimer);
   const refresh = async () => {
     try {
@@ -232,12 +327,13 @@ function followLeaderboard(screen: BrandTexture, trackId: string | undefined): v
         laps: config.laps,
         limit: 8,
       });
-      const rows = board.rows.map((r) => ({
-        rank: r.rank,
-        name: r.name,
-        time: formatLapTime(board.mode === "total" ? r.totalTimeMs : r.bestLapMs),
-      }));
-      screen.setPainter(paintScreen(rows));
+      onRows(
+        board.rows.map((r) => ({
+          rank: r.rank,
+          name: r.name,
+          time: formatLapTime(board.mode === "total" ? r.totalTimeMs : r.bestLapMs),
+        }))
+      );
     } catch {
       // No kiosk server (the plain game): the screens keep the event's card
     }
@@ -406,14 +502,42 @@ function boardSpots(root: THREE.Object3D, track: BuiltTrackData, kinds: number, 
   return { spots, dropped };
 }
 
-/** The boards: one instanced mesh per picture (front face textured), one for all the posts */
-function addTracksideBoards(root: THREE.Object3D, track: BuiltTrackData): number {
-  const pictures = [
-    brandTexture(1024, 128, paintSponsorBanner, BRAND_FILES.bannerSponsor),
-    brandTexture(1024, 128, paintEventBanner, BRAND_FILES.bannerEvent),
-    brandTexture(1024, 128, paintComboBanner, BRAND_FILES.bannerCombo),
-  ];
-  const { spots, dropped } = boardSpots(root, track, pictures.length, solidSceneryOccluder(root));
+/**
+ * Places for pictures on the boards: the boards take one of these in turn along the lap, and each place shows one of the
+ * logos turned on. Twelve deal 1, 2, 3, 4 or 6 logos out evenly; with more logos than places they take turns
+ */
+const BOARD_PLACES = 12;
+/** With more logos than places, the boards move on to the next logos this often (ms) */
+const ROTATE_MS = 20_000;
+
+interface TracksideBoards {
+  group: THREE.Group;
+  /** The boards' front of each place, in order along the lap (the places with boards: fewer on a short circuit) */
+  faces: THREE.MeshStandardMaterial[];
+  /** The dark picture they show until a logo's is in */
+  blank: THREE.Texture;
+  count: number;
+}
+
+/** A dark picture the boards start with, before the logos are known (a texture from the start: no shader change later) */
+function blankTexture(): THREE.Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 4;
+  canvas.height = 4;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    ctx.fillStyle = "#18181c";
+    ctx.fillRect(0, 0, 4, 4);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.flipY = false;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+/** The boards: one instanced mesh per place (front face textured), one for all the posts */
+function addTracksideBoards(root: THREE.Object3D, track: BuiltTrackData, blank: THREE.Texture): TracksideBoards | null {
+  const { spots, dropped } = boardSpots(root, track, BOARD_PLACES, solidSceneryOccluder(root));
   if (dropped > 0) console.info(`[event] ${dropped} board spots skipped (walls, stands or no line of sight)`);
   // Test builds only (compiled out otherwise): an end-to-end test drives up to the boards to look at them
   if (process.env.NEXT_PUBLIC_KIOSK_TEST_HOOKS === "1") {
@@ -421,12 +545,13 @@ function addTracksideBoards(root: THREE.Object3D, track: BuiltTrackData): number
       s: b.s,
       side: b.side,
       ground: b.ground,
+      place: b.kind,
       x: b.position.x,
       y: b.position.y,
       z: b.position.z,
     }));
   }
-  if (spots.length === 0) return 0;
+  if (spots.length === 0) return null;
   const group = new THREE.Group();
   group.name = "Event_TracksideBoards";
   // Test builds only: a debug switch draws the boards huge and high, to tell a placement problem from a drawing one
@@ -447,18 +572,30 @@ function addTracksideBoards(root: THREE.Object3D, track: BuiltTrackData): number
   // The banner pictures are drawn the glTF way round (no flip): turn the box's UVs to match
   const uv = boardGeo.getAttribute("uv") as THREE.BufferAttribute;
   for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - uv.getY(i));
+  // Two draws a place, not six: the box's five plain sides in one group, its front (+z, the picture) in the other
+  const index = boardGeo.getIndex();
+  if (index && boardGeo.groups.length === 6) {
+    const side = (g: THREE.GeometryGroup) => Array.from(index.array.slice(g.start, g.start + g.count));
+    const plain = [0, 1, 2, 3, 5].flatMap((f) => side(boardGeo.groups[f]));
+    const front = side(boardGeo.groups[4]);
+    boardGeo.setIndex([...plain, ...front]);
+    boardGeo.clearGroups();
+    boardGeo.addGroup(0, plain.length, 0);
+    boardGeo.addGroup(plain.length, front.length, 1);
+  }
   const back = new THREE.MeshStandardMaterial({ color: 0x18181c, roughness: 0.8, metalness: 0.1 });
   const matrix = new THREE.Matrix4();
   const quat = new THREE.Quaternion();
   const up = new THREE.Vector3(0, 1, 0);
   const unit = new THREE.Vector3(debugScale, debugScale, debugScale);
   const centre = new THREE.Vector3();
-  pictures.forEach((picture, kind) => {
-    const mine = spots.filter((s) => s.kind === kind);
-    if (mine.length === 0) return;
-    const front = new THREE.MeshStandardMaterial({ map: picture.texture, roughness: 0.6, metalness: 0 });
-    // BoxGeometry's groups: +x, -x, +y, -y, +z (the face), -z
-    const boards = new THREE.InstancedMesh(boardGeo, [back, back, back, back, front, back], mine.length);
+  const faces: THREE.MeshStandardMaterial[] = [];
+  for (let place = 0; place < BOARD_PLACES; place++) {
+    const mine = spots.filter((s) => s.kind === place);
+    if (mine.length === 0) continue;
+    const front = new THREE.MeshStandardMaterial({ map: blank, roughness: 0.6, metalness: 0 });
+    faces.push(front);
+    const boards = new THREE.InstancedMesh(boardGeo, [back, front], mine.length);
     mine.forEach((spot, i) => {
       quat.setFromAxisAngle(up, spot.yaw);
       centre.copy(spot.position).setY(spot.position.y + BOARD_LIFT_M + (BOARD_H * debugScale) / 2 + debugLift);
@@ -468,9 +605,9 @@ function addTracksideBoards(root: THREE.Object3D, track: BuiltTrackData): number
     boards.computeBoundingSphere();
     boards.computeBoundingBox();
     boards.receiveShadow = true;
-    boards.name = `Event_Boards_${kind}`;
+    boards.name = `Event_Boards_${place}`;
     group.add(boards);
-  });
+  }
   const postH = BOARD_LIFT_M + POST_SINK_M + BOARD_H * 0.5;
   const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.14, postH, 0.14), back, spots.length * 2);
   const offset = new THREE.Vector3();
@@ -488,27 +625,35 @@ function addTracksideBoards(root: THREE.Object3D, track: BuiltTrackData): number
   posts.name = "Event_BoardPosts";
   group.add(posts);
   root.add(group);
-  return spots.length;
+  return { group, faces, blank, count: spots.length };
 }
+
+/** The last circuit's link to the logo list (its boards follow the staff's changes until another circuit loads) */
+let stopFollowingLogos: (() => void) | null = null;
 
 /**
  * Puts the event's dressing on a loaded circuit: RISE Motordrome's own banners, screens, gantry, flags and kerbs take
- * the event's pictures and colours; a circuit without such banners (a converted scan) gets boards along its straights
+ * the event's pictures and colours; a circuit without such banners (a converted scan) gets boards along its straights.
+ * The banners and boards then follow the logos the staff turn on and off, for as long as the circuit is loaded.
  */
 export function applyEventBranding(root: THREE.Object3D, track?: BuiltTrackData): void {
   if (!EVENT_BRANDING_ON || typeof document === "undefined") return;
-  // A new circuit: the last one's screens stop asking for the leaderboard (their textures are never disposed when the
-  // game switches circuit in place), and the test handles let go of the last circuit's boards
+  // A new circuit: the last one's screens stop asking for the leaderboard and its boards stop following the logos
+  // (their textures are never disposed when the game switches circuit in place), and the test handles let go of it
   if (screenTimer !== null) {
     window.clearInterval(screenTimer);
     screenTimer = null;
   }
+  stopFollowingLogos?.();
+  stopFollowingLogos = null;
   if (process.env.NEXT_PUBLIC_KIOSK_TEST_HOOKS === "1") {
-    const w = window as Window & { __kioskBoardSpots?: unknown; __kioskBoardsGroup?: unknown };
+    const w = window as Window & { __kioskBoardSpots?: unknown; __kioskBoardsGroup?: unknown; __kioskBrandState?: unknown };
     delete w.__kioskBoardSpots;
     delete w.__kioskBoardsGroup;
+    delete w.__kioskBrandState;
   }
-  const banners = new Map<string, BrandTexture>();
+  /** RISE's banner materials, with the picture each came with (shown again when no logo is on) */
+  const riseBanners: { material: THREE.MeshStandardMaterial; own: THREE.Texture | null; kind: number }[] = [];
   let screen: BrandTexture | null = null;
   let redWhiteKerb: THREE.Texture | null = null;
   const flagKerbs: THREE.MeshStandardMaterial[] = [];
@@ -520,17 +665,11 @@ export function applyEventBranding(root: THREE.Object3D, track?: BuiltTrackData)
     for (const material of materialsOf(mesh)) {
       const m = material as THREE.MeshStandardMaterial;
       if (!m.isMeshStandardMaterial) continue;
-      const banner = BANNERS[m.name];
-      if (banner) {
-        let tex = banners.get(m.name);
-        if (!tex) {
-          tex = brandTexture(1024, 128, banner.paint, banner.artwork);
-          banners.set(m.name, tex);
-        }
-        m.map = tex.texture;
-        m.needsUpdate = true;
+      const kind = (RISE_BANNERS as readonly string[]).indexOf(m.name);
+      if (kind >= 0) {
+        if (!riseBanners.some((b) => b.material === m)) riseBanners.push({ material: m, own: m.map, kind });
       } else if (m.name === "Screen_Live") {
-        screen ??= brandTexture(512, 288, paintScreen([]), BRAND_FILES.screen);
+        screen ??= brandTexture(512, 288, paintScreen([], EVENT_BRAND.challengeNeutral), withBasePath(BRAND_FILES.screen));
         m.map = screen.texture;
         m.emissiveMap = screen.texture;
         m.needsUpdate = true;
@@ -555,9 +694,134 @@ export function applyEventBranding(root: THREE.Object3D, track?: BuiltTrackData)
       m.needsUpdate = true;
     }
   }
-  if (screen) followLeaderboard(screen, track?.id);
-  if (banners.size === 0 && track) {
-    const boards = addTracksideBoards(root, track);
-    if (boards > 0) console.info(`[event] ${boards} trackside boards placed`);
+  // The screens: the leaderboard under a title naming the logos shown
+  const screenView = { rows: [] as ScreenRow[], title: EVENT_BRAND.challengeNeutral as string, eventShown: true, challenge: EVENT_BRAND.challengeNeutral as string };
+  const paintedScreen = screen as BrandTexture | null;
+  const repaintScreen = () => paintedScreen?.setPainter(paintScreen(screenView.rows, screenView.title, screenView.eventShown, screenView.challenge));
+  if (paintedScreen) {
+    followLeaderboard(paintedScreen, track?.id, (rows) => {
+      screenView.rows = rows;
+      repaintScreen();
+    });
   }
+  const boards = riseBanners.length === 0 && track ? addTracksideBoards(root, track, blankTexture()) : null;
+  if (boards) console.info(`[event] ${boards.count} trackside boards placed`);
+  if (!boards && riseBanners.length === 0 && !paintedScreen) return;
+
+  // ---- The logos: each place on the boards and each RISE banner shows one of those turned on
+  const textures = new LogoTextures();
+  const places = Math.max(boards?.faces.length ?? 0, riseBanners.length > 0 ? RISE_BANNERS.length : 0);
+  let offset = 0;
+  let rotation: number | null = null;
+  let showQueued = false;
+  /** Another circuit has loaded: a picture coming in late must not deal anything (nor start turns nobody stops) */
+  let stopped = false;
+  /** The logos shown the last time, to tell one just turned on (an upload mid-race) */
+  let lastShown: ReadonlySet<string> | null = null;
+  const startTurns = () => {
+    if (rotation !== null) window.clearInterval(rotation);
+    if (stopped) return;
+    rotation = window.setInterval(() => {
+      offset = (offset + 1) % 100_000;
+      show();
+    }, ROTATE_MS);
+  };
+  // Once a picture still on its way is in
+  const showSoon = () => {
+    if (showQueued || stopped) return;
+    showQueued = true;
+    window.setTimeout(() => {
+      showQueued = false;
+      show();
+    }, 0);
+  };
+  const show = () => {
+    if (stopped) return;
+    const list = getLogosSnapshot();
+    const shown = shownLogos(list);
+    // The turns settled first: logos back to their first places once they fit; with more logos than places, one just
+    // turned on (an upload, mid-race) goes up at once in the first place (RISE's start gantry), its turn from there
+    if (shown.length <= places) {
+      if (rotation !== null) window.clearInterval(rotation);
+      rotation = null;
+      offset = 0;
+    } else if (lastShown) {
+      const seen = lastShown;
+      let newest = -1;
+      shown.forEach((l, i) => {
+        if (!seen.has(l.id)) newest = i;
+      });
+      // (one already up on a surface stays where it is; offset only grows, so the place is taken modulo, never negative)
+      const place = (((newest - offset) % shown.length) + shown.length) % shown.length;
+      if (newest >= 0 && place >= places) {
+        offset = newest;
+        startTurns();
+      }
+    }
+    if (list !== null) lastShown = new Set(shown.map((l) => l.id));
+    // Every logo shown has its picture made (those waiting for their turn too), so a turn finds it loaded
+    const own = shown.map((logo) => textures.get(logo));
+    const keep = new Set<THREE.Texture>(own.map((t) => t.texture));
+    /** The picture for surface `i`; until it is in, what the surface shows stays (a text placeholder never flashes up) */
+    const pick = (i: number, current: THREE.Texture | null, blankUntil: THREE.Texture | null): THREE.Texture | null => {
+      const t = own[(i + offset) % own.length];
+      if (t.ready()) return t.texture;
+      t.whenReady(showSoon);
+      const stay = current ?? blankUntil;
+      if (stay) keep.add(stay);
+      return stay;
+    };
+    if (boards) {
+      // Until the list is known no board shows (a logo turned off must never flash up), nor with every logo off; boards
+      // coming back start from the dark picture, not from the logos they showed before
+      const wasShown = boards.group.visible;
+      boards.group.visible = shown.length > 0;
+      if (shown.length > 0) {
+        boards.faces.forEach((face, i) => {
+          const tex = pick(i, wasShown ? face.map : boards.blank, boards.blank);
+          if (tex && face.map !== tex) face.map = tex;
+        });
+      }
+    }
+    for (const b of riseBanners) {
+      // RISE's own banners while no logo is on (or the list isn't known yet)
+      const tex = shown.length > 0 ? pick(b.kind, b.material.map, b.own) : b.own;
+      if (b.material.map !== tex) {
+        b.material.map = tex;
+        b.material.needsUpdate = true;
+      }
+    }
+    textures.keepOnly(keep);
+    const challenge = challengeName(list);
+    const title = shown.length > 0 ? shown.map((l) => l.name).join(" × ") : challenge;
+    // Until the list is known the event shows (as it always did); then only while its logo is on
+    const eventShown = list === null || shown.some((l) => l.id === "mgw");
+    if (title !== screenView.title || eventShown !== screenView.eventShown || challenge !== screenView.challenge) {
+      screenView.title = title;
+      screenView.eventShown = eventShown;
+      screenView.challenge = challenge;
+      repaintScreen();
+    }
+    // More logos than places: they take turns
+    if (shown.length > places && rotation === null) startTurns();
+    // Test builds only: which logo each place and banner shows (an end-to-end test changes them mid-race)
+    if (process.env.NEXT_PUBLIC_KIOSK_TEST_HOOKS === "1") {
+      const logoOf = (tex: THREE.Texture | null) => textures.idOf(tex);
+      const banners = RISE_BANNERS.map((_, kind) => riseBanners.find((b) => b.kind === kind)?.material.map ?? null);
+      (window as Window & { __kioskBrandState?: unknown }).__kioskBrandState = {
+        known: list !== null,
+        boards: boards ? (boards.group.visible ? boards.faces.map((f) => logoOf(f.map)) : []) : null,
+        banners: riseBanners.length > 0 ? banners.map(logoOf) : null,
+        title: screenView.title,
+      };
+    }
+  };
+  show();
+  const unsubscribe = subscribeLogos(show);
+  stopFollowingLogos = () => {
+    stopped = true;
+    unsubscribe();
+    if (rotation !== null) window.clearInterval(rotation);
+    rotation = null;
+  };
 }

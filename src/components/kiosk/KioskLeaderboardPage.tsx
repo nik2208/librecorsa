@@ -3,15 +3,20 @@
 /** The public leaderboard, for a second screen at the stand or a phone on the same network (refreshes by itself) */
 
 import React, { useEffect, useState } from "react";
-import { BrandHeader, LeaderboardTable } from "@/components/kiosk/kiosk-ui";
+import { BrandHeader, LeaderboardTable, useKioskLogos } from "@/components/kiosk/kiosk-ui";
+import { challengeName } from "@/lib/kiosk/kiosk-logos";
 import { fetchLeaderboard, loadKioskConfig } from "@/lib/kiosk/kiosk-api";
-import { EVENT_BRAND } from "@/lib/kiosk/event-brand";
 import { KIOSK_CARS, KIOSK_TRACKS, rankingModeFor, runnableCarId, runnableTrackId, type KioskLeaderboard } from "@/lib/kiosk/kiosk-types";
 
 const REFRESH_MS = 10_000;
 
 export const KioskLeaderboardPage: React.FC = () => {
   const [board, setBoard] = useState<KioskLeaderboard | null>(null);
+  // The game's name follows the sponsor's logo (shown or hidden by the staff), in the phone's tab too
+  const challenge = challengeName(useKioskLogos());
+  useEffect(() => {
+    document.title = `Classifica · ${challenge}`;
+  }, [challenge]);
   const [error, setError] = useState(false);
   const [subtitle, setSubtitle] = useState("");
   // Opened from the kiosk's settings (no address bar there): a way back. A second screen opened on it has no history
@@ -45,9 +50,11 @@ export const KioskLeaderboardPage: React.FC = () => {
   }, []);
 
   return (
-    <main className="kiosk-ui flex min-h-dvh flex-col bg-[radial-gradient(ellipse_at_top,#3a0306_0%,#08090D_60%)] px-[max(1.25rem,env(safe-area-inset-left))] py-8 text-white">
+    // Its own scroll (the game's body never scrolls): a long board on a phone. No scrollbar: on the stand's screen nobody
+    // scrolls, and a finger or a wheel still does
+    <main className="kiosk-ui flex h-dvh flex-col overflow-y-auto bg-[radial-gradient(ellipse_at_top,#3a0306_0%,#08090D_60%)] px-[max(1.25rem,env(safe-area-inset-left))] py-8 text-white [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       <BrandHeader />
-      <h1 className="mt-6 font-f1-display text-4xl font-black uppercase tracking-[0.06em] sm:text-6xl">{EVENT_BRAND.challenge}</h1>
+      <h1 className="mt-6 font-f1-display text-4xl font-black uppercase tracking-[0.06em] sm:text-6xl">{challenge}</h1>
       <p className="mt-1 font-f1-italic text-xl font-bold uppercase tracking-[0.25em] text-[#FF3B30]">{subtitle || "Classifica"}</p>
       <div className="mt-8 w-full max-w-5xl">
         <LeaderboardTable board={board} limit={board?.rows.length ?? 15} large emptyText={error ? "Classifica non disponibile" : undefined} />
