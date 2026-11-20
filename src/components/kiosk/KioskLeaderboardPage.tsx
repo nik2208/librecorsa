@@ -19,6 +19,7 @@ export const KioskLeaderboardPage: React.FC = () => {
   }, [challenge]);
   const [error, setError] = useState(false);
   const [subtitle, setSubtitle] = useState("");
+  const [motto, setMotto] = useState("");
   // Opened from the kiosk's settings (no address bar there): a way back. A second screen opened on it has no history
   const [canGoBack, setCanGoBack] = useState(false);
   useEffect(() => setCanGoBack(window.history.length > 1), []);
@@ -34,6 +35,7 @@ export const KioskLeaderboardPage: React.FC = () => {
         if (!live) return;
         setBoard(next);
         setError(false);
+        setMotto(raw.motto);
         const track = KIOSK_TRACKS.find((t) => t.id === config.trackId)?.label ?? config.trackId;
         const car = ` · ${KIOSK_CARS.find((c) => c.id === config.carId)?.label ?? config.carId}`;
         setSubtitle(config.limitMode === "laps" ? `${config.laps} ${config.laps === 1 ? "giro" : "giri"} · tempo totale · ${track}${car}` : `Miglior giro · ${track}${car}`);
@@ -55,6 +57,7 @@ export const KioskLeaderboardPage: React.FC = () => {
     <main className="kiosk-ui flex h-dvh flex-col overflow-y-auto bg-[radial-gradient(ellipse_at_top,#3a0306_0%,#08090D_60%)] px-[max(1.25rem,env(safe-area-inset-left))] py-8 text-white [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       <BrandHeader />
       <h1 className="mt-6 font-f1-display text-4xl font-black uppercase tracking-[0.06em] sm:text-6xl">{challenge}</h1>
+      {motto ? <p className="mt-2 font-f1-italic text-2xl font-bold text-white/85 sm:text-3xl">{motto}</p> : null}
       <p className="mt-1 font-f1-italic text-xl font-bold uppercase tracking-[0.25em] text-[#FF3B30]">{subtitle || "Classifica"}</p>
       <div className="mt-8 w-full max-w-5xl">
         <LeaderboardTable board={board} limit={board?.rows.length ?? 15} large emptyText={error ? "Classifica non disponibile" : undefined} />

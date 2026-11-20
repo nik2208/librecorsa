@@ -5,8 +5,9 @@ import { withBasePath } from "@/lib/base-path";
 import { EVENT_BRAND } from "@/lib/kiosk/event-brand";
 import { REPO_URL, SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
 
-// Event branch: the kiosk's own name in the browser's title bar (no LibreCorsa on the stand's screens)
-const EVENT_TITLE = `${EVENT_BRAND.challenge} · ${EVENT_BRAND.eventShort} ${EVENT_BRAND.year}`;
+// Event branch: the kiosk's own name in the browser's title bar (no LibreCorsa on the stand's screens). Fixed at build,
+// so no brand in it: the brands are the staff's choice while the kiosk runs (src/lib/kiosk/kiosk-logos.ts)
+const EVENT_TITLE = EVENT_BRAND.challengeNeutral;
 
 /*
  * The UI fonts ship with the app (Latin subsets, as Google Fonts serves them; SIL OFL 1.1, licences in ./fonts).
@@ -50,9 +51,9 @@ const orbitron = localFont({
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
-  title: { default: EVENT_TITLE, template: `%s · ${EVENT_BRAND.challenge}` },
+  title: { default: EVENT_TITLE, template: `%s · ${EVENT_TITLE}` },
   description: SITE_DESCRIPTION,
-  applicationName: EVENT_BRAND.challenge,
+  applicationName: EVENT_TITLE,
   keywords: [
     "sim racing",
     "racing simulator",

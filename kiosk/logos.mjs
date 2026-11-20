@@ -2,7 +2,9 @@
  * The logos the kiosk shows (event branch): which ones, in what order, and the staff's own.
  *
  * Three are built in: HUAWEI, Milan Games Week and WINDTRE, whose pictures kiosk/brand.mjs makes at start into the
- * served build (/kiosk/brand/). They can be hidden, not deleted. The staff can add more from the admin page while the
+ * served build (/kiosk/brand/). They start hidden (the stand may run without them) and the staff turn them on; they
+ * can be hidden, not deleted. Each one also brings its brand's other references on the screens (the game's name with
+ * HUAWEI, the event's dates and venue with Milan Games Week, the car's livery with HUAWEI). The staff can add more from the admin page while the
  * kiosk runs: each upload is drawn at once (drawUploadedLogo: its picture for the screens and its trackside board) and
  * the game, which reads this list every few seconds, puts it on the boards in the middle of a race.
  *
@@ -78,7 +80,8 @@ export function createLogoRegistry({ dataDir, servedBrandDir, log = console }) {
       } else continue;
       seen.add(r.id);
     }
-    for (const b of BUILTIN_LOGOS) if (!seen.has(b.id)) items.push({ id: b.id, enabled: true });
+    // A built-in logo not in the list (a new kiosk, or one added by an update) starts hidden
+    for (const b of BUILTIN_LOGOS) if (!seen.has(b.id)) items.push({ id: b.id, enabled: false });
     return { items, updatedAt: typeof raw?.updatedAt === "string" ? raw.updatedAt : null };
   }
 

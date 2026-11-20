@@ -6,9 +6,14 @@
 
 import type { PlayerSettings } from "@/lib/settings/player-settings";
 import type { AssistPreset } from "@/types/f1";
-import { KIOSK_LIVERY_ID, type KioskConfig } from "@/lib/kiosk/kiosk-types";
+import { KIOSK_LIVERY_ID, KIOSK_NEUTRAL_LIVERY_ID, type KioskConfig } from "@/lib/kiosk/kiosk-types";
 
-export function kioskSettingsFor(config: KioskConfig, difficulty: AssistPreset = config.difficulty): (own: PlayerSettings) => PlayerSettings {
+/** `eventLivery`: the sponsor's livery (its logo is on, src/lib/kiosk/kiosk-logos.ts sponsorShown), else the game's own */
+export function kioskSettingsFor(
+  config: KioskConfig,
+  difficulty: AssistPreset = config.difficulty,
+  eventLivery = false
+): (own: PlayerSettings) => PlayerSettings {
   return (own) => ({
     ...own,
     device: config.device,
@@ -21,7 +26,7 @@ export function kioskSettingsFor(config: KioskConfig, difficulty: AssistPreset =
     racingLine: config.racingLine,
     // Everyone shares this browser's personal best: no ghost or delta to it
     ghost: false,
-    liveryId: KIOSK_LIVERY_ID,
+    liveryId: eventLivery ? KIOSK_LIVERY_ID : KIOSK_NEUTRAL_LIVERY_ID,
     mouseSteer: false,
     conditions: { ...own.conditions, weather: "clear", weatherNodes: undefined, timeScale: 0 },
     // Controls a visitor must not reach: the autopilot (it would set lap times), mute, replays, the flying restart and

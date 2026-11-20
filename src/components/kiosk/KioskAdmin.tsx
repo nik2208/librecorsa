@@ -24,6 +24,7 @@ import { formatClock, formatLapTime } from "@/lib/kiosk/kiosk-score";
 import { withBasePath } from "@/lib/base-path";
 import {
   DEFAULT_KIOSK_CONFIG,
+  KIOSK_MOTTO_MAX,
   KIOSK_CARS,
   KIOSK_DEVICES,
   KIOSK_DIFFICULTIES,
@@ -253,7 +254,7 @@ export const KioskAdmin: React.FC = () => {
               label="Auto"
               hint={
                 runnableCarId(config.carId) !== config.carId
-                  ? `${KIOSK_CARS.find((c) => c.id === config.carId)?.label} non è in questa build: il kiosk usa la monoposto Huawei`
+                  ? `${KIOSK_CARS.find((c) => c.id === config.carId)?.label} non è in questa build: il kiosk usa la Monoposto 2026`
                   : "Classifica separata per auto."
               }
             >
@@ -299,6 +300,17 @@ export const KioskAdmin: React.FC = () => {
               </Field>
             </div>
           </details>
+          <h2 className="mt-2 font-f1-display text-lg font-bold uppercase tracking-[0.12em]">Schermate</h2>
+          <Field label="Motto" hint="Sotto il nome della sfida: menu, caricamento, classifica e maxischermi in pista. Vuoto: nessun motto.">
+            <input
+              type="text"
+              maxLength={KIOSK_MOTTO_MAX}
+              value={config.motto}
+              placeholder={DEFAULT_KIOSK_CONFIG.motto}
+              onChange={(e) => update("motto", e.target.value)}
+              className={`${inputClass} font-f1-italic`}
+            />
+          </Field>
           <h2 className="mt-2 font-f1-display text-lg font-bold uppercase tracking-[0.12em]">Controlli e grafica</h2>
           <Field label="Comandi dei giocatori" hint={KIOSK_DEVICES.find((d) => d.id === config.device)?.hint}>
             <Segmented value={config.device} options={KIOSK_DEVICES} onChange={(v) => update("device", v)} />

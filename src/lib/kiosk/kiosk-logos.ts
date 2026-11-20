@@ -36,7 +36,8 @@ const builtin = (id: string, name: string, logo: string, banner: string): KioskL
   id,
   name,
   builtin: true,
-  enabled: true,
+  // Hidden until the staff turn them on (kiosk/logos.mjs)
+  enabled: false,
   ground: "dark",
   boxed: false,
   groundMode: "auto",
@@ -44,7 +45,7 @@ const builtin = (id: string, name: string, logo: string, banner: string): KioskL
   banner,
 });
 
-/** What a kiosk without a server shows: the three built-in logos, from the build's /kiosk/brand/ when they are there */
+/** What a kiosk without a server knows: the three built-in logos (hidden, as on a new kiosk server) */
 const BUILTIN_DEFAULTS: readonly KioskLogo[] = [
   builtin("huawei", "HUAWEI", BRAND_FILES.sponsorLogo, BRAND_FILES.bannerSponsor),
   builtin("mgw", "MILAN GAMES WEEK", BRAND_FILES.eventLogo, BRAND_FILES.bannerEvent),
@@ -63,7 +64,10 @@ export const shownLogos = (list: readonly KioskLogo[] | null): KioskLogo[] => (l
  * it (and until the list is known, so a hidden sponsor never flashes up)
  */
 export const challengeName = (list: readonly KioskLogo[] | null): string =>
-  shownLogos(list).some((l) => l.id === "huawei") ? EVENT_BRAND.challenge : EVENT_BRAND.challengeNeutral;
+  sponsorShown(list) ? EVENT_BRAND.challenge : EVENT_BRAND.challengeNeutral;
+
+/** The sponsor's logo is on: its name in the game's, its livery on the car (and nothing of it before the list is known) */
+export const sponsorShown = (list: readonly KioskLogo[] | null): boolean => shownLogos(list).some((l) => l.id === "huawei");
 
 /** The server's answer, made safe to draw from (null when it isn't a list) */
 function sanitizeList(raw: unknown): KioskLogo[] | null {

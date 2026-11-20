@@ -72,7 +72,17 @@ const DEFAULT_CONFIG = {
   racingLine: true,
   countdownS: 3,
   resultsHoldS: 30,
+  motto: "Sfida il cronometro! Sei tu il più veloce?",
 };
+
+/** The motto as the screens show it (src/lib/kiosk/kiosk-types.ts cleanMotto) */
+const cleanMotto = (v) =>
+  (typeof v === "string" ? v : "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/[<>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
 
 function num(v, min, max, fallback, step = 1) {
   const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
@@ -99,6 +109,7 @@ function sanitizeConfig(raw) {
     racingLine: typeof r.racingLine === "boolean" ? r.racingLine : d.racingLine,
     countdownS: num(r.countdownS, 0, 10, d.countdownS),
     resultsHoldS: num(r.resultsHoldS, 5, 300, d.resultsHoldS),
+    motto: typeof r.motto === "string" ? cleanMotto(r.motto) : d.motto,
     ...(typeof r.updatedAt === "string" ? { updatedAt: r.updatedAt } : {}),
   };
 }

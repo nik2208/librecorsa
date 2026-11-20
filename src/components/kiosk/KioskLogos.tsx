@@ -110,7 +110,9 @@ export const KioskLogosPanel: React.FC<{ pin: string }> = ({ pin }) => {
         <h2 className="font-f1-display text-lg font-bold uppercase tracking-[0.12em]">Loghi</h2>
         <p className="font-f1-italic text-sm text-white/60">
           I loghi visibili compaiono nelle schermate del kiosk e sui cartelloni a bordo pista, in quest&apos;ordine. Ogni modifica vale subito,
-          anche durante una gara (entro qualche secondo).
+          anche durante una gara (entro qualche secondo). HUAWEI, Milan Games Week e WINDTRE partono nascosti: accenderli porta anche gli
+          altri riferimenti al marchio (con HUAWEI il nome della sfida e la livrea della Monoposto 2026, con Milan Games Week date e luogo
+          dell&apos;evento).
         </p>
       </div>
       {listNotice && !list.some((l) => l.id === listNotice.id) ? <NoticeLine notice={listNotice} /> : null}

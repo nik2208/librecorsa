@@ -1,6 +1,6 @@
 import React from "react";
-import { EVENT_BRAND, EVENT_BRANDING_ON } from "@/lib/kiosk/event-brand";
-import { EventMark } from "@/components/kiosk/EventMark";
+import { EVENT_BRANDING_ON } from "@/lib/kiosk/event-brand";
+import { ChallengeWordmark, EventMark } from "@/components/kiosk/EventMark";
 
 export interface LibreCorsaLogoProps {
   /**
@@ -89,7 +89,7 @@ export const LibreCorsaLogo: React.FC<LibreCorsaLogoProps> = ({
       <div className={`inline-flex max-w-full items-center select-none ${s.gap} ${className}`}>
         <EventMark className={`${s.mark} shrink-0`} />
         <div className={`font-f1-display leading-none font-black tracking-[0.06em] text-[#F5F7FA] italic ${s.word}`}>
-          {EVENT_BRAND.sponsor} <span className="text-[#FF3B30]">RACING</span>
+          <ChallengeWordmark />
         </div>
       </div>
     );

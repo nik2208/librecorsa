@@ -100,6 +100,13 @@ async function main() {
     assert.deepEqual([d.trackId, d.carId, d.device, d.graphics], ["monza", "sf26", "controller", "medium"], "the event's defaults");
     assert.deepEqual([sanitizeKioskConfig({ device: "wheel" }).device, sanitizeKioskConfig({ graphics: "high" }).graphics], ["wheel", "high"]);
   });
+  await check("the motto: the event's at first, one clean line of 80 characters at most, empty for none", () => {
+    assert.equal(sanitizeKioskConfig({}).motto, "Sfida il cronometro! Sei tu il più veloce?");
+    assert.equal(sanitizeKioskConfig({ motto: 42 }).motto, DEFAULT_KIOSK_CONFIG.motto);
+    assert.equal(sanitizeKioskConfig({ motto: "  Vai\n<b>forte</b>\u0007!  " }).motto, "Vai bforte/b !");
+    assert.equal(sanitizeKioskConfig({ motto: "x".repeat(200) }).motto.length, 80);
+    assert.equal(sanitizeKioskConfig({ motto: "   " }).motto, "");
+  });
 
   console.log("Server (kiosk/server.mjs)");
   const dataDir = mkdtempSync(join(tmpdir(), "kiosk-verify-"));
@@ -176,6 +183,11 @@ async function main() {
       assert.equal(merged.limitMode, "laps");
       assert.equal(merged.laps, 2);
       assert.equal(merged.maxMinutes, 4);
+      // The motto: the event's at first, kept as one clean line (the server's copy of the rule)
+      assert.equal(initial.motto, "Sfida il cronometro! Sei tu il più veloce?");
+      const motto = await (await api("/config", { method: "PUT", body: JSON.stringify({ motto: " Chi è <i>il più</i>\tveloce? " }) }, "9876")).json();
+      assert.equal(motto.motto, "Chi è iil più/i veloce?");
+      assert.equal(motto.laps, 2, "the motto alone changes nothing else");
     });
     await check("results: ranked by total time in a laps session, best per driver, retries stored once", async () => {
       assert.equal((await post(session("c1", "Anna", [[100_000, true], [100_000, true]]))).status, 200);
@@ -287,9 +299,9 @@ async function main() {
     const scripted = '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 100" onload="alert(1)"><script>alert(2)</script><rect x="50" y="20" width="300" height="60" fill="#C00"/></svg>';
     let badgeId = "";
 
-    await check("logos: the three built-in ones, shown, at first; a picture only where the server has made it", async () => {
+    await check("logos: the three built-in ones, hidden, at first; a picture only where the server has made it", async () => {
       const logos = await logoList();
-      assert.deepEqual(logos.map((l) => [l.id, l.enabled, l.builtin]), [["huawei", true, true], ["mgw", true, true], ["windtre", true, true]]);
+      assert.deepEqual(logos.map((l) => [l.id, l.enabled, l.builtin]), [["huawei", false, true], ["mgw", false, true], ["windtre", false, true]]);
       assert.match(logos[0].logo ?? "", /^\/kiosk\/brand\/huawei-logo\.png\?v=/);
       assert.equal(logos[1].logo, null, "no picture made: the game draws its name");
       assert.equal(logos[2].banner, null);
@@ -299,6 +311,9 @@ async function main() {
       const refused = await upload(badge, "X", null);
       assert.equal(refused.status, 401);
       assert.equal((await fetch(`${base}/api/kiosk/logos/huawei`, { method: "DELETE" })).status, 401);
+      // The staff turn the brands on (they start hidden), then hide one
+      const on = (await (await putLogos({ logos: ["huawei", "mgw", "windtre"].map((id) => ({ id, enabled: true })) })).json()).logos as Logo[];
+      assert.deepEqual(on.map((l) => [l.id, l.enabled]), [["huawei", true], ["mgw", true], ["windtre", true]]);
       const hidden = (await (await putLogos({ logos: [{ id: "mgw", enabled: false }] })).json()).logos as Logo[];
       assert.deepEqual(hidden.map((l) => [l.id, l.enabled]), [["huawei", true], ["mgw", false], ["windtre", true]]);
       const moved = (await (await putLogos({ order: ["windtre", "huawei"] })).json()).logos as Logo[];
@@ -699,7 +714,7 @@ async function main() {
           stop();
         }
       });
-      await check("a site with no kiosk server is told apart at once: the built-in logos show without waiting", async () => {
+      await check("a site with no kiosk server is told apart at once: the built-in logos (hidden) without waiting", async () => {
         answer = async () => new Response("<!doctype html><title>404</title>", { status: 404, headers: { "Content-Type": "text/html" } });
         await assert.rejects(api.kioskRequest("/logos"), (err: unknown) => err instanceof api.KioskApiError && err.status === 0 && err.httpStatus === 404);
         // A page just opened, with no list kept from an earlier visit
@@ -709,8 +724,8 @@ async function main() {
         try {
           // Well before the 1.5 s a slow kiosk server is given
           assert.ok(await until(() => store.getLogosSnapshot() !== null, 800), "the built-in logos waited as for a slow server");
-          assert.deepEqual(store.getLogosSnapshot()?.map((l) => [l.id, l.enabled]), [["huawei", true], ["mgw", true], ["windtre", true]]);
-          assert.equal(store.challengeName(store.getLogosSnapshot()), "HUAWEI RACING CHALLENGE");
+          assert.deepEqual(store.getLogosSnapshot()?.map((l) => [l.id, l.enabled]), [["huawei", false], ["mgw", false], ["windtre", false]]);
+          assert.equal(store.challengeName(store.getLogosSnapshot()), "RACING CHALLENGE");
         } finally {
           stop();
           store.resetLogoStoreForTests();

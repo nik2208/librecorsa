@@ -8,7 +8,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { TrackGate } from "@/components/TrackGate";
 import { KioskOverlay } from "@/components/kiosk/KioskOverlay";
-import { BrandHeader } from "@/components/kiosk/kiosk-ui";
+import { BrandHeader, useKioskLogos } from "@/components/kiosk/kiosk-ui";
+import { sponsorShown } from "@/lib/kiosk/kiosk-logos";
 import { flushResultQueue, loadKioskConfig, type ConfigSource } from "@/lib/kiosk/kiosk-api";
 import { kioskSettingsFor } from "@/lib/kiosk/kiosk-settings";
 import { runnableCarId, runnableTrackId, type KioskConfig } from "@/lib/kiosk/kiosk-types";
@@ -59,7 +60,9 @@ export const KioskPlay: React.FC = () => {
   );
   const source = state?.source ?? "default";
   const level = difficulty ?? config?.difficulty;
-  const settings = useMemo(() => (config ? kioskSettingsFor(config, level) : undefined), [config, level]);
+  // The sponsor's livery only while its logo is on (it changes on the car mid-race, as the boards do)
+  const eventLivery = sponsorShown(useKioskLogos());
+  const settings = useMemo(() => (config ? kioskSettingsFor(config, level, eventLivery) : undefined), [config, level, eventLivery]);
   const kiosk = useMemo<KioskMode | undefined>(
     () =>
       config && settings

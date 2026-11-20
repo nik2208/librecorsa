@@ -26,13 +26,15 @@ export type KioskTrackId = (typeof KIOSK_TRACKS)[number]["id"];
 /** The 2026 Prototype (CC BY body by Qvist Designs), in the event livery: the car of a build without the extras */
 export const KIOSK_CAR_ID = "vf26";
 export const KIOSK_LIVERY_ID = "huawei_mgw";
+/** The livery while the sponsor's logo is off: the game's own (src/lib/track-data.ts LIVERIES) */
+export const KIOSK_NEUTRAL_LIVERY_ID = "librecorsa";
 /** RISE Motordrome's short layout: the circuit of a build without the extras */
 export const KIOSK_FALLBACK_TRACK_ID = "rwanda_official_short";
 
 /** The cars a kiosk can run: the Ferrari SF-26 (the event's car), and the 2026 Prototype in the event livery */
 export const KIOSK_CARS = [
   { id: "sf26", label: "Ferrari SF-26", extra: true },
-  { id: "vf26", label: "Monoposto 2026 Huawei", extra: false },
+  { id: "vf26", label: "Monoposto 2026", extra: false },
 ] as const;
 export type KioskCarId = (typeof KIOSK_CARS)[number]["id"];
 
@@ -94,6 +96,8 @@ export interface KioskConfig {
   countdownS: number;
   /** How long the results stay on screen before the next player (s) */
   resultsHoldS: number;
+  /** The line under the game's name on the menu, the leaderboard and the circuit's screens (empty: none) */
+  motto: string;
   /** ISO time of the last save (server-set) */
   updatedAt?: string;
 }
@@ -113,7 +117,19 @@ export const DEFAULT_KIOSK_CONFIG: KioskConfig = {
   racingLine: true,
   countdownS: 3,
   resultsHoldS: 30,
+  motto: "Sfida il cronometro! Sei tu il più veloce?",
 };
+
+/** The motto's longest length */
+export const KIOSK_MOTTO_MAX = 80;
+/** One line of text for the screens: no control characters or angle brackets, spaces collapsed, KIOSK_MOTTO_MAX at most */
+export const cleanMotto = (v: unknown): string =>
+  (typeof v === "string" ? v : "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/[<>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, KIOSK_MOTTO_MAX);
 
 const num = (v: unknown, min: number, max: number, fallback: number, step = 1): number => {
   const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
@@ -146,6 +162,7 @@ export function sanitizeKioskConfig(raw: unknown): KioskConfig {
     racingLine: typeof r.racingLine === "boolean" ? r.racingLine : d.racingLine,
     countdownS: num(r.countdownS, 0, 10, d.countdownS),
     resultsHoldS: num(r.resultsHoldS, 5, 300, d.resultsHoldS),
+    motto: typeof r.motto === "string" ? cleanMotto(r.motto) : d.motto,
     ...(typeof r.updatedAt === "string" ? { updatedAt: r.updatedAt } : {}),
   };
 }

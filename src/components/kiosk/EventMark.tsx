@@ -9,7 +9,7 @@
 
 import React, { useSyncExternalStore } from "react";
 import { EVENT_BRAND } from "@/lib/kiosk/event-brand";
-import { followLogos, getLogosSnapshot } from "@/lib/kiosk/kiosk-logos";
+import { followLogos, getLogosSnapshot, sponsorShown } from "@/lib/kiosk/kiosk-logos";
 
 const BOARD = "M28 6H110Q122 6 122 18V98L98 122H18Q6 122 6 110V28Z";
 
@@ -42,5 +42,19 @@ export const EventMark: React.FC<{ className?: string }> = ({ className = "h-10 
         </text>
       )}
     </svg>
+  );
+};
+
+/** The game's wordmark beside the badge: "HUAWEI RACING" while the sponsor's logo is on, else "RACING CHALLENGE" */
+export const ChallengeWordmark: React.FC = () => {
+  const logos = useSyncExternalStore(followLogos, getLogosSnapshot, () => null);
+  return sponsorShown(logos) ? (
+    <>
+      {EVENT_BRAND.sponsor} <span className="text-[#FF3B30]">RACING</span>
+    </>
+  ) : (
+    <>
+      <span className="text-[#FF3B30]">RACING</span> CHALLENGE
+    </>
   );
 };

@@ -487,7 +487,7 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
         />
       ) : null}
 
-      {stage === "boot" ? <KioskBootScreen progress={progress} downloadFailed={downloadFailed} /> : null}
+      {stage === "boot" ? <KioskBootScreen progress={progress} downloadFailed={downloadFailed} motto={config.motto} /> : null}
 
       {stage === "menu" ? (
         <div className="fixed inset-0 z-[70] flex flex-col overflow-y-auto bg-gradient-to-r from-black/90 via-black/70 to-black/25 px-[max(1.25rem,env(safe-area-inset-left))] py-6 text-white">
@@ -495,6 +495,7 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
           <div className="mt-4 flex flex-1 flex-col gap-6 lg:flex-row lg:items-center 2xl:gap-10">
             <section className="flex w-full max-w-4xl flex-col gap-4 2xl:gap-6">
               <h1 className="font-f1-display text-4xl font-black uppercase leading-tight tracking-[0.06em] lg:text-5xl 2xl:text-7xl">{challenge}</h1>
+              {config.motto ? <p className="font-f1-italic text-2xl font-bold text-white/85 2xl:text-4xl">{config.motto}</p> : null}
               <p className="font-f1-display text-2xl font-black uppercase tracking-[0.12em] text-[#FF3B30] 2xl:text-3xl">
                 {carLabel} · {trackLabel}
               </p>
@@ -750,7 +751,7 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
 };
 
 /** While the circuit and the car load: the event's screen with the progress (the game's own loading screen is not shown) */
-const KioskBootScreen: React.FC<{ progress: AssetProgressSnapshot; downloadFailed: boolean }> = ({ progress, downloadFailed }) => {
+const KioskBootScreen: React.FC<{ progress: AssetProgressSnapshot; downloadFailed: boolean; motto: string }> = ({ progress, downloadFailed, motto }) => {
   const challenge = challengeName(useKioskLogos());
   const [startedAt] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
@@ -777,6 +778,7 @@ const KioskBootScreen: React.FC<{ progress: AssetProgressSnapshot; downloadFaile
     <div className="kiosk-ui fixed inset-0 z-[72] flex flex-col items-center justify-center gap-8 bg-[radial-gradient(ellipse_at_top_left,#3a0306_0%,#08090D_60%)] px-6 text-white">
       <BrandHeader />
       <h1 className="text-center font-f1-display text-4xl font-black uppercase tracking-[0.08em] sm:text-6xl">{challenge}</h1>
+      {motto ? <p className="-mt-4 text-center font-f1-italic text-2xl font-bold text-white/85">{motto}</p> : null}
       <div className="w-[min(90vw,36rem)]">
         <div className="h-3 overflow-hidden rounded-full bg-white/10">
           <div className="h-full rounded-full bg-[#C7000B]" style={{ width: `${failed || stalled ? 100 : pct}%` }} />

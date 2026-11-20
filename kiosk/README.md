@@ -27,7 +27,7 @@ Classifica:
 | Pagina | Cosa fa |
 | :-- | :-- |
 | `/` | **Il kiosk** (anche `/kiosk` e `/kiosk/play`, per i vecchi link). |
-| `/kiosk/admin` | Impostazioni (PIN, dal pulsante *Impostazioni* del menu): giri o minuti, circuito, auto, difficoltà proposta, comandi (controller USB / volante / tastiera), qualità grafica; **loghi** (quali mostrare, ordine, caricarne di nuovi); risultati, eliminazione, azzeramento, export CSV; **indirizzo della classifica in rete locale**. |
+| `/kiosk/admin` | Impostazioni (PIN, dal pulsante *Impostazioni* del menu): giri o minuti, circuito, auto, difficoltà proposta, **motto**, comandi (controller USB / volante / tastiera), qualità grafica; **loghi** (quali mostrare, ordine, caricarne di nuovi); risultati, eliminazione, azzeramento, export CSV; **indirizzo della classifica in rete locale**. |
 | `/kiosk/classifica` | Classifica pubblica per un secondo schermo o un telefono sulla stessa rete (si aggiorna da sola). |
 | `/play` | Il simulatore completo: serve solo allo staff per abbinare un volante (da *Impostazioni* → *Configura volante*). |
 
@@ -115,7 +115,9 @@ In **Impostazioni → Loghi** lo staff sceglie quali loghi far vedere e in che o
   RISE Motordrome;
 - nel titolo dei maxischermi del circuito.
 
-I loghi predefiniti sono tre: **HUAWEI**, **Milan Games Week** e **WINDTRE**. Si possono nascondere ma non eliminare.
+I loghi predefiniti sono tre: **HUAWEI**, **Milan Games Week** e **WINDTRE**. **Partono nascosti**: lo staff li accende
+quando servono. Si possono nascondere ma non eliminare. Un kiosk già usato con una versione precedente tiene la scelta
+salvata in `kiosk/data/logos.json`.
 
 **Aggiungere un logo a kiosk acceso**: *Aggiungi un logo* → scegli il file (SVG, PNG, JPG, WebP o GIF, fino a 10 MB) →
 nome → *Carica e mostra*. Il server ne ricava l'immagine per le schermate e il cartellone (1024 × 128), e il gioco lo
@@ -130,16 +132,27 @@ Ogni modifica (visibile/nascosto, ordine, sfondo, eliminazione) vale subito, sen
 visibili i cartelloni di Monza (3 per RISE) li alternano ogni 20 secondi. Senza nessun logo visibile i cartelloni di
 Monza spariscono e RISE torna ai suoi striscioni originali.
 
-Con il logo HUAWEI nascosto la sfida si chiama "RACING CHALLENGE" invece di "HUAWEI RACING CHALLENGE"; con quello Milan
-Games Week nascosto spariscono anche date e luogo dell'evento.
+Ogni logo predefinito porta con sé gli altri riferimenti al suo marchio, che si accendono e si spengono con lui:
+
+- **HUAWEI**: il nome della sfida ("HUAWEI RACING CHALLENGE", altrimenti "RACING CHALLENGE"), la scritta "HUAWEI RACING"
+  accanto allo stemma del gioco completo e la livrea della Monoposto 2026 (altrimenti la livrea di LibreCorsa);
+- **Milan Games Week**: date e luogo dell'evento nelle intestazioni e sui maxischermi, "MGW" sullo stemma (altrimenti
+  solo l'anno);
+- **WINDTRE**: solo il suo logo e il suo cartellone.
+
+Con i tre nascosti (il default) a schermo restano il nome "RACING CHALLENGE" e il **motto**.
+
+**Motto** (Impostazioni → Schermate): la frase sotto il nome della sfida, nel menu, nel caricamento, nella classifica e
+sui maxischermi del circuito. Predefinito: "Sfida il cronometro! Sei tu il più veloce?". Al massimo 80 caratteri; vuoto:
+nessun motto. Vale dopo *Salva*, come le altre impostazioni.
 
 Un logo appena caricato (o rimesso visibile) compare subito sui cartelloni, al suo posto nell'ordine. Un logo caricato è
 l'ultimo: a Monza, con i tre predefiniti visibili, va sul 4°, l'8°, il 12° cartellone e così via. Per averlo sul primo,
 spostalo in cima all'ordine. Quando i loghi sono più dei cartelloni e si alternano, quello appena acceso va subito sul
 primo (a RISE, il portale di partenza).
 
-Non cambiano con i loghi il titolo della pagina del gioco (non visibile a schermo intero) e la monoposto alternativa
-("Monoposto 2026 Huawei", con la sua livrea).
+Non cambia con i loghi il titolo della pagina del gioco (non visibile a schermo intero): è fissato nella build ed è
+sempre "RACING CHALLENGE".
 
 I loghi caricati restano sul PC del kiosk (`kiosk/data/logos.json` e `kiosk/data/logos/`). Il server serve solo le
 immagini PNG che ha disegnato, mai il file caricato. SVG con tavole da disegno grandi vanno bene; le immagini dentro un SVG
@@ -186,8 +199,9 @@ Risposta di `/leaderboard`:
 
 ## Grafiche Huawei / Milan Games Week / WINDTRE
 
-Nessuna schermata dei visitatori mostra LibreCorsa: caricamento, menu e HUD hanno il marchio dell'evento, e il titolo
-della pagina è "HUAWEI RACING CHALLENGE · MILAN GAMES WEEK 2026". I crediti sono nelle impostazioni (staff).
+Nessuna schermata dei visitatori mostra LibreCorsa: caricamento, menu e HUD hanno il marchio dell'evento (con i loghi
+che lo staff accende, vedi [Loghi](#loghi)), e il titolo della pagina è "RACING CHALLENGE". I crediti sono nelle
+impostazioni (staff).
 
 Su Monza il gioco aggiunge cartelloni con i loghi visibili lungo i rettilinei, oltre le barriere. Su RISE Motordrome
 cambia i suoi striscioni, maxischermi, portale, bandiere e cordoli. Quali loghi: vedi [Loghi](#loghi).
@@ -220,7 +234,8 @@ Upstream li ha rimossi il 12/11/2026 per motivi di diritti:
   sponsor reali (tra cui HP, IBM, AWS);
 - il modello di Monza viene da una conversione di Assetto Corsa e contiene uno striscione "Kunos Simulazioni".
 
-Le impostazioni permettono di tornare a RISE Motordrome e alla monoposto 2026 in livrea Huawei. Una build con
+Le impostazioni permettono di tornare a RISE Motordrome e alla Monoposto 2026 (in livrea Huawei con il logo HUAWEI
+acceso). Una build con
 `NEXT_PUBLIC_EXTRA_CONTENT=""` li esclude del tutto.
 
 ## Licenze e diritti

@@ -14,7 +14,7 @@ import { withBasePath } from "@/lib/base-path";
 import { BRAND_FILES, EVENT_BRAND, EVENT_BRANDING_ON, WINDTRE_BRAND } from "@/lib/kiosk/event-brand";
 import { fetchLeaderboard, loadKioskConfig } from "@/lib/kiosk/kiosk-api";
 import { challengeName, getLogosSnapshot, logoAssetUrl, shownLogos, subscribeLogos, type KioskLogo, type LogoGround } from "@/lib/kiosk/kiosk-logos";
-import { rankingModeFor, runnableCarId } from "@/lib/kiosk/kiosk-types";
+import { DEFAULT_KIOSK_CONFIG, rankingModeFor, runnableCarId } from "@/lib/kiosk/kiosk-types";
 import { formatLapTime } from "@/lib/kiosk/kiosk-score";
 import type { BuiltTrackData } from "@/lib/track-data";
 import { trackColliders } from "@/lib/sim/track-colliders";
@@ -128,7 +128,13 @@ interface ScreenRow {
  * The screens' card: `title` names the logos shown, and the leaderboard's first rows when there are any; the game's name
  * (`challenge`); the event's name, dates and venue only while its logo is shown (`eventShown`)
  */
-function paintScreen(rows: readonly ScreenRow[], title: string, eventShown = true, challenge: string = EVENT_BRAND.challengeNeutral): Painter {
+function paintScreen(
+  rows: readonly ScreenRow[],
+  title: string,
+  eventShown = true,
+  challenge: string = EVENT_BRAND.challengeNeutral,
+  motto: string = DEFAULT_KIOSK_CONFIG.motto
+): Painter {
   return (ctx, w, h, f) => {
     ctx.fillStyle = EVENT_BRAND.black;
     ctx.fillRect(0, 0, w, h);
@@ -155,7 +161,7 @@ function paintScreen(rows: readonly ScreenRow[], title: string, eventShown = tru
       });
     } else {
       fitText(ctx, challenge, w / 2, 118, w - 50, 30, `900 {size} ${f.display}`, EVENT_BRAND.white, 2);
-      fitText(ctx, "SFIDA IL CRONOMETRO!", w / 2, 162, w - 60, 22, `700 {size} ${f.text}`, "#FF3B30", 4);
+      if (motto) fitText(ctx, motto.toUpperCase(), w / 2, 162, w - 60, 22, `700 {size} ${f.text}`, "#FF3B30", 4);
       if (eventShown) fitText(ctx, EVENT_BRAND.event, w / 2, 206, w - 60, 17, `700 {size} ${f.text}`, "#C9C9CF", 2);
     }
     ctx.fillStyle = "#16161C";
@@ -315,7 +321,7 @@ let screenTimer: number | null = null;
  * Keeps the circuit's screens on the kiosk's leaderboard, when a kiosk server answers: the board of this circuit (the
  * one loaded, whatever the stored config names) and of the car the kiosk runs
  */
-function followLeaderboard(screen: BrandTexture, trackId: string | undefined, onRows: (rows: ScreenRow[]) => void): void {
+function followLeaderboard(screen: BrandTexture, trackId: string | undefined, onRows: (rows: ScreenRow[], motto: string) => void): void {
   if (screenTimer !== null) window.clearInterval(screenTimer);
   const refresh = async () => {
     try {
@@ -332,7 +338,8 @@ function followLeaderboard(screen: BrandTexture, trackId: string | undefined, on
           rank: r.rank,
           name: r.name,
           time: formatLapTime(board.mode === "total" ? r.totalTimeMs : r.bestLapMs),
-        }))
+        })),
+        config.motto
       );
     } catch {
       // No kiosk server (the plain game): the screens keep the event's card
@@ -695,12 +702,20 @@ export function applyEventBranding(root: THREE.Object3D, track?: BuiltTrackData)
     }
   }
   // The screens: the leaderboard under a title naming the logos shown
-  const screenView = { rows: [] as ScreenRow[], title: EVENT_BRAND.challengeNeutral as string, eventShown: true, challenge: EVENT_BRAND.challengeNeutral as string };
+  const screenView = {
+    rows: [] as ScreenRow[],
+    title: EVENT_BRAND.challengeNeutral as string,
+    eventShown: true,
+    challenge: EVENT_BRAND.challengeNeutral as string,
+    motto: DEFAULT_KIOSK_CONFIG.motto as string,
+  };
   const paintedScreen = screen as BrandTexture | null;
-  const repaintScreen = () => paintedScreen?.setPainter(paintScreen(screenView.rows, screenView.title, screenView.eventShown, screenView.challenge));
+  const repaintScreen = () =>
+    paintedScreen?.setPainter(paintScreen(screenView.rows, screenView.title, screenView.eventShown, screenView.challenge, screenView.motto));
   if (paintedScreen) {
-    followLeaderboard(paintedScreen, track?.id, (rows) => {
+    followLeaderboard(paintedScreen, track?.id, (rows, motto) => {
       screenView.rows = rows;
+      screenView.motto = motto;
       repaintScreen();
     });
   }

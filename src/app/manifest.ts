@@ -7,9 +7,9 @@ export const dynamic = "force-static";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    // Event branch: an install opens the kiosk, under the event's name
-    name: `${EVENT_BRAND.challenge} · ${EVENT_BRAND.eventShort} ${EVENT_BRAND.year}`,
-    short_name: EVENT_BRAND.challenge,
+    // Event branch: an install opens the kiosk, under its name (no brand: they are the staff's choice at run time)
+    name: EVENT_BRAND.challengeNeutral,
+    short_name: EVENT_BRAND.challengeNeutral,
     description: SITE_DESCRIPTION,
     start_url: withBasePath("/"),
     scope: withBasePath("/"),
