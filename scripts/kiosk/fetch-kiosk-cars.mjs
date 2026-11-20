@@ -29,6 +29,14 @@ export const VERSION = 'scripts/kiosk/fetch-kiosk-cars.mjs v2';
 const WHITE = { paint: [245, 245, 245], opacity: 1 };
 /** One request's limit; a timed-out request isn't tried again (librecorsa.org is then too slow for this build) */
 const REQUEST_TIMEOUT_MS = 30_000;
+/** The waits before a dropped request's further attempts, and before a second round for the cars that failed: a
+ * connection that drops for a few seconds must not cost the build a car (it did once, on the build PC) */
+const ms = (name, fallback) => (process.env[name] ?? fallback).split(',').map(Number);
+const RETRY_WAITS_MS = ms('KIOSK_CARS_RETRY_MS', '1000,4000,10000');
+const [SECOND_ROUND_WAIT_MS] = ms('KIOSK_CARS_ROUND_MS', '15000');
+const sleep = (t) => new Promise((done) => setTimeout(done, t));
+/** A fetch error with its cause (undici reports "fetch failed" and puts the reason in cause) */
+const describe = (e) => [e?.message, e?.cause?.code ?? e?.cause?.message].filter(Boolean).join(': ') || String(e);
 
 /**
  * The 496R's marks, by material and texture slot (every picture of the car was looked at, and which ones its meshes
@@ -108,10 +116,12 @@ export const CARS = {
 
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
-/** One file from librecorsa.org; a network error is tried twice more, a timeout or an HTTP error isn't */
-async function get(path, { optional = false } = {}) {
+/** One file from librecorsa.org; a dropped connection is tried again after each of RETRY_WAITS_MS, a timeout or an HTTP
+ * error isn't */
+export async function get(path, { optional = false } = {}) {
   let last;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt <= RETRY_WAITS_MS.length; attempt++) {
+    if (attempt) await sleep(RETRY_WAITS_MS[attempt - 1]);
     let res;
     try {
       res = await fetch(`${BASE}/${path}`, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
@@ -129,7 +139,7 @@ async function get(path, { optional = false } = {}) {
       if (e?.name === 'TimeoutError') break;
     }
   }
-  throw new Error(`${path}: ${last?.message ?? last}`);
+  throw new Error(`${path}: ${describe(last)}`);
 }
 
 /**
@@ -237,7 +247,7 @@ async function fetchCar(id, entry) {
     console.log(`${id}: ready (${entry.files.length} files)`);
     return true;
   } catch (e) {
-    console.warn(`${id}: left out of this build (${e?.message ?? e})`);
+    console.warn(`${id}: left out of this build (${describe(e)})`);
     return false;
   } finally {
     rmSync(part, { recursive: true, force: true });
@@ -259,13 +269,22 @@ async function fetchAll() {
   } catch (e) {
     console.warn(`${LOCK}: ${e.message}`);
   }
+  const failed = [];
   for (const id of Object.keys(CARS)) {
-    const ok = wanted.has(id) && lock.cars?.[id] ? await fetchCar(id, lock.cars[id]) : false;
-    if (ok) continue;
-    if (!wanted.has(id)) console.log(`${id}: not wanted in this build (KIOSK_CARS)`);
-    // Neither listed (no .kiosk-ready) nor shipped (no files in out/)
-    rmSync(`public/cars/${id}`, { recursive: true, force: true });
+    if (!wanted.has(id) || !lock.cars?.[id]) {
+      if (!wanted.has(id)) console.log(`${id}: not wanted in this build (KIOSK_CARS)`);
+      rmSync(`public/cars/${id}`, { recursive: true, force: true });
+    } else if (!(await fetchCar(id, lock.cars[id]))) failed.push(id);
   }
+  if (failed.length) {
+    console.log(`kiosk cars: trying ${failed.join(', ')} once more in ${SECOND_ROUND_WAIT_MS / 1000} s`);
+    await sleep(SECOND_ROUND_WAIT_MS);
+  }
+  for (const id of failed)
+    if (!(await fetchCar(id, lock.cars[id]))) {
+      // Neither listed (no .kiosk-ready) nor shipped (no files in out/)
+      rmSync(`public/cars/${id}`, { recursive: true, force: true });
+    }
 }
 
 // Run as a script (npm's prebuild, or by hand); imported by scripts/verify-kiosk-cars.ts for its lists
