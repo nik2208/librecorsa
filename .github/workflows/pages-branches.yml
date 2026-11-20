@@ -1,0 +1,159 @@
+name: Pages, one folder per branch
+
+# Publishes https://<owner>.github.io/<repo>/ with one folder per branch, each the game built for that folder:
+#   /main/                              the fork's main (the full game)
+#   /event/gaming-week-2026/            the fair's kiosk (stable)
+#   /event/gaming-week-2026-updated/    the fair's kiosk on LibreCorsa's newer game
+# and an index linking them. The same file is on all three branches. GitHub Pages deploys from the default branch
+# only (the github-pages environment), so a push to another branch just starts this workflow on main, which builds
+# all three from their current heads. Upstream's own deploy (deploy-pages.yml, librecorsa.org) is off in this fork.
+#
+# On Pages the kiosk runs without its server (kiosk/server.mjs): the default settings, results kept in the browser,
+# no shared leaderboard and no brand pictures. The game's online side is off (NEXT_PUBLIC_ONLINE_API unset).
+
+on:
+  push:
+    branches: ["main", "event/gaming-week-2026", "event/gaming-week-2026-updated"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push rebuilds every folder anyway
+  group: pages-branches-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # A push to an event branch: the build runs on main (Pages deploys from there)
+  hand-over:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Start this workflow on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages-branches.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: ["main", "event/gaming-week-2026", "event/gaming-week-2026-updated"]
+    steps:
+      - name: Checkout ${{ matrix.branch }}
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.branch }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build for its folder
+        env:
+          BRANCH: ${{ matrix.branch }}
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: NEXT_PUBLIC_BASE_PATH="/${GITHUB_REPOSITORY#*/}/$BRANCH" npx next build
+
+      - name: Put it in its folder
+        env:
+          BRANCH: ${{ matrix.branch }}
+        run: |
+          mkdir -p "_part/$BRANCH"
+          cp -a out/. "_part/$BRANCH/"
+          git rev-parse HEAD > "_part/$BRANCH/build-commit.txt"
+
+      - name: Upload the folder
+        uses: actions/upload-artifact@v7
+        with:
+          name: site-${{ strategy.job-index }}
+          path: _part
+          retention-days: 1
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download the folders
+        uses: actions/download-artifact@v8
+        with:
+          pattern: site-*
+          merge-multiple: true
+          path: _site
+
+      - name: Index and not-found page
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          commit() { cut -c1-7 "_site/$1/build-commit.txt" 2>/dev/null || echo "?"; }
+          cat > _site/index.html <<EOF
+          <!doctype html>
+          <html lang="it">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>LibreCorsa · rami</title>
+          <style>
+            :root { color-scheme: dark; }
+            body { margin: 0; min-height: 100vh; background: #08090d; color: #f5f7fa; font: 16px/1.5 system-ui, sans-serif; }
+            main { max-width: 44rem; margin: 0 auto; padding: 3rem 1rem; }
+            h1 { font-size: 1.6rem; margin: 0 0 .5rem; }
+            p { color: #b9bfcc; }
+            a.card { display: block; margin: 1rem 0; padding: 1rem 1.2rem; border: 1px solid #262b3d; border-radius: .8rem; background: #11131a; color: inherit; text-decoration: none; }
+            a.card:hover, a.card:focus { border-color: #ff4b2b; }
+            a.card strong { display: block; font-size: 1.1rem; }
+            code { color: #ff4b2b; }
+            small { color: #8e96aa; }
+          </style>
+          </head>
+          <body>
+          <main>
+            <h1>LibreCorsa, un sito per ramo</h1>
+            <p>Ogni cartella è il gioco costruito dal suo ramo di <code>$REPO</code>.</p>
+            <a class="card" href="event/gaming-week-2026/"><strong>Kiosk della fiera, stabile</strong>
+              <code>event/gaming-week-2026</code> <small>· $(commit event/gaming-week-2026)</small></a>
+            <a class="card" href="event/gaming-week-2026-updated/"><strong>Kiosk della fiera, su LibreCorsa aggiornato</strong>
+              <code>event/gaming-week-2026-updated</code> <small>· $(commit event/gaming-week-2026-updated)</small></a>
+            <a class="card" href="main/"><strong>Gioco completo</strong>
+              <code>main</code> <small>· $(commit main)</small></a>
+            <p><small>Qui il kiosk gira senza il suo server: impostazioni predefinite, tempi salvati solo nel browser, nessuna
+            classifica condivisa.</small></p>
+          </main>
+          </body>
+          </html>
+          EOF
+          cp _site/index.html _site/404.html
+          touch _site/.nojekyll
+          du -sh _site/* | sort -h
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: ./_site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+        with:
+          # Pages can stay queued for several minutes even with a valid artifact
+          timeout: "1800000"
