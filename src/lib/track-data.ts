@@ -11,6 +11,7 @@ import { AI_LINE_WIDTH_SCALE, brakingZoneLevel, computeSpeedProfile, createVf26P
 import { resolveSurfaceTable, type SurfaceTable, type SurfaceTableOverrides, type TrackSurfaceKind } from "./sim/track-surfaces";
 import type { SceneryCutBox } from "./scenery-cuts";
 import { EVENT_LIVERY } from "@/lib/kiosk/event-livery";
+import { APPLIKAT_LIVERY } from "@/lib/kiosk/applikat-livery";
 
 /** Raw `track_data.json` layout shared by every circuit (the bundled circuit's file is the reference schema) */
 export type RawTrackJson = typeof rawTrackJson;
@@ -182,8 +183,9 @@ export const LIVERIES: LiveryConfig[] = [
     number: "3",
     decals: ORACLE_RED_BULL_DECALS,
   },
-  // Event branch: the event's livery (src/lib/kiosk/event-livery.ts), the kiosk's car
+  // Event branch: the sponsor's livery (src/lib/kiosk/event-livery.ts) and Applikat's (applikat-livery.ts), the kiosk's car
   EVENT_LIVERY,
+  APPLIKAT_LIVERY,
 ];
 
 function turnsOf(raw: RawTrackJson): TurnMetadata[] {

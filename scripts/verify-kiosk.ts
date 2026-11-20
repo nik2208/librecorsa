@@ -15,6 +15,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatClock, formatLapTime, formatMinutes, scoreSession } from "../src/lib/kiosk/kiosk-score";
 import { DEFAULT_KIOSK_CONFIG, sanitizeKioskConfig } from "../src/lib/kiosk/kiosk-types";
+import { kioskSettingsFor } from "../src/lib/kiosk/kiosk-settings";
+import { DEFAULT_PLAYER_SETTINGS } from "../src/lib/settings/player-settings";
+import { LIVERIES } from "../src/lib/track-data";
 
 let failures = 0;
 const check = async (name: string, fn: () => void | Promise<void>) => {
@@ -68,7 +71,7 @@ async function main() {
   });
 
   console.log("Extras");
-  await check("the SF-26 and Monza are listed by default; NEXT_PUBLIC_EXTRA_CONTENT narrows them", async () => {
+  await check("Monza is listed by default, the SF-26 never (the event can't use it); NEXT_PUBLIC_EXTRA_CONTENT narrows them", async () => {
     // The variable left out entirely (a plain build), not set to ""
     const { NEXT_PUBLIC_EXTRA_CONTENT: _unset, ...baseEnv } = process.env;
     void _unset;
@@ -77,11 +80,11 @@ async function main() {
         env: { ...baseEnv, NEXT_PUBLIC_HOSTED_CONTENT: "", ...env },
         encoding: "utf8",
       }).trim();
-    assert.equal(probe({}), "[true,true,true,true]", "default build");
-    assert.equal(probe({ NEXT_PUBLIC_HOSTED_CONTENT: "1" }), "[true,true,true,true]", "hosted build");
-    assert.equal(probe({ NEXT_PUBLIC_EXTRA_CONTENT: "" }), "[false,false,true,true]", "an empty list leaves both out");
-    assert.equal(probe({ NEXT_PUBLIC_EXTRA_CONTENT: "sf26" }), "[true,false,true,true]", "only the SF-26 named");
-    assert.equal(probe({ NEXT_PUBLIC_EXTRA_CONTENT: "sf26,monza,f2004" }), "[true,true,true,true]", "both named (unknown ids ignored)");
+    // The SF-26 is no extra any more: hosted on librecorsa.org at most (a hosted build lists it there, with its files)
+    assert.equal(probe({}), "[false,true,true,true]", "default build");
+    assert.equal(probe({ NEXT_PUBLIC_EXTRA_CONTENT: "" }), "[false,false,true,true]", "an empty list leaves Monza out");
+    assert.equal(probe({ NEXT_PUBLIC_EXTRA_CONTENT: "sf26" }), "[false,false,true,true]", "naming the SF-26 brings nothing back");
+    assert.equal(probe({ NEXT_PUBLIC_EXTRA_CONTENT: "sf26,monza,f2004" }), "[false,true,true,true]", "Monza named (unknown ids ignored)");
   });
 
   console.log("Config");
@@ -93,12 +96,20 @@ async function main() {
     assert.equal(c.trackId, DEFAULT_KIOSK_CONFIG.trackId);
     assert.equal(c.carId, DEFAULT_KIOSK_CONFIG.carId);
     assert.equal(sanitizeKioskConfig({ trackId: "monza", carId: "sf26" }).trackId, "monza", "Monza is a known circuit");
+    assert.equal(sanitizeKioskConfig({ carId: "sf26" }).carId, "vf26", "a config from when the kiosk ran the SF-26 runs the 2026 Prototype");
     assert.equal(c.difficulty, DEFAULT_KIOSK_CONFIG.difficulty);
     assert.equal(c.penaltyS, 7.5);
     assert.equal("extra" in c, false);
     const d = sanitizeKioskConfig({ device: "joystick", graphics: "ultra" });
-    assert.deepEqual([d.trackId, d.carId, d.device, d.graphics], ["monza", "sf26", "controller", "medium"], "the event's defaults");
+    assert.deepEqual([d.trackId, d.carId, d.device, d.graphics], ["monza", "vf26", "controller", "medium"], "the event's defaults");
     assert.deepEqual([sanitizeKioskConfig({ device: "wheel" }).device, sanitizeKioskConfig({ graphics: "high" }).graphics], ["wheel", "high"]);
+  });
+  await check("the car wears Applikat's livery, the sponsor's only with its logo on", () => {
+    assert.equal(kioskSettingsFor(sanitizeKioskConfig({}))(DEFAULT_PLAYER_SETTINGS).liveryId, "applikat");
+    assert.equal(kioskSettingsFor(sanitizeKioskConfig({}), "assisted", true)(DEFAULT_PLAYER_SETTINGS).liveryId, "huawei_mgw");
+    const livery = LIVERIES.find((l) => l.id === "applikat");
+    assert.ok(livery?.decals, "the Applikat livery has its pictures");
+    assert.ok(existsSync(join(__dirname, "../public", livery!.decals!.atlas)), "its atlas is in public/");
   });
   await check("the motto: the event's at first, one clean line of 80 characters at most, empty for none", () => {
     assert.equal(sanitizeKioskConfig({}).motto, "Sfida il cronometro! Sei tu il più veloce?");
@@ -168,7 +179,7 @@ async function main() {
       const first = await api("/config");
       assert.equal(first.status, 200);
       const initial = await first.json();
-      assert.deepEqual([initial.trackId, initial.carId, initial.device, initial.graphics], ["monza", "sf26", "controller", "medium"]);
+      assert.deepEqual([initial.trackId, initial.carId, initial.device, initial.graphics], ["monza", "vf26", "controller", "medium"]);
       assert.equal((await api("/config", { method: "PUT", body: JSON.stringify({ laps: 2 }) })).status, 401);
       assert.equal((await api("/config", { method: "PUT", body: JSON.stringify({ laps: 2 }) }, "1111")).status, 401);
       // The boards below are on RISE's short layout in the 2026 prototype
@@ -218,7 +229,8 @@ async function main() {
       assert.equal(best.rows[0].bestLapMs, 98_000);
       assert.equal(best.rows.some((r: { name: string }) => r.name === "Carla"), false);
     });
-    await check("each car has its own board; an unknown car in the config falls back to the default", async () => {
+    await check("each car has its own board; an unknown car (the SF-26 too) in the config falls back to the default", async () => {
+      // A result an earlier version posted for the SF-26 stays on its own board, off the 2026 Prototype's
       await post(session("c7", "Fede", [[90_000, true], [90_000, true]], { carId: "sf26" }));
       const vf26 = await (await api("/leaderboard?mode=best")).json();
       assert.equal(vf26.carId, "vf26");
@@ -226,8 +238,10 @@ async function main() {
       const sf26 = await (await api("/leaderboard?mode=best&car=sf26")).json();
       assert.deepEqual(sf26.rows.map((r: { name: string }) => r.name), ["Fede"]);
       const cfg = await (await api("/config", { method: "PUT", body: JSON.stringify({ carId: "f2004", trackId: "monza" }) }, "9876")).json();
-      assert.equal(cfg.carId, "sf26");
+      assert.equal(cfg.carId, "vf26");
       assert.equal(cfg.trackId, "monza");
+      const noFerrari = await (await api("/config", { method: "PUT", body: JSON.stringify({ carId: "sf26" }) }, "9876")).json();
+      assert.equal(noFerrari.carId, "vf26", "the SF-26 can't be set any more");
       await api("/config", { method: "PUT", body: JSON.stringify({ trackId: "rwanda_official_short", carId: "vf26" }) }, "9876");
     });
     await check("the player's level is kept with the result and shown on the board", async () => {
@@ -444,7 +458,7 @@ async function main() {
     rmSync(staticDir, { recursive: true, force: true });
   }
 
-  await check("a config saved by an earlier version takes up the Ferrari SF-26 at Monza once, keeping the rest", async () => {
+  await check("a config saved by an earlier version takes up Monza and the 2026 Prototype once, keeping the rest", async () => {
     const oldDir = mkdtempSync(join(tmpdir(), "kiosk-verify-old-"));
     writeFileSync(join(oldDir, "config.json"), JSON.stringify({ limitMode: "laps", laps: 4, trackId: "rwanda_official_short", carId: "vf26" }));
     const oldPort = port + 1;
@@ -461,7 +475,7 @@ async function main() {
           await new Promise((r) => setTimeout(r, 100));
         }
       }
-      assert.deepEqual([cfg?.trackId, cfg?.carId, cfg?.limitMode, cfg?.laps], ["monza", "sf26", "laps", 4]);
+      assert.deepEqual([cfg?.trackId, cfg?.carId, cfg?.limitMode, cfg?.laps], ["monza", "vf26", "laps", 4]);
     } finally {
       old.kill();
       rmSync(oldDir, { recursive: true, force: true });

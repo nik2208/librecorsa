@@ -49,8 +49,6 @@ export interface CarSoundSource {
 
 export const LC26_SOUND: CarSoundSource = { id: 'lc26', assetDir: LC26_AUDIO_DIR, limiterRpm: VF26_ENGINE.limiterRpm };
 export const F1_2026_SOUND: CarSoundSource = { id: 'f12026', assetDir: '/cars/f12026/audio/', limiterRpm: 12500 };
-/** Event branch: the SF-26's bank, an extra restored from git history (scripts/kiosk/restore-extra-content.mjs) */
-export const SF26_SOUND: CarSoundSource = { id: 'sf26', assetDir: '/cars/sf26/audio/', limiterRpm: 12500 };
 /** The AMG GT3 vehicle model's limiter (its gearbox redline) */
 const AMG_GT3_LIMITER_RPM = AMG_GT3_CONFIG.gearbox.gears.redline_rpm;
 export const BMW_M4_GT3_SOUND: CarSoundSource = { id: 'bmw-m4-gt3', assetDir: '/cars/bmw-m4-gt3/audio/', limiterRpm: 7000, physicsLimiterRpm: AMG_GT3_LIMITER_RPM };

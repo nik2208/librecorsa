@@ -51,9 +51,10 @@ const MAX_BODY_BYTES = 256 * 1024;
 // ---------------------------------------------------------------------------------------------------------------
 // Config (src/lib/kiosk/kiosk-types.ts)
 
-// Monza and the SF-26 are the event's circuit and car (a build can leave them out: NEXT_PUBLIC_EXTRA_CONTENT)
+// Monza is the event's circuit (a build can leave it out: NEXT_PUBLIC_EXTRA_CONTENT); the 2026 Prototype its one car
+// (the Ferrari SF-26 it ran before is gone: a config naming it takes the default)
 const TRACK_IDS = ["monza", "rwanda_official_short", "rwanda_official"];
-const CAR_IDS = ["sf26", "vf26"];
+const CAR_IDS = ["vf26"];
 const DIFFICULTIES = ["assisted", "semi_pro", "pro"];
 const DEVICES = ["controller", "wheel", "keyboard"];
 const GRAPHICS = ["low", "medium", "high"];
@@ -63,7 +64,7 @@ const DEFAULT_CONFIG = {
   minutes: 5,
   maxMinutes: 10,
   trackId: "monza",
-  carId: "sf26",
+  carId: "vf26",
   difficulty: "assisted",
   device: "controller",
   graphics: "medium",
@@ -298,7 +299,7 @@ function readJsonFile(file, fallback) {
 
 let config = (() => {
   const raw = readJsonFile(CONFIG_FILE, DEFAULT_CONFIG);
-  // A config saved before the kiosk opened on the Ferrari SF-26 at Monza (it has no "device") takes them up once
+  // A config saved before the kiosk opened on Monza (it has no "device") takes up the event's circuit and car once
   if (raw && typeof raw === "object" && !("device" in raw) && fs.existsSync(CONFIG_FILE)) {
     console.log(`[kiosk] config from an earlier version: circuit and car set to ${DEFAULT_CONFIG.trackId} / ${DEFAULT_CONFIG.carId}`);
     return sanitizeConfig({ ...raw, trackId: DEFAULT_CONFIG.trackId, carId: DEFAULT_CONFIG.carId });

@@ -20,8 +20,6 @@ interface OverWheelView {
 
 const OVER_WHEEL: Readonly<Record<CarId, OverWheelView>> = {
   vf26: { fromEye: [0, -0.03, 0.18], pitchDeg: -14, fovDeg: 58 },
-  // Event branch extra (the SF-26 body): the 2026 Prototype's place, an F1 cockpit of the same era
-  sf26: { fromEye: [0, -0.03, 0.18], pitchDeg: -14, fovDeg: 58 },
   // Both GT3 cameras sit ahead of everything the wheel sweeps (the near plane is 12 cm), so no grip crosses the lens
   "amg-gt3": { fromEye: [0, -0.08, 0.56], pitchDeg: -13, fovDeg: 58 },
   "bmw-m4-gt3": { fromEye: [0, -0.05, 0.62], pitchDeg: -18, fovDeg: 58 },

@@ -17,8 +17,12 @@ const NUMBER = [0.54688, 0, 0.125, 0.5] as const;
 /** Height for a width, keeping the rectangle's proportions in the 2048 × 512 atlas */
 const tall = (rect: readonly [number, number, number, number], width: number): number => width / ((rect[2] * 2048) / (rect[3] * 512));
 
-const EVENT_DECALS: LiveryDecalSet = {
-  atlas: "/cars/f12026/liveries/huawei_mgw/decals.png",
+/**
+ * Where an event atlas's three pictures go on the 2026 Prototype (the layout of build_event_livery.py: A a wordmark,
+ * B a line of text, C the number box): shared by the sponsor's livery and Applikat's (applikat-livery.ts)
+ */
+export const eventDecalsAt = (atlas: string): LiveryDecalSet => ({
+  atlas,
   decals: [
     // The sponsor along each sidepod
     { rect: SPONSOR, face: "left", centre: [0.62, 0.5, -0.08], size: [0.62, tall(SPONSOR, 0.62)], depth: 0.15 },
@@ -33,7 +37,9 @@ const EVENT_DECALS: LiveryDecalSet = {
     // The sponsor across the rear wing's main plane
     { rect: SPONSOR, face: "top", centre: [0, 0.8, -2.18], size: [0.7, tall(SPONSOR, 0.7)], depth: 0.07 },
   ],
-};
+});
+
+const EVENT_DECALS: LiveryDecalSet = eventDecalsAt("/cars/f12026/liveries/huawei_mgw/decals.png");
 
 export const EVENT_LIVERY: LiveryConfig = {
   id: "huawei_mgw",
