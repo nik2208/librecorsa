@@ -24,7 +24,7 @@ export const KIOSK_TRACKS = [
 export type KioskTrackId = (typeof KIOSK_TRACKS)[number]["id"];
 
 /** The 2026 Prototype (CC BY body by Qvist Designs), in the event livery: the car of a build without the extras */
-export const KIOSK_CAR_ID = "vf26";
+export const KIOSK_CAR_ID = "lc26";
 export const KIOSK_LIVERY_ID = "huawei_mgw";
 /** The livery while the sponsor's logo is off: the game's own (src/lib/track-data.ts LIVERIES) */
 export const KIOSK_NEUTRAL_LIVERY_ID = "librecorsa";
@@ -34,9 +34,18 @@ export const KIOSK_FALLBACK_TRACK_ID = "rwanda_official_short";
 /** The cars a kiosk can run: the Ferrari SF-26 (the event's car), and the 2026 Prototype in the event livery */
 export const KIOSK_CARS = [
   { id: "sf26", label: "Ferrari SF-26", extra: true },
-  { id: "vf26", label: "Monoposto 2026", extra: false },
+  { id: "lc26", label: "Monoposto 2026", extra: false },
 ] as const;
 export type KioskCarId = (typeof KIOSK_CARS)[number]["id"];
+
+/** The 2026 Prototype was "vf26" until upstream renamed it (8cffd303): configs and results saved before keep working */
+const LEGACY_KIOSK_CAR_IDS: Readonly<Record<string, KioskCarId>> = { vf26: "lc26" };
+/** A kiosk car id from stored or posted data (an old "vf26" is the "lc26"), or null when it names none */
+export function kioskCarIdOf(v: unknown): KioskCarId | null {
+  if (typeof v !== "string") return null;
+  const id = Object.prototype.hasOwnProperty.call(LEGACY_KIOSK_CAR_IDS, v) ? LEGACY_KIOSK_CAR_IDS[v] : v;
+  return KIOSK_CARS.some((c) => c.id === id) ? (id as KioskCarId) : null;
+}
 
 /** The circuits and cars this build can actually run */
 export const listedKioskTracks = () => KIOSK_TRACKS.filter((t) => trackListed(t.id));
@@ -143,7 +152,7 @@ export function sanitizeKioskConfig(raw: unknown): KioskConfig {
   const r = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
   const d = DEFAULT_KIOSK_CONFIG;
   const trackId = KIOSK_TRACKS.some((t) => t.id === r.trackId) ? (r.trackId as KioskTrackId) : d.trackId;
-  const carId = KIOSK_CARS.some((c) => c.id === r.carId) ? (r.carId as KioskCarId) : d.carId;
+  const carId = kioskCarIdOf(r.carId) ?? d.carId;
   const difficulty = KIOSK_DIFFICULTIES.some((x) => x.id === r.difficulty) ? (r.difficulty as AssistPreset) : d.difficulty;
   const device = KIOSK_DEVICES.some((x) => x.id === r.device) ? (r.device as KioskInputDevice) : d.device;
   const graphics = KIOSK_GRAPHICS.some((x) => x.id === r.graphics) ? (r.graphics as KioskGraphics) : d.graphics;

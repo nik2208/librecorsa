@@ -73,7 +73,7 @@ async function main() {
     const { NEXT_PUBLIC_EXTRA_CONTENT: _unset, ...baseEnv } = process.env;
     void _unset;
     const probe = (env: Record<string, string>) =>
-      execFileSync(process.execPath, ["--import", "tsx", "-e", `const h = require(${JSON.stringify(join(__dirname, "../src/lib/hosted-content.ts"))}); console.log(JSON.stringify([h.carListed("sf26"), h.trackListed("monza"), h.carListed("vf26"), h.trackListed("rwanda_official_short")]))`], {
+      execFileSync(process.execPath, ["--import", "tsx", "-e", `const h = require(${JSON.stringify(join(__dirname, "../src/lib/hosted-content.ts"))}); console.log(JSON.stringify([h.carListed("sf26"), h.trackListed("monza"), h.carListed("lc26"), h.trackListed("rwanda_official_short")]))`], {
         env: { ...baseEnv, NEXT_PUBLIC_HOSTED_CONTENT: "", ...env },
         encoding: "utf8",
       }).trim();
@@ -93,6 +93,9 @@ async function main() {
     assert.equal(c.trackId, DEFAULT_KIOSK_CONFIG.trackId);
     assert.equal(c.carId, DEFAULT_KIOSK_CONFIG.carId);
     assert.equal(sanitizeKioskConfig({ trackId: "monza", carId: "sf26" }).trackId, "monza", "Monza is a known circuit");
+    // The 2026 Prototype was "vf26" until upstream renamed it: a config saved with the old id keeps its car
+    assert.equal(sanitizeKioskConfig({ carId: "vf26" }).carId, "lc26", "an old vf26 is the lc26, not the default car");
+    assert.equal(sanitizeKioskConfig({ carId: "lc26" }).carId, "lc26");
     assert.equal(c.difficulty, DEFAULT_KIOSK_CONFIG.difficulty);
     assert.equal(c.penaltyS, 7.5);
     assert.equal("extra" in c, false);
@@ -152,7 +155,7 @@ async function main() {
       clientId,
       name,
       trackId: "rwanda_official_short",
-      carId: "vf26",
+      carId: "lc26",
       limitMode: "laps",
       limitLaps: 2,
       limitMinutes: 10,
@@ -171,10 +174,11 @@ async function main() {
       assert.deepEqual([initial.trackId, initial.carId, initial.device, initial.graphics], ["monza", "sf26", "controller", "medium"]);
       assert.equal((await api("/config", { method: "PUT", body: JSON.stringify({ laps: 2 }) })).status, 401);
       assert.equal((await api("/config", { method: "PUT", body: JSON.stringify({ laps: 2 }) }, "1111")).status, 401);
-      // The boards below are on RISE's short layout in the 2026 prototype
+      // The boards below are on RISE's short layout in the 2026 prototype, sent by its old id ("vf26", now "lc26")
       const saved = await (
         await api("/config", { method: "PUT", body: JSON.stringify({ limitMode: "laps", laps: 2, trackId: "rwanda_official_short", carId: "vf26" }) }, "9876")
       ).json();
+      assert.equal(saved.carId, "lc26", "the 2026 Prototype's old id is read as its new one");
       assert.equal(saved.limitMode, "laps");
       assert.equal(saved.laps, 2);
       assert.ok(saved.updatedAt);
@@ -220,15 +224,21 @@ async function main() {
     });
     await check("each car has its own board; an unknown car in the config falls back to the default", async () => {
       await post(session("c7", "Fede", [[90_000, true], [90_000, true]], { carId: "sf26" }));
-      const vf26 = await (await api("/leaderboard?mode=best")).json();
-      assert.equal(vf26.carId, "vf26");
-      assert.equal(vf26.rows.some((r: { name: string }) => r.name === "Fede"), false, "an SF-26 lap on the default car's board");
+      // A result sent with the 2026 Prototype's old id ("vf26") is stored and ranked as the "lc26"
+      const legacy = await (await post(session("c7b", "Ivo", [[91_000, true], [91_000, true]], { carId: "vf26" }))).json();
+      assert.equal(legacy.result.carId, "lc26");
+      const lc26 = await (await api("/leaderboard?mode=best")).json();
+      assert.equal(lc26.carId, "lc26");
+      assert.equal(lc26.rows.some((r: { name: string }) => r.name === "Fede"), false, "an SF-26 lap on the default car's board");
+      assert.equal(lc26.rows.some((r: { name: string }) => r.name === "Ivo"), true, "a vf26 result on the lc26 board");
+      const byOldId = await (await api("/leaderboard?mode=best&car=vf26")).json();
+      assert.equal(byOldId.carId, "lc26", "the board asked for by the old id is the lc26's");
       const sf26 = await (await api("/leaderboard?mode=best&car=sf26")).json();
       assert.deepEqual(sf26.rows.map((r: { name: string }) => r.name), ["Fede"]);
       const cfg = await (await api("/config", { method: "PUT", body: JSON.stringify({ carId: "f2004", trackId: "monza" }) }, "9876")).json();
       assert.equal(cfg.carId, "sf26");
       assert.equal(cfg.trackId, "monza");
-      await api("/config", { method: "PUT", body: JSON.stringify({ trackId: "rwanda_official_short", carId: "vf26" }) }, "9876");
+      await api("/config", { method: "PUT", body: JSON.stringify({ trackId: "rwanda_official_short", carId: "lc26" }) }, "9876");
     });
     await check("the player's level is kept with the result and shown on the board", async () => {
       const easy = await (await post(session("c8", "Gino", [[95_000, true], [95_000, true]], { difficulty: "semi_pro" }))).json();
@@ -257,12 +267,14 @@ async function main() {
     await check("admin: list, CSV, delete one, reset with a backup", async () => {
       assert.equal((await api("/results")).status, 401);
       const { results } = await (await api("/results", {}, "9876")).json();
-      assert.equal(results.length, 7);
+      // Seven sessions above, and Ivo's sent with the old "vf26"
+      assert.equal(results.length, 8);
       const csv = await (await api("/results.csv", {}, "9876")).text();
       assert.match(csv, /miglior_giro/);
       assert.match(csv, /,difficolta,/);
       assert.match(csv, /,medio,/);
-      assert.equal(csv.trim().split("\n").length, 8);
+      assert.equal(csv.trim().split("\n").length, 9);
+      assert.equal(/,vf26,/.test(csv), false, "the CSV names the 2026 Prototype by its new id");
       assert.equal((await api(`/results/${results[0].id}`, { method: "DELETE" }, "9876")).status, 200);
       const reset = await (await api("/results", { method: "DELETE" }, "9876")).json();
       assert.ok(reset.backup);

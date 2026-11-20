@@ -31,6 +31,7 @@ import {
   KIOSK_GRAPHICS,
   KIOSK_TRACKS,
   difficultyLabel,
+  kioskCarIdOf,
   listedKioskCars,
   listedKioskTracks,
   runnableCarId,
@@ -396,7 +397,7 @@ export const KioskAdmin: React.FC = () => {
                     <td className="py-2 pr-3 font-bold uppercase">{r.name}</td>
                     <td className="py-2 pr-3 text-white/70">
                       {r.limitMode === "laps" ? `${r.limitLaps} giri` : `${r.limitMinutes} min`} · {KIOSK_TRACKS.find((t) => t.id === r.trackId)?.label ?? r.trackId}
-                      {` · ${KIOSK_CARS.find((c) => c.id === (r.carId ?? "vf26"))?.label ?? r.carId}`}
+                      {` · ${KIOSK_CARS.find((c) => c.id === (kioskCarIdOf(r.carId ?? "lc26") ?? r.carId))?.label ?? r.carId}`}
                     </td>
                     <td className="py-2 pr-3 text-white/70">{difficultyLabel(r.difficulty) ?? "—"}</td>
                     <td className="py-2 pr-3 font-f1-mono">
