@@ -5,6 +5,7 @@ import { LibreCorsaSimulator } from "@/components/LibreCorsaSimulator";
 import { RenderProfiler } from "@/components/dev/RenderProfiler";
 import { activateTrack, getTrackInfo, loadStoredTrackId, DEFAULT_TRACK_ID } from "@/lib/track-registry";
 import { registerAssetCache } from "@/lib/service-worker";
+import { dropServiceWorker } from "@/lib/kiosk/kiosk-sw";
 import type { KioskMode } from "@/lib/kiosk/kiosk-bridge";
 
 /** How long the "couldn't load" notice stays up (ms) */
@@ -63,7 +64,9 @@ export const TrackGate: React.FC<TrackGateProps> = ({ kiosk, trackId: wantedTrac
   }, []);
 
   useEffect(() => {
-    registerAssetCache();
+    // The kiosk keeps no asset cache: its files are on the PC, and an old build's would outlive an update (kiosk-sw.ts)
+    if (kiosk) void dropServiceWorker();
+    else registerAssetCache();
   }, []);
   useEffect(() => {
     void select(wantedTrackId ?? loadStoredTrackId());

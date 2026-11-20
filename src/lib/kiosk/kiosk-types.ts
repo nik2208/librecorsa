@@ -33,7 +33,8 @@ export const KIOSK_FALLBACK_TRACK_ID = "rwanda_official_short";
 
 /**
  * The car a kiosk runs: LibreCorsa's 2026 Prototype, in Applikat's livery (the sponsor's with its logo on). The Ferrari
- * SF-26 it ran before is gone: the event can't use it (a config or result that names it falls back to this one)
+ * SF-26 it ran before is gone: the event can't use it. A config that names it runs this one; a result saved with it
+ * stays on its own board (carId "sf26"), which no screen shows
  */
 export const KIOSK_CARS = [{ id: "vf26", label: "Monoposto 2026", extra: false }] as const;
 export type KioskCarId = (typeof KIOSK_CARS)[number]["id"];
@@ -143,7 +144,8 @@ export function sanitizeKioskConfig(raw: unknown): KioskConfig {
   const r = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
   const d = DEFAULT_KIOSK_CONFIG;
   const trackId = KIOSK_TRACKS.some((t) => t.id === r.trackId) ? (r.trackId as KioskTrackId) : d.trackId;
-  const carId = KIOSK_CARS.some((c) => c.id === r.carId) ? (r.carId as KioskCarId) : d.carId;
+  // The same car is "lc26" on the kiosk built from upstream's newer game: a config it saved keeps it here
+  const carId = r.carId === "lc26" ? "vf26" : KIOSK_CARS.some((c) => c.id === r.carId) ? (r.carId as KioskCarId) : d.carId;
   const difficulty = KIOSK_DIFFICULTIES.some((x) => x.id === r.difficulty) ? (r.difficulty as AssistPreset) : d.difficulty;
   const device = KIOSK_DEVICES.some((x) => x.id === r.device) ? (r.device as KioskInputDevice) : d.device;
   const graphics = KIOSK_GRAPHICS.some((x) => x.id === r.graphics) ? (r.graphics as KioskGraphics) : d.graphics;

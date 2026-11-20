@@ -97,6 +97,7 @@ async function main() {
     assert.equal(c.carId, DEFAULT_KIOSK_CONFIG.carId);
     assert.equal(sanitizeKioskConfig({ trackId: "monza", carId: "sf26" }).trackId, "monza", "Monza is a known circuit");
     assert.equal(sanitizeKioskConfig({ carId: "sf26" }).carId, "vf26", "a config from when the kiosk ran the SF-26 runs the 2026 Prototype");
+    assert.equal(sanitizeKioskConfig({ carId: "lc26" }).carId, "vf26", "the newer build's name for the same car");
     assert.equal(c.difficulty, DEFAULT_KIOSK_CONFIG.difficulty);
     assert.equal(c.penaltyS, 7.5);
     assert.equal("extra" in c, false);
@@ -242,6 +243,13 @@ async function main() {
       assert.equal(cfg.trackId, "monza");
       const noFerrari = await (await api("/config", { method: "PUT", body: JSON.stringify({ carId: "sf26" }) }, "9876")).json();
       assert.equal(noFerrari.carId, "vf26", "the SF-26 can't be set any more");
+      // The newer build (event/gaming-week-2026-updated) calls the same car "lc26": its config and results keep it here
+      assert.equal((await (await api("/config", { method: "PUT", body: JSON.stringify({ carId: "lc26" }) }, "9876")).json()).carId, "vf26");
+      const newer = await (await post(session("c7c", "Lia", [[92_000, true], [92_000, true]], { carId: "lc26" }))).json();
+      assert.equal(newer.result.carId, "vf26");
+      await api("/config", { method: "PUT", body: JSON.stringify({ trackId: "rwanda_official_short", carId: "vf26" }) }, "9876");
+      const board = await (await api("/leaderboard?mode=best")).json();
+      assert.equal(board.rows.some((r: { name: string }) => r.name === "Lia"), true, "an lc26 result on the vf26 board");
       await api("/config", { method: "PUT", body: JSON.stringify({ trackId: "rwanda_official_short", carId: "vf26" }) }, "9876");
     });
     await check("the player's level is kept with the result and shown on the board", async () => {
@@ -271,12 +279,13 @@ async function main() {
     await check("admin: list, CSV, delete one, reset with a backup", async () => {
       assert.equal((await api("/results")).status, 401);
       const { results } = await (await api("/results", {}, "9876")).json();
-      assert.equal(results.length, 7);
+      // Seven sessions above, and Lia's sent by the newer build ("lc26")
+      assert.equal(results.length, 8);
       const csv = await (await api("/results.csv", {}, "9876")).text();
       assert.match(csv, /miglior_giro/);
       assert.match(csv, /,difficolta,/);
       assert.match(csv, /,medio,/);
-      assert.equal(csv.trim().split("\n").length, 8);
+      assert.equal(csv.trim().split("\n").length, 9);
       assert.equal((await api(`/results/${results[0].id}`, { method: "DELETE" }, "9876")).status, 200);
       const reset = await (await api("/results", { method: "DELETE" }, "9876")).json();
       assert.ok(reset.backup);

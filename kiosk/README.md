@@ -239,7 +239,8 @@ logo HUAWEI acceso indossa la livrea Huawei.
 
 La **Ferrari SF-26** che il kiosk usava prima non c'è più: l'evento non può usarla (la carrozzeria è estratta da un
 videogioco di F1, con i marchi Ferrari e degli sponsor reali). I suoi file sono stati tolti dal branch; una
-configurazione o un risultato che la nomina usa la Monoposto 2026.
+configurazione che la nomina usa la Monoposto 2026, mentre i risultati registrati con la Ferrari restano su una classifica
+a parte (`carId` `sf26`) che nessuno schermo mostra: per toglierli, *Impostazioni → Azzera classifica* (fa una copia).
 
 ## Licenze e diritti
 

@@ -55,6 +55,11 @@ const MAX_BODY_BYTES = 256 * 1024;
 // (the Ferrari SF-26 it ran before is gone: a config naming it takes the default)
 const TRACK_IDS = ["monza", "rwanda_official_short", "rwanda_official"];
 const CAR_IDS = ["vf26"];
+// The same car is "lc26" on the kiosk built from upstream's newer game (event/gaming-week-2026-updated): a stand that
+// falls back to this build keeps the results that one saved on the same board
+const CAR_ALIASES = { lc26: "vf26" };
+/** A car id as this build knows it (the newer build's "lc26" is the "vf26"), or undefined for no string */
+const carIdOf = (v) => (typeof v === "string" ? (Object.prototype.hasOwnProperty.call(CAR_ALIASES, v) ? CAR_ALIASES[v] : v) : undefined);
 const DIFFICULTIES = ["assisted", "semi_pro", "pro"];
 const DEVICES = ["controller", "wheel", "keyboard"];
 const GRAPHICS = ["low", "medium", "high"];
@@ -101,7 +106,7 @@ function sanitizeConfig(raw) {
     minutes: num(r.minutes, 0.5, 60, d.minutes, 0.5),
     maxMinutes: num(r.maxMinutes, 0, 120, d.maxMinutes, 0.5),
     trackId: TRACK_IDS.includes(r.trackId) ? r.trackId : d.trackId,
-    carId: CAR_IDS.includes(r.carId) ? r.carId : d.carId,
+    carId: CAR_IDS.includes(carIdOf(r.carId)) ? carIdOf(r.carId) : d.carId,
     difficulty: DIFFICULTIES.includes(r.difficulty) ? r.difficulty : d.difficulty,
     device: DEVICES.includes(r.device) ? r.device : d.device,
     graphics: GRAPHICS.includes(r.graphics) ? r.graphics : d.graphics,
@@ -168,7 +173,7 @@ function parseResult(raw) {
   if (!name) return "Nome mancante";
   const clientId = typeof raw.clientId === "string" && ID_RE.test(raw.clientId) ? raw.clientId : crypto.randomUUID();
   const trackId = typeof raw.trackId === "string" && ID_RE.test(raw.trackId) ? raw.trackId : null;
-  const carId = typeof raw.carId === "string" && ID_RE.test(raw.carId) ? raw.carId : "vf26";
+  const carId = typeof raw.carId === "string" && ID_RE.test(raw.carId) ? carIdOf(raw.carId) : "vf26";
   if (!trackId) return "Circuito mancante";
   const limitMode = raw.limitMode === "laps" ? "laps" : raw.limitMode === "time" ? "time" : null;
   if (!limitMode) return "Modalità non valida";
@@ -214,7 +219,8 @@ function parseResult(raw) {
 function ranked(results, { mode, trackId, carId, laps, unique = true }) {
   const scoreOf = mode === "total" ? (r) => r.totalTimeMs : (r) => r.bestLapMs;
   // Results from before the car choice existed were all driven in the default car
-  let pool = results.filter((r) => r.trackId === trackId && (r.carId ?? "vf26") === carId);
+  const car = carIdOf(carId);
+  let pool = results.filter((r) => r.trackId === trackId && (carIdOf(r.carId) ?? "vf26") === car);
   if (mode === "total") pool = pool.filter((r) => r.limitMode === "laps" && r.limitLaps === laps);
   pool = pool.filter((r) => scoreOf(r) !== null && scoreOf(r) !== undefined);
   pool.sort((a, b) => scoreOf(a) - scoreOf(b) || a.createdAt.localeCompare(b.createdAt));
@@ -278,7 +284,7 @@ function placeOf(results, result, query) {
 const queryFor = (config, params) => {
   const mode = params.get("mode") === "total" || params.get("mode") === "best" ? params.get("mode") : config.limitMode === "laps" ? "total" : "best";
   const trackId = params.get("track") && ID_RE.test(params.get("track")) ? params.get("track") : config.trackId;
-  const carId = params.get("car") && ID_RE.test(params.get("car")) ? params.get("car") : config.carId;
+  const carId = params.get("car") && ID_RE.test(params.get("car")) ? carIdOf(params.get("car")) : config.carId;
   const laps = num(params.get("laps") ?? config.laps, 1, 50, config.laps);
   return { mode, trackId, carId, laps, limit: params.get("limit") ?? 20, unique: params.get("unique") !== "0" };
 };
@@ -434,7 +440,7 @@ function resultsCsv() {
     r.createdAt,
     r.name,
     r.trackId,
-    r.carId ?? "vf26",
+    carIdOf(r.carId) ?? "vf26",
     DIFFICULTY_LABELS[r.difficulty] ?? "",
     r.limitMode,
     r.limitLaps,
@@ -743,14 +749,15 @@ async function serveStatic(req, res, url) {
 // ---------------------------------------------------------------------------------------------------------------
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://kiosk.local");
   try {
+    // Inside the try: a request target such as "//" is no URL, and an error out here would end the whole server
+    const url = new URL(req.url ?? "/", "http://kiosk.local");
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
     return await serveStatic(req, res, url);
   } catch (err) {
-    const status = err && typeof err.status === "number" ? err.status : 500;
+    const status = err && err.code === "ERR_INVALID_URL" ? 400 : err && typeof err.status === "number" ? err.status : 500;
     if (status === 500) console.error("[kiosk]", err);
-    if (!res.headersSent) sendJson(res, status, { error: status === 500 ? "Errore del server" : err.message });
+    if (!res.headersSent) sendJson(res, status, { error: status === 500 ? "Errore del server" : status === 400 && err.code === "ERR_INVALID_URL" ? "Indirizzo non valido" : err.message });
     else res.destroy();
   }
 });
