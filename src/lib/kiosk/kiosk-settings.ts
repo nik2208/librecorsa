@@ -1,7 +1,7 @@
 /**
  * What the kiosk lays over the settings saved in its browser (KioskMode.settings): the level the player picked, the
- * device and graphics quality the staff set in the admin page (a USB controller by default), and the event's car
- * setup. The wheel's own bindings and calibration stay as saved in this browser.
+ * device, graphics quality and Guida semplice the staff set in the admin page (a USB controller by default), and the
+ * event's car setup. The wheel's own bindings and calibration stay as saved in this browser.
  */
 
 import type { PlayerSettings } from "@/lib/settings/player-settings";
@@ -21,6 +21,10 @@ export function kioskSettingsFor(
     assistPreset: difficulty,
     // No tyre wear or fuel to manage, milder rain (and the weather is dry anyway)
     realism: "casual",
+    // Nor energy, with Guida semplice: the store always full and Straight Mode by itself (sim-realism.ts
+    // simRealismFlagsFor). The same for every level, so one board per circuit and car stays fair; written either way, as
+    // these settings are laid over the last player's
+    simpleDrive: config.simpleDrive,
     // Shifting is one thing too many for most visitors; the hardest level leaves it as the staff set it
     autoGearbox: difficulty === "pro" ? own.autoGearbox : true,
     racingLine: config.racingLine,

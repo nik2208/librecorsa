@@ -755,7 +755,10 @@ export class F12026CarSim implements SimulatorCar {
   public autoGearbox = true;
   /** Keyboard and controller steering assist */
   public readonly steeringAssist = new SteeringAssist();
-  /** DRS is driver-operated on the f12026-car (and absent on a GT3): there is no automatic mode, so writes are ignored */
+  /**
+   * DRS is driver-operated on the f12026-car (and absent on a GT3): there is no automatic mode to set here, so writes are
+   * ignored. Only the kiosk's Guida semplice opens it by itself, through the realism flags (`autoStraightMode`)
+   */
   public get autoXMode(): boolean {
     return false;
   }
@@ -1554,6 +1557,10 @@ export class F12026CarSim implements SimulatorCar {
     const overtakeOk = this.overtakeAvailable;
     if (!overtakeOk) this.boostRemainingS = 0;
     const aiOvertake = this.aiAutopilot && this.rules === 'straight-mode-2026' && !!this.raceControl?.racing && overtakeOk && v.telemetry.drsZone;
+    // The kiosk's Guida semplice: the store full and the lap's energy at zero before the override is judged here and
+    // before every tick below works out the deploy, so neither the mode's floor nor the per-lap limits ever bite
+    const unlimitedEnergy = this.realism.unlimitedEnergy === true && this.profile.hasErs;
+    if (unlimitedEnergy) this.fillEnergyStore();
     const push = this.profile.hasErs && overtakeOk && (inputs.manualOverride || this.boostRemainingS > 0 || aiOvertake) && v.ersEnergyJ > 0;
     this.pushActive = push;
     v.setPerformanceMode(push ? 'PSH' : this.userErsMode);
@@ -1592,6 +1599,8 @@ export class F12026CarSim implements SimulatorCar {
       };
       // A car whose state has blown up hands back a non-finite command: the rack must not keep it past the rescue
       this.steerCmd = Number.isFinite(cmd.steer) ? cmd.steer : 0;
+      // Filled tick by tick, not once a frame: a long catch-up frame would otherwise spend a few % of it
+      if (unlimitedEnergy) this.fillEnergyStore();
       _v.copy(v.velocity);
       v.step(CONTROL_DT_S, vin);
       this.updateBrakes(CONTROL_DT_S);
@@ -1642,15 +1651,37 @@ export class F12026CarSim implements SimulatorCar {
     h: number
   ): { throttle: number; ignitionCut: number; brake: number; brakeWheelScale?: readonly [number, number, number, number]; steer: number; drs: boolean } {
     const want = THREE.MathUtils.clamp(this.steeringAssist.steer(inputs, this.gamepadAssistEnabled, this.steeringAssistState, h), -1, 1);
+    const aids = this.electronicAids(inputs.throttle, inputs.brake, h, this);
+    // The driver opens Straight Mode with the button (the step's `drsPress`); with the kiosk's Guida semplice it also
+    // opens by itself, on the autopilot's rule
+    const drs = this.realism.autoStraightMode === true && this.straightModeWanted(aids.throttle, aids.brake);
     // A steering wheel's rim goes to the rack as the driver's hands turn it, however fast the catch
     if (inputs.steerRim && this.steeringAssist.source === 'direct') {
-      return { ...this.electronicAids(inputs.throttle, inputs.brake, h, this), steer: want, drs: false };
+      return { ...aids, steer: want, drs };
     }
     // Any other device: the rack turns no faster than hands turn a wheel (900°/s at the rim, as the VF26's): a stick
     // flick, a mouse or a phone tilt otherwise reached the tyres as an instant step, which snaps a car at speed
     const maxStep = (DRIVER_RIM_SPEED_DEG_S / this.rimLockDeg) * h;
     const steer = this.steerCmd + THREE.MathUtils.clamp(want - this.steerCmd, -maxStep, maxStep);
-    return { ...this.electronicAids(inputs.throttle, inputs.brake, h, this), steer, drs: false };
+    return { ...aids, steer, drs };
+  }
+
+  /**
+   * The autopilot's rule for asking Straight Mode to open (the kiosk's Guida semplice gives the driver the same): in a
+   * zone that allows it, with the flaps shut, on full throttle and off the brake. The ask is a press, read on its edge
+   * (VehiclePhysics `handleEdges`), and VehiclePhysics shuts the flaps again on the brake or a lift. The brake term
+   * changes nothing for the autopilot, whose pedals are never both down; a driver squeezing both triggers would
+   * otherwise spend the press while the brake holds the flaps shut, and then get no new one for the rest of the zone
+   */
+  private straightModeWanted(throttle: number, brake: number): boolean {
+    const v = this.vehicle;
+    return v.telemetry.drsAvailable && !v.drsOpen && throttle > 0.95 && brake <= 0.05;
+  }
+
+  /** The store full and the lap's deploy and harvest at zero (the kiosk's Guida semplice: `realism.unlimitedEnergy`) */
+  private fillEnergyStore(): void {
+    this.vehicle.ersEnergyJ = this.config.ers.ERS_MAX_CHARGE;
+    this.vehicle.resetLapEnergy();
   }
 
   /** The car as the steering assist reads it */
@@ -1933,7 +1964,7 @@ export class F12026CarSim implements SimulatorCar {
       ...aids,
       // aimed at the road-wheel angle: the rack gives up `complianceRad` to the lateral force, so add it back
       steer: this.autopilotSteer(THREE.MathUtils.clamp(-(delta - 0.5 * (W[0].complianceRad + W[1].complianceRad)) / v.maxSteerRad, -1, 1), h),
-      drs: v.telemetry.drsAvailable && !v.drsOpen && aids.throttle > 0.95,
+      drs: this.straightModeWanted(aids.throttle, aids.brake),
     };
   }
 

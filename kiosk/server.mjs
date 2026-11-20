@@ -71,6 +71,9 @@ const DEFAULT_CONFIG = {
   trackId: "monza",
   carId: "vf26",
   difficulty: "assisted",
+  // Guida semplice: the energy store always full and Straight Mode by itself, for every level. On by default, also for
+  // a config.json saved before it existed (sanitizeConfig fills it in)
+  simpleDrive: true,
   device: "controller",
   graphics: "medium",
   invalidLaps: "penalty",
@@ -108,6 +111,7 @@ function sanitizeConfig(raw) {
     trackId: TRACK_IDS.includes(r.trackId) ? r.trackId : d.trackId,
     carId: CAR_IDS.includes(carIdOf(r.carId)) ? carIdOf(r.carId) : d.carId,
     difficulty: DIFFICULTIES.includes(r.difficulty) ? r.difficulty : d.difficulty,
+    simpleDrive: typeof r.simpleDrive === "boolean" ? r.simpleDrive : d.simpleDrive,
     device: DEVICES.includes(r.device) ? r.device : d.device,
     graphics: GRAPHICS.includes(r.graphics) ? r.graphics : d.graphics,
     invalidLaps: r.invalidLaps === "exclude" || r.invalidLaps === "penalty" ? r.invalidLaps : d.invalidLaps,

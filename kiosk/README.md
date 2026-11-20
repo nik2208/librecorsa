@@ -24,10 +24,15 @@ Classifica:
 - per ogni nome resta il risultato migliore, con la difficoltà scelta (F/M/D accanto al nome);
 - una classifica per ogni combinazione di circuito e auto.
 
+**Guida semplice** (Impostazioni, attiva di default): batteria sempre carica e ala mobile automatica, che si apre da sola
+a tutto gas (RT o acceleratore fino in fondo) sui rettilinei dove è permessa e si chiude in frenata. Nessuna energia
+da gestire: senza, dal secondo giro chi non usa il tasto X resta sotto i 260 km/h circa. Vale per tutti i livelli, che
+tengono i loro aiuti e il cambio, così la classifica resta una sola; cambiandola conviene azzerare la classifica.
+
 | Pagina | Cosa fa |
 | :-- | :-- |
 | `/` | **Il kiosk** (anche `/kiosk` e `/kiosk/play`, per i vecchi link). |
-| `/kiosk/admin` | Impostazioni (PIN, dal pulsante *Impostazioni* del menu): giri o minuti, circuito, auto, difficoltà proposta, **motto**, comandi (controller USB / volante / tastiera), qualità grafica; **loghi** (quali mostrare, ordine, caricarne di nuovi); risultati, eliminazione, azzeramento, export CSV; **indirizzo della classifica in rete locale**. |
+| `/kiosk/admin` | Impostazioni (PIN, dal pulsante *Impostazioni* del menu): giri o minuti, circuito, auto, difficoltà proposta, **guida semplice**, **motto**, comandi (controller USB / volante / tastiera), qualità grafica; **loghi** (quali mostrare, ordine, caricarne di nuovi); risultati, eliminazione, azzeramento, export CSV; **indirizzo della classifica in rete locale**. |
 | `/kiosk/classifica` | Classifica pubblica per un secondo schermo o un telefono sulla stessa rete (si aggiorna da sola). |
 | `/play` | Il simulatore completo: serve solo allo staff per abbinare un volante (da *Impostazioni* → *Configura volante*). |
 

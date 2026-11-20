@@ -84,6 +84,12 @@ export interface KioskConfig {
   carId: KioskCarId;
   /** The level picked at first on the start screen (each player can change it) */
   difficulty: AssistPreset;
+  /**
+   * Guida semplice: the energy store always full and Straight Mode (the flaps) opening by itself, so there is no energy
+   * to manage and no button to learn. For every player at every level (the levels keep their aids and gearbox), so one
+   * board per circuit and car stays fair. On by default, also for a config saved before it existed
+   */
+  simpleDrive: boolean;
   /** What the visitors drive with */
   device: KioskInputDevice;
   graphics: KioskGraphics;
@@ -111,6 +117,7 @@ export const DEFAULT_KIOSK_CONFIG: KioskConfig = {
   trackId: "monza",
   carId: "vf26",
   difficulty: "assisted",
+  simpleDrive: true,
   device: "controller",
   graphics: "medium",
   invalidLaps: "penalty",
@@ -157,6 +164,7 @@ export function sanitizeKioskConfig(raw: unknown): KioskConfig {
     trackId,
     carId,
     difficulty,
+    simpleDrive: typeof r.simpleDrive === "boolean" ? r.simpleDrive : d.simpleDrive,
     device,
     graphics,
     invalidLaps: r.invalidLaps === "exclude" || r.invalidLaps === "penalty" ? r.invalidLaps : d.invalidLaps,

@@ -264,6 +264,20 @@ export const KioskAdmin: React.FC = () => {
           <Field label="Difficoltà proposta" hint="Ogni giocatore sceglie Facile, Medio o Difficile prima di partire: questa è quella già selezionata.">
             <Segmented value={config.difficulty} options={KIOSK_DIFFICULTIES} onChange={(v) => update("difficulty", v)} />
           </Field>
+          {/* For every player at every level, so it stays out of the level's own choice above */}
+          <Field
+            label="Guida semplice"
+            hint="Batteria sempre carica e ala mobile automatica: nessuna energia da gestire. Vale per tutti i livelli; cambiandola conviene azzerare la classifica."
+          >
+            <Segmented
+              value={config.simpleDrive ? "on" : "off"}
+              options={[
+                { id: "on", label: "Attiva" },
+                { id: "off", label: "Spenta" },
+              ]}
+              onChange={(v) => update("simpleDrive", v === "on")}
+            />
+          </Field>
           <details className="rounded-lg border border-white/10 px-4 py-3">
             <summary className="cursor-pointer font-f1-italic text-sm font-bold uppercase tracking-[0.2em] text-white/70">Avanzate</summary>
             <div className="mt-4 flex flex-col gap-4">

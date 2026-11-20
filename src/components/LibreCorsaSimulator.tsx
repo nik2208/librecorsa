@@ -39,7 +39,7 @@ import { timeTrialRules } from "@/lib/sim/time-trial";
 import { challengeTarget, type ChallengeTarget } from "@/lib/net/challenge-target";
 import { isTouchDevice, resetTouchInput } from "@/lib/input/touch-input";
 import { isFatalHidStatus } from "@/lib/input/webhid-ffb";
-import { SIM_REALISM_FLAGS, type SimRealism } from "@/lib/sim/sim-realism";
+import { simRealismFlagsFor, type SimRealism } from "@/lib/sim/sim-realism";
 import type { SessionConditions } from "@/lib/sim/weather";
 import { getTrackInfo, TRACKS } from "@/lib/track-registry";
 import { F1TelemetryHud } from "@/components/F1TelemetryHud";
@@ -583,9 +583,10 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       if (car && car.tireCompound !== autoCompound) handleTireCompoundChange(autoCompound);
     }
   }, [conditionsKey, getTrackEnv, session, handleTireCompoundChange]);
+  // With the kiosk's Guida semplice on top (the kiosk's settings carry it; the full game's never do)
   useEffect(() => {
-    getTrackEnv().setSimRealism(SIM_REALISM_FLAGS[settings.realism]);
-  }, [settings.realism, getTrackEnv]);
+    getTrackEnv().setSimRealism(simRealismFlagsFor({ realism: settings.realism, simpleDrive: settings.simpleDrive }));
+  }, [settings.realism, settings.simpleDrive, getTrackEnv]);
 
   /** null returns to the car's own FOV */
   const handleCockpitFovChange = useCallback((fovDeg: number | null) => {
