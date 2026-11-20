@@ -17,6 +17,15 @@
  * the contact layer's own tags. Converted circuits built with `conformSurfaces` fit their off-road bands to the
  * road first, and then also drive on their grass and let a kerb fitted just under the road name the surface.
  *
+ * A converted scan whose own ground is drawn in named materials (track data `mesh.groundMaterials`, see
+ * `DrawnGroundOptions`) is driven on as it is drawn wherever its own surfaces leave off. Past the road collider's band
+ * (road ± half width + 1.6 m) the contact is held to within `DRAWN_TOLERANCE_M` of the highest drawn ground under the
+ * wheel: the circuit's own surface, unchanged, where it lies that close, else that far from the drawn ground on its
+ * side, with the drawn ground's normal; the surface keeps the tags (and ripple) of the circuit's own. Where those have
+ * nothing (past the band they cover, or through a hole in it) the drawn ground is the contact, named by its material.
+ * The road, its kerbs and the band beside them (swept smooth, where cars run wide), and every circuit without the
+ * field, query as before.
+ *
  * Queries are vertical rays (the wheels probe straight down), answered from a uniform XZ grid of
  * world-space triangles, so a query costs a cell lookup plus a handful of 2D triangle tests. `queryMany` answers a
  * tyre's contact patch (several points a few centimetres apart) with one pass over the cell's triangles.
@@ -28,6 +37,7 @@
  */
 
 import * as THREE from 'three';
+import type { SceneryCutBox } from '../../scenery-cuts';
 import {
   DEFAULT_SURFACE_TABLE,
   isTrackSurfaceKind,
@@ -53,6 +63,23 @@ const RAISED_SURFACES: ReadonlySet<TrackSurfaceKind> = new Set(['kerb', 'sausage
 const DRIVABLE_SURFACES: ReadonlySet<TrackSurfaceKind> = new Set(['road', 'runoff', 'pitlane', 'gravel']);
 const SURFACE_MATCH_M = 0.05;
 const CELL_SIZE_M = 4;
+/** A contact on one of these, from the circuit's own (tagged, swept) surfaces, is never replaced by drawn ground */
+const OWN_ROAD_SURFACES: ReadonlySet<TrackSurfaceKind> = new Set(['road', 'kerb', 'sausage', 'pitlane']);
+/**
+ * A drawn triangle this far over the circuit's own road (its road collider, road, pit lane or kerbs) is a deck over the
+ * track (a bridge), not ground (m): a wheel's probe never reaches one, but a car placed from above would land on it
+ */
+const DRAWN_OVERHEAD_M = 2;
+/** Drawn ground is kept out to this far past the box of the circuit's own surfaces (m) */
+const DRAWN_MARGIN_M = 60;
+/** Least upward share of a drawn triangle's normal for it to be ground (the circuit's own surfaces keep 0.2 too) */
+const DRAWN_MIN_NORMAL_Y = 0.2;
+/**
+ * How far a contact past the road band may sit from the drawn ground (m): about the step a scan's 16-bit quantised
+ * mesh has (Monza's grass, asphalt and gravel: 3.4 cm), so the circuit's own smooth surface stays where it agrees with
+ * the drawn one and the scan's quantisation is not felt as bumps
+ */
+const DRAWN_TOLERANCE_M = 0.04;
 /**
  * Margin of `queryMany`'s triangle box test (m): a point the barycentric test accepts lies at most 1e-6 of the
  * triangle's size outside it (microns on the largest terrain triangles), so the box test never rejects one it keeps
@@ -142,6 +169,38 @@ export interface TrackColliderBuffers {
   cellStart: Uint32Array;
   cellTris: Uint32Array;
   fitted: boolean;
+  /** The scan's drawn ground (`DrawnGroundOptions`), on a grid of its own; absent on circuits without it */
+  drawn?: DrawnGroundBuffers | null;
+}
+
+/** The drawn ground's triangles (9 floats each), layer (into `layers`), smooth vertex normals and XZ grid */
+export interface DrawnGroundBuffers {
+  tris: Float32Array;
+  triLayer: Uint8Array;
+  triVertNormal: Float32Array;
+  minX: number;
+  minZ: number;
+  nx: number;
+  nz: number;
+  cellStart: Uint32Array;
+  cellTris: Uint32Array;
+}
+
+/**
+ * The scan's own ground, for a converted circuit whose physics surfaces are generated along its road and so stop
+ * short of (and part from, by centimetres) the run-off, grass, gravel and terrain it draws (track data
+ * `mesh.groundMaterials`): the drawn meshes in these materials become ground the cars drive on past the circuit's own
+ * road band, and wherever its own surfaces have nothing. Decks over the track (drawn ground `DRAWN_OVERHEAD_M` or more
+ * over the circuit's own road) are left out; drawn ground that rises over the circuit's other surfaces (a bank beside
+ * the run-off) is kept.
+ */
+export interface DrawnGroundOptions {
+  /** The surface each ground material is, by material name (e.g. `{ "grass-shader.005": "grass" }`) */
+  materials: Readonly<Record<string, TrackSurfaceKind>>;
+  /** Materials the scene leaves out (`mesh.cutMaterials`): never drawn, so never ground */
+  cutMaterials?: readonly string[];
+  /** World boxes the scene cuts out of the scan (`mesh.cutBoxes`): triangles centred in one are left out too */
+  cutBoxes?: readonly SceneryCutBox[];
 }
 
 /** A collider layer's surface tags (plain data) */
@@ -157,6 +216,46 @@ export interface ColliderLayerSource {
 
 function asSurface(v: unknown): TrackSurfaceKind | null {
   return isTrackSurfaceKind(v) ? v : null;
+}
+
+/** One drawn ground material: its surface and the scan's meshes drawn in it */
+export interface DrawnGroundGroup {
+  material: string;
+  surface: TrackSurfaceKind;
+  meshes: THREE.Mesh[];
+}
+
+/**
+ * A mesh's material name, as both loaders give it: the material's own (GLTFLoader, one material per primitive) or the
+ * headless reader's `userData.materialName` (scripts/lib/glb-geometry.ts, which builds no materials)
+ */
+function materialNameOf(mesh: THREE.Mesh): string {
+  if (typeof mesh.userData?.materialName === 'string') return mesh.userData.materialName;
+  const m = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+  return m?.name ?? '';
+}
+
+/**
+ * The scan's meshes drawn in `opts.materials` under `root`, by material: visible ones only (no collider, no hidden
+ * physics surface, no material the scene leaves out)
+ */
+export function drawnGroundGroups(root: THREE.Object3D, opts: DrawnGroundOptions): DrawnGroundGroup[] {
+  const cut = new Set(opts.cutMaterials ?? []);
+  const byMaterial = new Map<string, DrawnGroundGroup>();
+  const hidden = (o: THREE.Object3D) => {
+    for (let n: THREE.Object3D | null = o; n && n !== root; n = n.parent) if (n.userData?.collider || n.userData?.hidden || n.userData?.surface) return true;
+    return false;
+  };
+  root.traverse((o) => {
+    if (!(o instanceof THREE.Mesh)) return;
+    const material = materialNameOf(o);
+    const surface = Object.prototype.hasOwnProperty.call(opts.materials, material) ? asSurface(opts.materials[material]) : null;
+    if (!surface || cut.has(material) || hidden(o)) return;
+    let g = byMaterial.get(material);
+    if (!g) byMaterial.set(material, (g = { material, surface, meshes: [] }));
+    g.meshes.push(o);
+  });
+  return [...byMaterial.values()];
 }
 
 /** Cell of coordinate `v` on a grid axis starting at `min` with `n` cells of CELL_SIZE_M, clamped to the grid */
@@ -560,15 +659,17 @@ export class TrackColliderQuery implements GroundQuery {
   private readonly cellStart: Uint32Array;
   private readonly cellTris: Uint32Array;
   public readonly triangleCount: number;
+  /** The scan's drawn ground (`DrawnGroundOptions`) on a grid of its own, or null (every circuit without it) */
+  private readonly drawn: DrawnGroundBuffers | null;
 
   /**
-   * Build from the loaded track root: `Track_Collider_Road` plus every node tagged `userData.surface`.
-   * Throws when the road collider is missing.
+   * Build from the loaded track root: `Track_Collider_Road` plus every node tagged `userData.surface`, and with
+   * `drawnGround` the scan's meshes drawn in its ground materials. Throws when the road collider is missing.
    */
   static fromTrackRoot(
     root: THREE.Object3D,
     table: SurfaceTable = DEFAULT_SURFACE_TABLE,
-    options: { conformSurfaces?: boolean } = {}
+    options: { conformSurfaces?: boolean; drawnGround?: DrawnGroundOptions } = {}
   ): TrackColliderQuery {
     if (options.conformSurfaces) conformTrackSurfaceColliders(root);
     root.updateMatrixWorld(true);
@@ -580,7 +681,8 @@ export class TrackColliderQuery implements GroundQuery {
     });
     if (!found.road) throw new Error('TrackColliderQuery: Track_Collider_Road not found under the track root');
     sources.unshift({ object: found.road, isRoadCollider: true });
-    return new TrackColliderQuery(sources, table, options);
+    const drawn = options.drawnGround ? drawnGroundGroups(root, options.drawnGround) : undefined;
+    return new TrackColliderQuery(sources, table, { conformSurfaces: options.conformSurfaces, drawn, cutBoxes: options.drawnGround?.cutBoxes });
   }
 
   /**
@@ -612,15 +714,17 @@ export class TrackColliderQuery implements GroundQuery {
       cellStart: this.cellStart,
       cellTris: this.cellTris,
       fitted: this.fitted,
+      drawn: this.drawn,
     };
   }
 
   constructor(
     sources: ColliderLayerSource[] | TrackColliderBuffers,
     table: SurfaceTable = DEFAULT_SURFACE_TABLE,
-    options: { conformSurfaces?: boolean } = {}
+    options: { conformSurfaces?: boolean; drawn?: DrawnGroundGroup[]; cutBoxes?: readonly SceneryCutBox[] } = {}
   ) {
     if (!Array.isArray(sources)) {
+      this.drawn = sources.drawn ?? null;
       this.fitted = sources.fitted;
       this.layers = sources.layers;
       this.tris = sources.tris;
@@ -828,6 +932,172 @@ export class TrackColliderQuery implements GroundQuery {
     this.nz = grid.nz;
     this.cellStart = grid.cellStart;
     this.cellTris = grid.items;
+    this.drawn = options.drawn?.length ? this.buildDrawn(options.drawn, table, options.cutBoxes ?? [], minX, minZ, maxX, maxZ) : null;
+  }
+
+  /**
+   * The drawn ground's own grid (`DrawnGroundOptions`), over the box of the circuit's own surfaces grown by
+   * `DRAWN_MARGIN_M`: the groups' triangles facing up at least `DRAWN_MIN_NORMAL_Y`, less those centred in a cut box and
+   * the decks over the track (the circuit's own road `DRAWN_OVERHEAD_M` or more under their centre). Each group becomes a
+   * layer (after the circuit's own), with its surface's table entry and no ripple. Null when none is left.
+   */
+  private buildDrawn(
+    groups: DrawnGroundGroup[],
+    table: SurfaceTable,
+    cutBoxes: readonly SceneryCutBox[],
+    ownMinX: number,
+    ownMinZ: number,
+    ownMaxX: number,
+    ownMaxZ: number
+  ): DrawnGroundBuffers | null {
+    const minX = ownMinX - DRAWN_MARGIN_M;
+    const minZ = ownMinZ - DRAWN_MARGIN_M;
+    const maxX = ownMaxX + DRAWN_MARGIN_M;
+    const maxZ = ownMaxZ + DRAWN_MARGIN_M;
+    const tri: number[] = [];
+    const groupOf: number[] = [];
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    groups.forEach((g, gi) => {
+      for (const mesh of g.meshes) {
+        mesh.updateWorldMatrix(true, false);
+        const geom = mesh.geometry as THREE.BufferGeometry;
+        const pos = geom.getAttribute('position');
+        if (!pos) continue;
+        const index = geom.getIndex();
+        const n = index ? index.count : pos.count;
+        for (let i = 0; i + 2 < n; i += 3) {
+          a.fromBufferAttribute(pos, index ? index.getX(i) : i).applyMatrix4(mesh.matrixWorld);
+          b.fromBufferAttribute(pos, index ? index.getX(i + 1) : i + 1).applyMatrix4(mesh.matrixWorld);
+          c.fromBufferAttribute(pos, index ? index.getX(i + 2) : i + 2).applyMatrix4(mesh.matrixWorld);
+          if (Math.max(a.x, b.x, c.x) < minX || Math.min(a.x, b.x, c.x) > maxX || Math.max(a.z, b.z, c.z) < minZ || Math.min(a.z, b.z, c.z) > maxZ) continue;
+          const e1x = b.x - a.x, e1y = b.y - a.y, e1z = b.z - a.z;
+          const e2x = c.x - a.x, e2y = c.y - a.y, e2z = c.z - a.z;
+          const ny = e1z * e2x - e1x * e2z;
+          const len = Math.hypot(e1y * e2z - e1z * e2y, ny, e1x * e2y - e1y * e2x);
+          if (!(len > 1e-9) || Math.abs(ny) / len < DRAWN_MIN_NORMAL_Y) continue;
+          const mx = (a.x + b.x + c.x) / 3;
+          const my = (a.y + b.y + c.y) / 3;
+          const mz = (a.z + b.z + c.z) / 3;
+          if (cutBoxes.some((k) => mx >= k[0] && mx <= k[3] && my >= k[1] && my <= k[4] && mz >= k[2] && mz <= k[5])) continue;
+          tri.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+          groupOf.push(gi);
+        }
+      }
+    });
+    const boxOf = (src: ArrayLike<number>) => (t: number, box: Float64Array) => {
+      const o = t * 9;
+      box[0] = Math.min(src[o], src[o + 3], src[o + 6]);
+      box[1] = Math.min(src[o + 2], src[o + 5], src[o + 8]);
+      box[2] = Math.max(src[o], src[o + 3], src[o + 6]);
+      box[3] = Math.max(src[o + 2], src[o + 5], src[o + 8]);
+      return true;
+    };
+
+    // Decks over the track: the circuit's own road well under a drawn triangle's centre
+    const ownRoad = this.layers.map((l) => l.isRoadCollider || (l.tagged && OWN_ROAD_SURFACES.has(l.surface)));
+    const roadUnder = (x: number, z: number, below: number) => {
+      const cell = this.cellAt(x, z);
+      if (cell < 0) return false;
+      const tris = this.tris;
+      for (let k = this.cellStart[cell], end = this.cellStart[cell + 1]; k < end; k++) {
+        const t = this.cellTris[k];
+        if (!ownRoad[this.triLayer[t]]) continue;
+        const o = t * 9;
+        const ax = tris[o];
+        const az = tris[o + 2];
+        const v0x = tris[o + 3] - ax;
+        const v0z = tris[o + 5] - az;
+        const v1x = tris[o + 6] - ax;
+        const v1z = tris[o + 8] - az;
+        const den = v0x * v1z - v1x * v0z;
+        if (Math.abs(den) < 1e-12) continue;
+        const u = ((x - ax) * v1z - v1x * (z - az)) / den;
+        const v = (v0x * (z - az) - (x - ax) * v0z) / den;
+        if (u < 0 || v < 0 || u + v > 1) continue;
+        if (tris[o + 1] + u * (tris[o + 4] - tris[o + 1]) + v * (tris[o + 7] - tris[o + 1]) < below) return true;
+      }
+      return false;
+    };
+    const keep: number[] = [];
+    for (let t = 0; t < groupOf.length; t++) {
+      const o = t * 9;
+      const mx = (tri[o] + tri[o + 3] + tri[o + 6]) / 3;
+      const my = (tri[o + 1] + tri[o + 4] + tri[o + 7]) / 3;
+      const mz = (tri[o + 2] + tri[o + 5] + tri[o + 8]) / 3;
+      if (!roadUnder(mx, mz, my - DRAWN_OVERHEAD_M)) keep.push(t);
+    }
+    if (keep.length === 0) return null;
+
+    // One layer per group that kept a triangle
+    const layerOfGroup = new Map<number, number>();
+    const tris = new Float32Array(keep.length * 9);
+    const triLayer = new Uint8Array(keep.length);
+    keep.forEach((t, k) => {
+      const gi = groupOf[t];
+      let li = layerOfGroup.get(gi);
+      if (li === undefined) {
+        if (this.layers.length >= 255) throw new Error('TrackColliderQuery: too many layers');
+        const { material, surface } = groups[gi];
+        const props = table[surface];
+        li = this.layers.length;
+        this.layers.push({ name: `Track_Model:${material}`, isRoadCollider: false, surface, grip: props.friction, props, tagged: true, drivable: true, uvScaleM: 0 });
+        layerOfGroup.set(gi, li);
+      }
+      triLayer[k] = li;
+      tris.set(tri.slice(t * 9, t * 9 + 9), k * 9);
+    });
+
+    // Smooth vertex normals per layer (vertices welded on a 1 cm grid), as the circuit's own surfaces have
+    const triVertNormal = new Float32Array(keep.length * 9);
+    const welded = new Map<string, number>();
+    const vertOf = new Int32Array(keep.length * 3);
+    const sums: number[] = [];
+    for (let t = 0; t < keep.length; t++) {
+      const o = t * 9;
+      const e1x = tris[o + 3] - tris[o], e1y = tris[o + 4] - tris[o + 1], e1z = tris[o + 5] - tris[o + 2];
+      const e2x = tris[o + 6] - tris[o], e2y = tris[o + 7] - tris[o + 1], e2z = tris[o + 8] - tris[o + 2];
+      let nx = e1y * e2z - e1z * e2y;
+      let ny = e1z * e2x - e1x * e2z;
+      let nz = e1x * e2y - e1y * e2x;
+      const len = Math.hypot(nx, ny, nz) || 1;
+      const sign = ny < 0 ? -1 : 1;
+      nx = (sign * nx) / len;
+      ny = (sign * ny) / len;
+      nz = (sign * nz) / len;
+      triVertNormal.set([nx, ny, nz, nx, ny, nz, nx, ny, nz], o);
+      for (let k = 0; k < 3; k++) {
+        const key = `${triLayer[t]},${Math.round(tris[o + k * 3] * 100)},${Math.round(tris[o + k * 3 + 2] * 100)}`;
+        let vi = welded.get(key);
+        if (vi === undefined) {
+          vi = sums.length / 3;
+          welded.set(key, vi);
+          sums.push(0, 0, 0);
+        }
+        vertOf[t * 3 + k] = vi;
+        sums[vi * 3] += nx;
+        sums[vi * 3 + 1] += ny;
+        sums[vi * 3 + 2] += nz;
+      }
+    }
+    for (let t = 0; t < keep.length; t++) {
+      const o = t * 9;
+      const fnx = triVertNormal[o];
+      const fny = triVertNormal[o + 1];
+      const fnz = triVertNormal[o + 2];
+      for (let k = 0; k < 3; k++) {
+        const vi = vertOf[t * 3 + k] * 3;
+        const l = Math.hypot(sums[vi], sums[vi + 1], sums[vi + 2]) || 1;
+        const vnx = sums[vi] / l;
+        const vny = sums[vi + 1] / l;
+        const vnz = sums[vi + 2] / l;
+        // Sharp creases (a kerb's face, a bank's lip) keep the face's own normal, as on the circuit's surfaces
+        if (fnx * vnx + fny * vny + fnz * vnz > 0.86) triVertNormal.set([vnx, vny, vnz], o + k * 3);
+      }
+    }
+    const grid = buildCsrGrid(minX, minZ, maxX, maxZ, keep.length, boxOf(tris));
+    return { tris, triLayer, triVertNormal, minX, minZ, nx: grid.nx, nz: grid.nz, cellStart: grid.cellStart, cellTris: grid.items };
   }
 
   /**
@@ -836,7 +1106,12 @@ export class TrackColliderQuery implements GroundQuery {
    */
   query(x: number, z: number, probeY: number, out: GroundHit): boolean {
     const cell = this.cellAt(x, z);
-    if (cell < 0) return false;
+    if (cell < 0) {
+      if (!this.drawn) return false;
+      this.clearCandidates(0);
+      this.setPoint(0, x, z, probeY);
+      return this.resolve(0, out);
+    }
     this.clearCandidates(0);
     const tris = this.tris;
     for (let k = this.cellStart[cell], end = this.cellStart[cell + 1]; k < end; k++) {
@@ -860,6 +1135,7 @@ export class TrackColliderQuery implements GroundQuery {
       if (h > probeY) continue;
       this.addCandidate(0, t, u, v, h);
     }
+    if (this.drawn) this.setPoint(0, x, z, probeY);
     return this.resolve(0, out);
   }
 
@@ -953,10 +1229,77 @@ export class TrackColliderQuery implements GroundQuery {
       }
       for (let j = 0; j < m; j++) {
         const p = slots[j];
+        if (this.drawn) this.setPoint(p, gx[j], gz[j], probeY);
         if (this.resolve(p, outs[p], p < fullCount)) found |= 1 << p;
       }
     }
+    // Points off the circuit's own grid: drawn ground alone
+    if (this.drawn) {
+      for (let i = 0; i < n; i++) {
+        if (cells[i] >= 0) continue;
+        this.clearCandidates(i);
+        this.setPoint(i, xs[i], zs[i], probeY);
+        if (this.resolve(i, outs[i], i < fullCount)) found |= 1 << i;
+      }
+    }
     return found;
+  }
+
+  /** Point `p` is at (x, z), probed from `probeY`: its drawn ground is scanned (`drawnAt`) only if its contact needs it */
+  private setPoint(p: number, x: number, z: number, probeY: number): void {
+    this.ptX[p] = x;
+    this.ptZ[p] = z;
+    this.ptProbe[p] = probeY;
+  }
+
+  /** Point `p`'s highest drawn ground at or below its probe (`setPoint`): its triangle, −1 when there is none (or no drawn ground) */
+  private drawnAt(p: number): number {
+    if (!this.drawn) return -1;
+    this.scanDrawn(p, this.ptX[p], this.ptZ[p], this.ptProbe[p]);
+    return this.drawnT[p];
+  }
+
+  /** Point `p`'s highest drawn ground at or below `probeY`, as its drawn candidate (`drawnT[p]` −1 when there is none) */
+  private scanDrawn(p: number, x: number, z: number, probeY: number): void {
+    const d = this.drawn!;
+    this.drawnT[p] = -1;
+    const fx = (x - d.minX) / CELL_SIZE_M;
+    const fz = (z - d.minZ) / CELL_SIZE_M;
+    if (fx < 0 || fz < 0 || fx >= d.nx || fz >= d.nz) return;
+    const cell = Math.floor(fz) * d.nx + Math.floor(fx);
+    const tris = d.tris;
+    let best = -Infinity;
+    for (let k = d.cellStart[cell], end = d.cellStart[cell + 1]; k < end; k++) {
+      const t = d.cellTris[k];
+      const o = t * 9;
+      const ax = tris[o];
+      const az = tris[o + 2];
+      const v0x = tris[o + 3] - ax;
+      const v0z = tris[o + 5] - az;
+      const v1x = tris[o + 6] - ax;
+      const v1z = tris[o + 8] - az;
+      const den = v0x * v1z - v1x * v0z;
+      if (Math.abs(den) < 1e-12) continue;
+      const px = x - ax;
+      const pz = z - az;
+      const u = (px * v1z - v1x * pz) / den;
+      const v = (v0x * pz - px * v0z) / den;
+      if (u < -1e-6 || v < -1e-6 || u + v > 1 + 1e-6) continue;
+      const ay = tris[o + 1];
+      const h = ay + u * (tris[o + 4] - ay) + v * (tris[o + 7] - ay);
+      if (h > probeY || h <= best) continue;
+      best = h;
+      this.drawnT[p] = t;
+      this.drawnH[p] = h;
+      this.drawnU[p] = u;
+      this.drawnV[p] = v;
+    }
+  }
+
+  /** The contact on triangle `t` (of the circuit's own surfaces) is its road, pit lane or a kerb: drawn ground never replaces it */
+  private onOwnRoad(t: number): boolean {
+    const layer = this.layers[this.triLayer[t]];
+    return layer.tagged && !layer.isRoadCollider && OWN_ROAD_SURFACES.has(layer.surface);
   }
 
   /** Grid cell of (x, z), or -1 off the grid */
@@ -1041,11 +1384,6 @@ export class TrackColliderQuery implements GroundQuery {
     const driveT = this.candT[c + CAND_DRIVE];
     const driveU = this.candU[c + CAND_DRIVE];
     const driveV = this.candV[c + CAND_DRIVE];
-    // Tagged surfaces, kept to classify the final contact height
-    const tagCount = this.tagCount[p];
-    const tagAt = p * MAX_TAGS;
-    const tagH = this.scratchH;
-    const tagT = this.scratchT;
 
     let baseT = -1;
     let baseH = -Infinity;
@@ -1111,15 +1449,54 @@ export class TrackColliderQuery implements GroundQuery {
       normalT = anyT;
       normalU = anyU;
       normalV = anyV;
+    } else if (this.drawnAt(p) >= 0) {
+      return this.resolveDrawn(p, out, full, -1, 0, 0, 0);
     } else {
       return false;
+    }
+    // Past the road collider's band (and off the circuit's own road and kerbs), a contact more than DRAWN_TOLERANCE_M
+    // off the drawn ground is brought to it. The band keeps its swept surfaces: the scan's coarse, quantised meshes
+    // there would jolt every car that runs wide
+    if (this.drawn && roadT < 0 && !this.onOwnRoad(contactT) && this.drawnAt(p) >= 0 && Math.abs(this.drawnH[p] - contactH) > DRAWN_TOLERANCE_M) {
+      return this.resolveDrawn(p, out, full, contactT, contactH, contactU, contactV);
     }
     if (!full) {
       out.height = contactH + this.rippleAt(contactT, contactU, contactV);
       return true;
     }
 
-    // Classify: top-most tagged surface near the contact height (on fitted surfaces a kerb or sausage first), else the contact layer itself
+    const tagLayer = this.classify(p, contactT, contactH);
+
+    contactH += this.rippleAt(contactT, contactU, contactV);
+
+    const vo = normalT * 9;
+    const vn = this.triVertNormal;
+    const w = 1 - normalU - normalV;
+    const nx = w * vn[vo] + normalU * vn[vo + 3] + normalV * vn[vo + 6];
+    const ny = w * vn[vo + 1] + normalU * vn[vo + 4] + normalV * vn[vo + 7];
+    const nz = w * vn[vo + 2] + normalU * vn[vo + 5] + normalV * vn[vo + 8];
+    const invLen = 1 / (Math.hypot(nx, ny, nz) || 1);
+
+    out.height = contactH;
+    out.nx = nx * invLen;
+    out.ny = ny * invLen;
+    out.nz = nz * invLen;
+    out.surface = tagLayer.surface;
+    out.grip = tagLayer.grip;
+    out.props = tagLayer.props;
+    out.source = tagLayer.name;
+    return true;
+  }
+
+  /**
+   * The layer that names point `p`'s contact on triangle `contactT` at `contactH`: the top-most tagged surface near
+   * that height (on fitted surfaces a kerb or sausage first), else the contact layer itself
+   */
+  private classify(p: number, contactT: number, contactH: number): Layer {
+    const tagCount = this.tagCount[p];
+    const tagAt = p * MAX_TAGS;
+    const tagH = this.scratchH;
+    const tagT = this.scratchT;
     let bestTagT = -1;
     let bestTagH = -Infinity;
     let bestTagRaised = false;
@@ -1139,19 +1516,32 @@ export class TrackColliderQuery implements GroundQuery {
         }
       }
     }
-    const tagLayer = this.layers[this.triLayer[bestTagT >= 0 ? bestTagT : contactT]];
+    return this.layers[this.triLayer[bestTagT >= 0 ? bestTagT : contactT]];
+  }
 
-    contactH += this.rippleAt(contactT, contactU, contactV);
-
-    const vo = normalT * 9;
-    const vn = this.triVertNormal;
-    const w = 1 - normalU - normalV;
-    const nx = w * vn[vo] + normalU * vn[vo + 3] + normalV * vn[vo + 6];
-    const ny = w * vn[vo + 1] + normalU * vn[vo + 4] + normalV * vn[vo + 7];
-    const nz = w * vn[vo + 2] + normalU * vn[vo + 5] + normalV * vn[vo + 8];
+  /**
+   * Point `p` on its drawn ground (`DrawnGroundOptions`), with the drawn triangle's smooth normal. Over a contact on the
+   * circuit's own surfaces (`ownT`, at `ownH`, more than `DRAWN_TOLERANCE_M` off the drawn ground) it sits that far from
+   * the drawn ground on the contact's side, with the contact's ripple and name; with none (`ownT` −1) it is the drawn
+   * ground, named by its material.
+   */
+  private resolveDrawn(p: number, out: GroundHit, full: boolean, ownT: number, ownH: number, ownU: number, ownV: number): boolean {
+    const d = this.drawn!;
+    const t = this.drawnT[p];
+    const drawnH = this.drawnH[p];
+    const height = ownT >= 0 ? THREE.MathUtils.clamp(ownH, drawnH - DRAWN_TOLERANCE_M, drawnH + DRAWN_TOLERANCE_M) + this.rippleAt(ownT, ownU, ownV) : drawnH;
+    out.height = height;
+    if (!full) return true;
+    const u = this.drawnU[p];
+    const v = this.drawnV[p];
+    const vo = t * 9;
+    const vn = d.triVertNormal;
+    const w = 1 - u - v;
+    const nx = w * vn[vo] + u * vn[vo + 3] + v * vn[vo + 6];
+    const ny = w * vn[vo + 1] + u * vn[vo + 4] + v * vn[vo + 7];
+    const nz = w * vn[vo + 2] + u * vn[vo + 5] + v * vn[vo + 8];
     const invLen = 1 / (Math.hypot(nx, ny, nz) || 1);
-
-    out.height = contactH;
+    const tagLayer = ownT >= 0 ? this.classify(p, ownT, ownH) : this.layers[d.triLayer[t]];
     out.nx = nx * invLen;
     out.ny = ny * invLen;
     out.nz = nz * invLen;
@@ -1176,6 +1566,15 @@ export class TrackColliderQuery implements GroundQuery {
   private readonly tagCount = new Int32Array(GROUND_QUERY_MANY_MAX);
   private readonly scratchH = new Float64Array(GROUND_QUERY_MANY_MAX * MAX_TAGS);
   private readonly scratchT = new Int32Array(GROUND_QUERY_MANY_MAX * MAX_TAGS);
+  /** Per point, where it is and its probe height (`setPoint`), for a drawn-ground scan if its contact needs one */
+  private readonly ptX = new Float64Array(GROUND_QUERY_MANY_MAX);
+  private readonly ptZ = new Float64Array(GROUND_QUERY_MANY_MAX);
+  private readonly ptProbe = new Float64Array(GROUND_QUERY_MANY_MAX);
+  /** Per point, its highest drawn ground (`scanDrawn`): height, triangle (−1: none), u, v */
+  private readonly drawnH = new Float64Array(GROUND_QUERY_MANY_MAX);
+  private readonly drawnT = new Int32Array(GROUND_QUERY_MANY_MAX).fill(-1);
+  private readonly drawnU = new Float64Array(GROUND_QUERY_MANY_MAX);
+  private readonly drawnV = new Float64Array(GROUND_QUERY_MANY_MAX);
 }
 
 /** Infinite flat ground (tests, garage) */

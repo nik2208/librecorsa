@@ -32,9 +32,13 @@ export function trackColliders(root: THREE.Object3D): TrackColliders {
   if (!colliders) {
     const mesh = getActiveTrackMetadata().mesh;
     const conformSurfaces = mesh?.conformSurfaces === true;
+    // A scan driven on as drawn off its own road (`mesh.groundMaterials`): the scene leaves out the same materials and boxes
+    const drawnGround = mesh?.groundMaterials
+      ? { materials: mesh.groundMaterials, cutMaterials: mesh.cutMaterials, cutBoxes: mesh.cutBoxes }
+      : undefined;
     // A GLB without a road collider (none of the shipped circuits) leaves the cars on the track samples' ground
     const ground = root.getObjectByName('Track_Collider_Road')
-      ? TrackColliderQuery.fromTrackRoot(root, getActiveSurfaceTable(), { conformSurfaces })
+      ? TrackColliderQuery.fromTrackRoot(root, getActiveSurfaceTable(), { conformSurfaces, drawnGround })
       : null;
     colliders = { ground, walls: TrackWallQuery.fromTrackRoot(root, mesh?.barrierMeshes, roadFacing), conformSurfaces };
     cache.set(root, colliders);

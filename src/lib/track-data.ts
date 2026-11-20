@@ -8,7 +8,7 @@ import {
 } from "@/types/f1";
 import rawTrackJson from "../../public/tracks/rwanda_official_short/track_data.json";
 import { AI_LINE_WIDTH_SCALE, brakingZoneLevel, computeSpeedProfile, createVf26ProfileCarModel } from "./sim/speed-profile";
-import { resolveSurfaceTable, type SurfaceTable, type SurfaceTableOverrides } from "./sim/track-surfaces";
+import { resolveSurfaceTable, type SurfaceTable, type SurfaceTableOverrides, type TrackSurfaceKind } from "./sim/track-surfaces";
 import type { SceneryCutBox } from "./scenery-cuts";
 import { EVENT_LIVERY } from "@/lib/kiosk/event-livery";
 
@@ -230,7 +230,11 @@ export interface TrackMetaExtras {
    * (TrackColliderQuery.ts), for converted circuits whose surfaces don't meet the road edge as exported;
    * `scenery`: scenery files drawn with the circuit (instanced trees: scenery-instances.ts);
    * `barrierMeshes`: drawn barriers the converted circuit gives no collider (Monaco's Armco ends and orange blocks),
-   * by mesh name: the cars hit them and the racing line keeps clear of them as of the `Track_Collider_Wall_*` walls
+   * by mesh name: the cars hit them and the racing line keeps clear of them as of the `Track_Collider_Wall_*` walls;
+   * `groundMaterials`: the scan's ground materials and the surface each is (`{ "grass-shader.005": "grass" }`), for a
+   * scan whose generated physics surfaces stop short of, or sit under, the ground it draws: past the road's own band,
+   * and wherever its surfaces have a hole, the cars drive on those meshes as drawn (TrackColliderQuery.ts,
+   * `DrawnGroundOptions`)
    */
   mesh?: {
     url?: string;
@@ -240,6 +244,7 @@ export interface TrackMetaExtras {
     conformSurfaces?: boolean;
     scenery?: string[];
     barrierMeshes?: string[];
+    groundMaterials?: Record<string, TrackSurfaceKind>;
   };
   credit?: { title: string; author: string; url: string; short?: string; license: string; licenseUrl: string };
   /** Per-kind overrides of the default surface table (track-surfaces.ts) */

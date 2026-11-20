@@ -93,7 +93,8 @@ export function loadGlbGeometry(path: string): THREE.Group {
       }
     } else obj = new THREE.Object3D();
     obj.name = n.name ?? '';
-    obj.userData = { ...(n.extras ?? {}) };
+    // A single-primitive node is that primitive's mesh: it keeps its material's name alongside the node's extras
+    obj.userData = { ...obj.userData, ...(n.extras ?? {}) };
     if (n.translation) obj.position.fromArray(n.translation);
     if (n.rotation) obj.quaternion.fromArray(n.rotation);
     if (n.scale) obj.scale.fromArray(n.scale);
