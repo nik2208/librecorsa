@@ -2147,7 +2147,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
         />
       ) : null}
 
-      <NowPlayingToast nowPlaying={nowPlaying} />
+      {/* Kiosk mode: no soundtrack, so nothing to announce (kiosk-settings.ts) */}
+      {kioskOn ? null : <NowPlayingToast nowPlaying={nowPlaying} />}
 
       {gpuNoticeKind ? (
         <GpuLostNotice

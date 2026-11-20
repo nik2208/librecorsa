@@ -4,6 +4,7 @@
  * setup. The wheel's own bindings and calibration stay as saved in this browser.
  */
 
+import { MUSIC_TRACK_IDS } from "@/lib/audio/music-catalog";
 import type { PlayerSettings } from "@/lib/settings/player-settings";
 import type { AssistPreset } from "@/types/f1";
 import { KIOSK_LIVERY_ID, KIOSK_NEUTRAL_LIVERY_ID, type KioskConfig } from "@/lib/kiosk/kiosk-types";
@@ -28,6 +29,9 @@ export function kioskSettingsFor(
     ghost: false,
     liveryId: eventLivery ? KIOSK_LIVERY_ID : KIOSK_NEUTRAL_LIVERY_ID,
     mouseSteer: false,
+    // No soundtrack on the stand (upstream's music player, with its English "now playing" card): every track off, so
+    // none loads or is announced; the car, the tyres and the kerbs still sound
+    audio: { ...own.audio, musicMuted: true, musicOff: [...MUSIC_TRACK_IDS], menuMusic: 0, raceMusic: 0, replayMusic: 0 },
     conditions: { ...own.conditions, weather: "clear", weatherNodes: undefined, timeScale: 0 },
     // Controls a visitor must not reach: the autopilot (it would set lap times), mute, replays, the flying restart and
     // mouse steering. Restart stays: it puts a stuck car back on the grid (the lap in progress is lost)
