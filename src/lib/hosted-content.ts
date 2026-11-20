@@ -20,6 +20,18 @@ export const EXTRA_CONTENT_IDS: ReadonlySet<string> = new Set(
     .filter((id) => EXTRA_CONTENT_KNOWN.has(id))
 );
 
+/**
+ * Event branch: the kiosk's extra cars, which a kiosk build fetches from librecorsa.org and dresses for the event before
+ * `next build` (scripts/kiosk/fetch-kiosk-cars.mjs, run as `prebuild`; they are not in the repository). next.config.ts
+ * names the ones that came out complete, so a build without them (offline, or Pages) doesn't list them.
+ */
+export const KIOSK_FETCHED_CAR_IDS: ReadonlySet<string> = new Set(
+  (process.env.NEXT_PUBLIC_KIOSK_FETCHED_CARS ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+);
+
 /** The cars in the repository: both drive the 2026 prototype's body and sound */
 export const REPO_CAR_IDS: ReadonlySet<string> = new Set(["lc26"]);
 
@@ -28,7 +40,7 @@ export const REPO_TRACK_IDS: ReadonlySet<string> = new Set(["rwanda_official_sho
 
 /** Whether this copy lists a car */
 export const carListed = (id: string): boolean =>
-  EXTRA_CONTENT_KNOWN.has(id) ? EXTRA_CONTENT_IDS.has(id) : HOSTED_CONTENT || REPO_CAR_IDS.has(id);
+  KIOSK_FETCHED_CAR_IDS.has(id) || (EXTRA_CONTENT_KNOWN.has(id) ? EXTRA_CONTENT_IDS.has(id) : HOSTED_CONTENT || REPO_CAR_IDS.has(id));
 
 /** Whether this copy lists a circuit */
 export const trackListed = (id: string): boolean =>

@@ -249,6 +249,20 @@ il gatto e APPLIKAT su pance, muso e alettone, applikat.it sul cofano (`src/lib/
 `public/cars/f12026/liveries/applikat/decals.png` dal logo di applikat.it e dal carattere Martian Mono). Con il logo
 HUAWEI acceso indossa la livrea Huawei.
 
+**Altre due auto**, da scegliere in *Impostazioni → Auto* (ognuna ha la sua classifica):
+- **Hypercar LMDh** (`lc-lmdh`): il prototipo ibrido di LibreCorsa, nei colori Applikat. La sua batteria è piccola e
+  non limita la velocità.
+- **Prototipo V8** (`mtr-496r`, l'MTRacing 496R): niente batteria né ala mobile da gestire, ma neanche ABS. I marchi di
+  altre aziende (gomme, freni, mozzi, abitacolo, badge) sono tolti, e dove c'era il nome della squadra (parabrezza, portiere) c'è
+  Applikat.
+
+Non sono nel repository: `scripts/kiosk/fetch-kiosk-cars.mjs` le scarica da librecorsa.org e le veste, e `npm run
+build` lo lancia prima della build (`prebuild`, come fa la ISO di GamerLive). Ogni file è controllato con
+`scripts/kiosk/kiosk-cars.lock.json`, e la build elenca un'auto solo se è completa: senza rete, o con un file cambiato
+su librecorsa.org, la build riesce lo stesso, senza quell'auto. `KIOSK_CARS=none` le esclude, `KIOSK_CARS=lc-lmdh` ne
+prende una sola; `node scripts/kiosk/fetch-kiosk-cars.mjs --lock` registra di nuovo i file. Le Pages (`npx next build`)
+non le hanno.
+
 La **Ferrari SF-26** che il kiosk usava prima non c'è più: l'evento non può usarla (la carrozzeria è estratta da un
 videogioco di F1, con i marchi Ferrari e degli sponsor reali). I suoi file sono stati tolti dal branch; una
 configurazione che la nomina usa la Monoposto 2026, mentre i risultati registrati con la Ferrari restano su una classifica
@@ -256,12 +270,18 @@ a parte (`carId` `sf26`) che nessuno schermo mostra: per toglierli, *Impostazion
 
 ## Licenze e diritti
 
-- **Codice**: LibreCorsa, MIT (uso commerciale consentito).
+- **Codice**: LibreCorsa, AGPL-3.0 (uso commerciale consentito; chi lo modifica e lo fa usare ad altri deve renderne
+  disponibile il sorgente: questo fork è pubblico su GitHub).
 - **Monza**: senza licenza (vedi sopra).
 - **Circuito RISE Motordrome** (alternativo): CC BY-NC-SA 4.0, non commerciale; serve il permesso dell'autore
   (Alp Yalay, LibreCorsa).
 - **Monoposto 2026 Prototype**: Qvist Designs, CC BY 4.0. I suoni dei motori hanno autori e licenze non
   indicati (CREDITS.md).
+- **Hypercar LMDh**: carrozzeria di kilianhoffmann13, CC BY 4.0 (nei crediti del gioco); il suono non ha licenza
+  indicata.
+- **Prototipo V8 (MTRacing 496R)**: modello, suoni e dati di munyuturbo, che ha dato il permesso a LibreCorsa, non a
+  questo fork: per questo il fork non ne ripubblica i file. Per l'evento conviene chiederlo anche per noi, o non
+  sceglierla.
 - **Marchi Huawei, WINDTRE e Milan Games Week**: usare solo l'artwork fornito dai titolari. I file scaricati da
   Wikimedia Commons sono loghi di solo testo, di pubblico dominio come immagini, ma restano marchi registrati (WINDTRE è
   di Wind Tre S.p.A.). Lo stesso vale per i loghi caricati dallo staff.

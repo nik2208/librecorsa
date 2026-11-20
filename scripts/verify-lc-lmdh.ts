@@ -15,6 +15,7 @@
 import * as THREE from 'three';
 import { existsSync, readFileSync } from 'node:fs';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { getActiveTrackData } from '../src/lib/track-data';
 import { FlatGroundQuery } from '../src/lib/sim/f12026-car/TrackColliderQuery';
 import { VehiclePhysics, type VehicleInputs } from '../src/lib/sim/f12026-car/VehiclePhysics';
@@ -761,7 +762,11 @@ async function bodyChecks(): Promise<void> {
   json.copy(out, 20);
   rest.copy(out, 20 + json.length);
   const scene = await new Promise<THREE.Group>((resolve, reject) =>
-    new GLTFLoader().parse(out.buffer.slice(out.byteOffset, out.byteOffset + out.length) as ArrayBuffer, '', (g) => resolve(g.scene), reject)
+    // Meshopt as well, as the game's loader (src/lib/render/gltf-loader.ts): the copy librecorsa.org serves, which a kiosk
+    // build fetches (scripts/kiosk/fetch-kiosk-cars.mjs), is compressed
+    new GLTFLoader()
+      .setMeshoptDecoder(MeshoptDecoder)
+      .parse(out.buffer.slice(out.byteOffset, out.byteOffset + out.length) as ArrayBuffer, '', (g) => resolve(g.scene), reject)
   );
   scene.updateMatrixWorld(true);
   const root = portedCarRoot(scene);

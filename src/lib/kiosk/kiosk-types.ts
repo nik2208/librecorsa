@@ -36,7 +36,12 @@ export const KIOSK_FALLBACK_TRACK_ID = "rwanda_official_short";
  * SF-26 it ran before is gone: the event can't use it. A config that names it runs this one; a result saved with it
  * stays on its own board (carId "sf26"), which no screen shows
  */
-export const KIOSK_CARS = [{ id: "lc26", label: "Monoposto 2026", extra: false }] as const;
+export const KIOSK_CARS = [
+  { id: "lc26", label: "Monoposto 2026", extra: false },
+  // The two a kiosk build fetches from librecorsa.org (scripts/kiosk/fetch-kiosk-cars.mjs): listed only when it has them
+  { id: "lc-lmdh", label: "Hypercar LMDh", extra: true },
+  { id: "mtr-496r", label: "Prototipo V8", extra: true },
+] as const;
 export type KioskCarId = (typeof KIOSK_CARS)[number]["id"];
 
 /** The 2026 Prototype was "vf26" until upstream renamed it (8cffd303): configs and results saved before keep working */
