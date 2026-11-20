@@ -11,6 +11,7 @@
 import { readFileSync } from "node:fs";
 import type * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { CARS } from "../src/lib/cars/car-registry";
 import { portedCarRoot } from "../src/lib/ported-car-model";
 import { hasFile, noteSkip } from "./lib/hosted-files";
@@ -57,7 +58,9 @@ function textureless(buf: Buffer): ArrayBuffer {
 
 const load = (url: string) =>
   new Promise<THREE.Group>((resolve, reject) =>
-    new GLTFLoader().parse(textureless(readFileSync(`public${url}`)), "", (g) => resolve(g.scene), reject)
+    // Meshopt as well, as the game's loader (src/lib/render/gltf-loader.ts): librecorsa.org serves the cars compressed,
+    // and a kiosk build fetches its extra cars from there (scripts/kiosk/fetch-kiosk-cars.mjs)
+    new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).parse(textureless(readFileSync(`public${url}`)), "", (g) => resolve(g.scene), reject)
   );
 
 async function main(): Promise<void> {
