@@ -5,6 +5,7 @@ import { LibreCorsaSimulator } from "@/components/LibreCorsaSimulator";
 import { RenderProfiler } from "@/components/dev/RenderProfiler";
 import { activateTrack, getTrackInfo, loadStoredTrackId, DEFAULT_TRACK_ID } from "@/lib/track-registry";
 import { registerAssetCache } from "@/lib/service-worker";
+import { dropServiceWorker } from "@/lib/kiosk/kiosk-sw";
 import type { KioskMode } from "@/lib/kiosk/kiosk-bridge";
 import { watchForUpdates } from "@/lib/build-update";
 import { useLiveHeartbeat } from "@/lib/net/live-heartbeat";
@@ -89,7 +90,9 @@ export const TrackGate: React.FC<TrackGateProps> = ({ kiosk, trackId: wantedTrac
   }, []);
 
   useEffect(() => {
-    registerAssetCache();
+    // The kiosk keeps no asset cache: its files are on the PC, and an old build's would outlive an update (kiosk-sw.ts)
+    if (kiosk) void dropServiceWorker();
+    else registerAssetCache();
     // Before the simulator reads the settings. The kiosk keeps the gentler start but not the notice (in English, over
     // the stand's screens)
     const notice = applySafeStart();

@@ -5,7 +5,7 @@ import { DEFAULT_TRACK_ID, getActivePointToPoint, getActiveTrackData, LIVERIES }
 import { FfbPairPrompt } from "@/components/hud/FfbPairPrompt";
 import { DualSensePairPrompt } from "@/components/hud/DualSensePairPrompt";
 import { isVehicleModelId, vehicleModelsFor } from "@/lib/cars/vehicle-models";
-import { CARS, carById, carForVehicle, type CarId } from "@/lib/cars/car-registry";
+import { CARS, carById, carForVehicle, type CarId, resolveCarId } from "@/lib/cars/car-registry";
 import { alignGhostToTrack } from "@/lib/sim/ghost-align";
 import { carPhysics, carTakesPhysicsSwitch, subscribeF1ModPhysics } from "@/lib/cars/f1-mod-physics";
 import { type ChassisSetup, saveChassisSetup } from "@/lib/sim/car-setup";
@@ -81,6 +81,7 @@ import { dashViewFovDeg } from "@/lib/render/onboard-views";
 import { SeatPanel } from "@/components/hud/SeatPanel";
 import { KIOSK_CAR_ID } from "@/lib/kiosk/kiosk-types";
 import type { KioskMode, KioskSimApi } from "@/lib/kiosk/kiosk-bridge";
+import { KioskGpuRecovery } from "@/components/kiosk/KioskGpuRecovery";
 
 const DEFAULT_ASSIST_PRESET: AssistPreset = DEFAULT_PLAYER_SETTINGS.assistPreset;
 /** A lap record's car: records are per vehicle model, named after its first car */
@@ -152,6 +153,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   const containerRef = useRef<HTMLDivElement | null>(null);
   const kioskOn = kiosk !== undefined;
   const kioskSettings = kiosk?.settings;
+  /** Read when the session is made, which a change of level must not redo */
+  const kioskSettingsRef = useRef(kioskSettings);
+  kioskSettingsRef.current = kioskSettings;
   /** The drive on the mounted circuit: the scene, the car and the frame loop (created once the container exists) */
   const [session, setSession] = useState<DriveSession | null>(null);
   /** The browser gave this page no WebGL context: only a page reload (or a browser restart) can bring it back */
@@ -160,7 +164,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   const track = useMemo(() => getActiveTrackData(1200), []);
   /** The chosen car, and the vehicle model it drives on */
   // The kiosk runs its own car, whatever this browser drove last (and never saves it as this browser's choice)
-  const [carId, setCarId] = useState<CarId>(() => (kioskOn ? ((kiosk.carId || KIOSK_CAR_ID) as CarId) : loadCarChoice()));
+  const [carId, setCarId] = useState<CarId>(() => (kioskOn ? (resolveCarId(kiosk.carId) ?? resolveCarId(KIOSK_CAR_ID) ?? loadCarChoice()) : loadCarChoice()));
   const carIdRef = useRef(carId);
   const [vehicleModel, setVehicleModel] = useState<VehicleModelId>(() => carPhysics(carId));
   const vehicleModelRef = useRef(vehicleModel);
@@ -1230,11 +1234,12 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
         s = { ...s, ...ownRules };
         ownRules = null;
       }
-      savePlayerSettings(lower ? { ...s, graphics: { ...s.graphics, quality: "low" } } : s);
+      // Kiosk mode never saves: these settings hold the kiosk's over the staff's own (it reloads by itself instead)
+      if (!kioskOn) savePlayerSettings(lower ? { ...s, graphics: { ...s.graphics, quality: "low" } } : s);
       if (onRestart) onRestart();
       else window.location.reload();
     },
-    [onRestart]
+    [onRestart, kioskOn]
   );
   const gpuNoticeKind = webglRefused
     ? lostRecently()
@@ -1261,8 +1266,10 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
         onRunReset,
         track,
         trackId,
-        // The save itself, read here as well as below: the state still holds the prerendered defaults at this point
-        settings: loadPlayerSettings(),
+        // The save itself, read here as well as below: the state still holds the prerendered defaults at this point.
+        // Kiosk mode: with the kiosk's settings over it, so the renderer, the sky and the warm-up are built for the
+        // staff's graphics preset, not for the browser's saved one (High by default)
+        settings: kioskSettingsRef.current ? kioskSettingsRef.current(loadPlayerSettings()) : loadPlayerSettings(),
       });
     } catch (err) {
       // No WebGL for this page (switched off, or refused after a GPU reset): say so rather than the error screen
@@ -1943,14 +1950,18 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
           // Kiosk mode: no pause menu (its settings and exits are for the staff); the kiosk draws its own pause screen
           paused={kioskOn ? false : paused}
           pauseMenuCovered={settingsOpen?.from === "pause"}
-          onOpenControls={() =>
-            // A wheel whose pedals are not set up yet opens on its calibration (the HUD's "pedals not set up" too)
-            settings.device === "wheel" && (!settings.wheel.throttle || !settings.wheel.brake)
-              ? openSettings("pause", "controls", "wheel")
-              : openSettings("pause")
+          // Kiosk mode: no way into the full Settings for a visitor (a wheel's "pedals not set up" button included)
+          onOpenControls={
+            kioskOn
+              ? undefined
+              : () =>
+                  // A wheel whose pedals are not set up yet opens on its calibration (the HUD's "pedals not set up" too)
+                  settings.device === "wheel" && (!settings.wheel.throttle || !settings.wheel.brake)
+                    ? openSettings("pause", "controls", "wheel")
+                    : openSettings("pause")
           }
           onExitToTitle={leaveSession}
-          onOpenSettings={(category?: SettingsCategory, tab?: string) => openSettings("pause", category, tab)}
+          onOpenSettings={kioskOn ? undefined : (category?: SettingsCategory, tab?: string) => openSettings("pause", category, tab)}
           hud={settings.hud}
           virtualMirror={virtualMirrorOn}
           ffbMeter={
@@ -2123,7 +2134,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
         />
       ) : null}
 
-      {settingsOpen ? (
+      {settingsOpen && !kioskOn ? (
         <SettingsScreen
           env={settingsEnv}
           initialCategory={settingsOpen.category}
@@ -2135,7 +2146,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       {/* Wheel force feedback over WebHID waits for one pairing click: offered on the title and the pause menu (not over
           Settings, which offers it itself), never mid-lap */}
       <FfbPairPrompt wanted={hidFfbWanted && settings.wheel.steer !== null && !settingsOpen && (phase === "title" || (phase === "driving" && paused))} />
-      <DualSensePairPrompt wanted={phase === "title" && !settingsOpen && !(hidFfbWanted && settings.wheel.steer !== null)} />
+      <DualSensePairPrompt wanted={!kioskOn && phase === "title" && !settingsOpen && !(hidFfbWanted && settings.wheel.steer !== null)} />
 
       {/* Kiosk mode draws its own loading screen, in the event's colours (KioskOverlay) */}
       {loadingVisible && !kioskOn ? (
@@ -2154,7 +2165,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       {/* Kiosk mode: no soundtrack, so nothing to announce (kiosk-settings.ts) */}
       {kioskOn ? null : <NowPlayingToast nowPlaying={nowPlaying} />}
 
-      {gpuNoticeKind ? (
+      {/* Kiosk mode: no question for a visitor, the page loads again by itself (KioskGpuRecovery) */}
+      {gpuNoticeKind && kioskOn ? <KioskGpuRecovery /> : null}
+      {gpuNoticeKind && !kioskOn ? (
         <GpuLostNotice
           kind={gpuNoticeKind}
           canLower={settings.graphics.quality !== "low"}

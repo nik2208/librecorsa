@@ -48,6 +48,8 @@ export function kioskSettingsFor(
     // Nor the MFD (its dials change the assists of the level picked), hiding the HUD or the online board
     padButtons: { ...own.padButtons, flyingLap: null, mfd: null, mfdPage: null, hud: null, board: null },
     // The lap card has buttons (save a ghost file …) a visitor has no use for; the kiosk shows its own lap times
-    hud: { ...own.hud, lapSummary: false, deltaBar: false },
+    hud: { ...own.hud, lapSummary: false, deltaBar: false, boardWidget: "closed" },
+    // Nothing goes to the online boards from the stand (there are none offline: belt and braces)
+    profile: { ...own.profile, autoUpload: false },
   });
 }
