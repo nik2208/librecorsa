@@ -29,6 +29,8 @@ import {
   KIOSK_DEVICES,
   KIOSK_DIFFICULTIES,
   KIOSK_GRAPHICS,
+  KIOSK_GYRO_LOCK_DEG,
+  KIOSK_GYRO_SENSITIVITY,
   KIOSK_TRACKS,
   difficultyLabel,
   kioskCarIdOf,
@@ -66,6 +68,32 @@ const Segmented = <T extends string>({ value, options, onChange }: { value: T; o
     ))}
   </div>
 );
+
+/** The pads this PC's browser sees, and whether one is a PlayStation pad (the tilt steering needs one) */
+const PadStatus: React.FC = () => {
+  const [pads, setPads] = useState<string[]>([]);
+  useEffect(() => {
+    const read = () => {
+      try {
+        const list = typeof navigator !== "undefined" && navigator.getGamepads ? [...navigator.getGamepads()] : [];
+        setPads(list.filter((p): p is Gamepad => p !== null).map((p) => p.id));
+      } catch {
+        setPads([]);
+      }
+    };
+    read();
+    const id = window.setInterval(read, 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const sony = pads.some((id) => /054c|wireless controller|dualshock|dualsense/i.test(id));
+  return (
+    <p className="font-f1-italic text-xs text-white/55">
+      {pads.length === 0
+        ? "Nessun controller visto da questo PC (premi un pulsante del controller)."
+        : `${sony ? "Controller PlayStation collegato" : "Nessun controller PlayStation: lo sterzo inclinando non agisce"} · ${pads.map((id) => id.replace(/\s*\(.*\)\s*$/, "")).join(", ")}`}
+    </p>
+  );
+};
 
 export const KioskAdmin: React.FC = () => {
   const [pin, setPin] = useState<string | null>(null);
@@ -316,6 +344,50 @@ export const KioskAdmin: React.FC = () => {
           <Field label="Comandi dei giocatori" hint={KIOSK_DEVICES.find((d) => d.id === config.device)?.hint}>
             <Segmented value={config.device} options={KIOSK_DEVICES} onChange={(v) => update("device", v)} />
           </Field>
+          {config.device === "controller" ? (
+            <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-black/30 p-4">
+              <Field
+                label="Sterzo inclinando il controller"
+                hint="Solo con un controller PlayStation (DualShock 4 o DualSense), via USB o Bluetooth: l'inclinazione si somma alla levetta. Il centro si prende al VIA!; il giocatore lo rifà tenendo premuto il touchpad. Da provare sui controller dello stand prima di aprire."
+              >
+                <Segmented
+                  value={config.gyroSteer ? "on" : "off"}
+                  options={[
+                    { id: "off", label: "Spento" },
+                    { id: "on", label: "Acceso" },
+                  ]}
+                  onChange={(v) => update("gyroSteer", v === "on")}
+                />
+              </Field>
+              {config.gyroSteer ? (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label={`Inclinazione per sterzare tutto (gradi, ${KIOSK_GYRO_LOCK_DEG.min}–${KIOSK_GYRO_LOCK_DEG.max})`} hint="Più alto è più tranquillo: 45–60 per chi prova la prima volta.">
+                    <input
+                      type="number"
+                      min={KIOSK_GYRO_LOCK_DEG.min}
+                      max={KIOSK_GYRO_LOCK_DEG.max}
+                      step={1}
+                      value={config.gyroLockDeg}
+                      onChange={(e) => update("gyroLockDeg", Number(e.target.value))}
+                      className={inputClass}
+                    />
+                  </Field>
+                  <Field label={`Sensibilità (${KIOSK_GYRO_SENSITIVITY.min}–${KIOSK_GYRO_SENSITIVITY.max})`} hint="Sotto 1 è più calmo vicino al centro, sopra 1 più pronto.">
+                    <input
+                      type="number"
+                      min={KIOSK_GYRO_SENSITIVITY.min}
+                      max={KIOSK_GYRO_SENSITIVITY.max}
+                      step={0.05}
+                      value={config.gyroSensitivity}
+                      onChange={(e) => update("gyroSensitivity", Number(e.target.value))}
+                      className={inputClass}
+                    />
+                  </Field>
+                </div>
+              ) : null}
+              <PadStatus />
+            </div>
+          ) : null}
           {config.device === "wheel" ? (
             <div className="flex flex-col gap-2 rounded-lg border border-white/10 bg-black/30 p-4">
               <p className="font-f1-italic text-sm text-white/70">

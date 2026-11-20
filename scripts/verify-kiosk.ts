@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatClock, formatLapTime, formatMinutes, scoreSession } from "../src/lib/kiosk/kiosk-score";
 import { DEFAULT_KIOSK_CONFIG, sanitizeKioskConfig } from "../src/lib/kiosk/kiosk-types";
+import { kioskSettingsFor } from "../src/lib/kiosk/kiosk-settings";
+import { DEFAULT_PLAYER_SETTINGS } from "../src/lib/settings/player-settings";
 
 let failures = 0;
 const check = async (name: string, fn: () => void | Promise<void>) => {
@@ -102,6 +104,31 @@ async function main() {
     const d = sanitizeKioskConfig({ device: "joystick", graphics: "ultra" });
     assert.deepEqual([d.trackId, d.carId, d.device, d.graphics], ["monza", "sf26", "controller", "medium"], "the event's defaults");
     assert.deepEqual([sanitizeKioskConfig({ device: "wheel" }).device, sanitizeKioskConfig({ graphics: "high" }).graphics], ["wheel", "high"]);
+  });
+  await check("tilt steering: off at first, in the game's ranges, on the controller only, never this browser's own", () => {
+    const d = sanitizeKioskConfig({});
+    assert.deepEqual([d.gyroSteer, d.gyroLockDeg, d.gyroSensitivity], [false, 45, 0.85]);
+    const c = sanitizeKioskConfig({ gyroSteer: true, gyroLockDeg: 200, gyroSensitivity: 0.12 });
+    assert.deepEqual([c.gyroSteer, c.gyroLockDeg, c.gyroSensitivity], [true, 90, 0.5]);
+    assert.equal(sanitizeKioskConfig({ gyroSteer: "yes" }).gyroSteer, false, "only a boolean turns it on");
+    assert.equal(sanitizeKioskConfig({ gyroSensitivity: 1.23 }).gyroSensitivity, 1.25, "in steps of 0.05");
+    // The browser's full game had it on with its own numbers: the kiosk's config decides, both ways
+    const own = { ...DEFAULT_PLAYER_SETTINGS, dualSense: { ...DEFAULT_PLAYER_SETTINGS.dualSense, gyroSteer: true, gyroLockDeg: 20, gyroSensitivity: 1.5 } };
+    const off = kioskSettingsFor(sanitizeKioskConfig({}))(own).dualSense;
+    assert.deepEqual([off.gyroSteer, off.gyroLockDeg, off.gyroSensitivity], [false, 45, 0.85]);
+    const on = kioskSettingsFor(sanitizeKioskConfig({ gyroSteer: true, gyroLockDeg: 50 }))(DEFAULT_PLAYER_SETTINGS).dualSense;
+    assert.deepEqual([on.gyroSteer, on.gyroLockDeg], [true, 50]);
+    const wheel = kioskSettingsFor(sanitizeKioskConfig({ gyroSteer: true, device: "wheel" }))(DEFAULT_PLAYER_SETTINGS).dualSense;
+    assert.equal(wheel.gyroSteer, false, "never with a wheel");
+    // The other pad settings stay the browser's
+    assert.equal(off.adaptiveTriggers, own.dualSense.adaptiveTriggers);
+  });
+  await check("the soundtrack is off on the kiosk, every other sound as saved", () => {
+    const a = kioskSettingsFor(sanitizeKioskConfig({}))(DEFAULT_PLAYER_SETTINGS).audio;
+    assert.equal(a.musicMuted, true);
+    assert.equal(a.musicOff.length > 0, true, "every track switched off");
+    assert.equal(a.volume, DEFAULT_PLAYER_SETTINGS.audio.volume);
+    assert.equal(a.muted, DEFAULT_PLAYER_SETTINGS.audio.muted);
   });
   await check("the motto: the event's at first, one clean line of 80 characters at most, empty for none", () => {
     assert.equal(sanitizeKioskConfig({}).motto, "Sfida il cronometro! Sei tu il più veloce?");
@@ -192,6 +219,11 @@ async function main() {
       const motto = await (await api("/config", { method: "PUT", body: JSON.stringify({ motto: " Chi è <i>il più</i>\tveloce? " }) }, "9876")).json();
       assert.equal(motto.motto, "Chi è iil più/i veloce?");
       assert.equal(motto.laps, 2, "the motto alone changes nothing else");
+      // Tilt steering: off at first, kept as sent, in range (the server's copy of the rule)
+      assert.deepEqual([initial.gyroSteer, initial.gyroLockDeg, initial.gyroSensitivity], [false, 45, 0.85]);
+      const gyro = await (await api("/config", { method: "PUT", body: JSON.stringify({ gyroSteer: true, gyroLockDeg: 5, gyroSensitivity: 2 }) }, "9876")).json();
+      assert.deepEqual([gyro.gyroSteer, gyro.gyroLockDeg, gyro.gyroSensitivity], [true, 10, 1.5]);
+      await api("/config", { method: "PUT", body: JSON.stringify({ gyroSteer: false, gyroLockDeg: 45, gyroSensitivity: 0.85 }) }, "9876");
     });
     await check("results: ranked by total time in a laps session, best per driver, retries stored once", async () => {
       assert.equal((await post(session("c1", "Anna", [[100_000, true], [100_000, true]]))).status, 200);

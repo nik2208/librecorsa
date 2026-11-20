@@ -1543,11 +1543,15 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     void webHidFfb.reconnect();
   }, [hidFfbWanted]);
   // A DualSense paired on an earlier visit opens again without a prompt (adaptive triggers, rumble, lights), and so
-  // does a DualShock 4 connected for gyro steering
+  // does a DualShock 4 connected for gyro steering. Kiosk mode opens them only while the staff have tilt steering on:
+  // off, a PlayStation pad drives through the browser's own gamepad, as on the kiosk before (the distro's WebHID policy
+  // would otherwise open any of them, and over Bluetooth hand its input to upstream's untested DualShock 4 parser)
+  const kioskGyro = kioskOn && settings.dualSense.gyroSteer;
   useEffect(() => {
+    if (kioskOn && !kioskGyro) return;
     void dualSenseHid.restore();
     void dualShock4Hid.restore();
-  }, []);
+  }, [kioskOn, kioskGyro]);
   // A recognised wheel with no steering bound (the wizard's wheel step skipped, or plugged in later) is set up as a
   // wheel straight away; otherwise it drives as a gamepad, through the stick steering assist
   useEffect(() => {

@@ -154,6 +154,8 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
   // go with what visitors really drive)
   const activeTrackId = api.trackId;
   // The leaderboard beside the name entry, kept fresh
+  /** Tilt steering on (the controller only): the name screen and the countdown say how to hold the pad */
+  const gyroOn = config.device === "controller" && config.gyroSteer;
   const rankingMode = rankingModeFor(config);
   const loadBoard = useCallback(async () => {
     try {
@@ -590,7 +592,9 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
               </div>
               <p className="max-w-md font-f1-italic text-sm text-white/60">
                 Controller: frecce per la difficoltà · A per partire · B per tornare al menu. In gara: RT accelera, LT frena, pulsante
-                pausa per fermarti. Il nome comparirà nella classifica pubblica dell&apos;evento.
+                pausa per fermarti.
+                {gyroOn ? " Sterzi anche inclinando il controller: tienilo dritto al VIA!, e tieni premuto il touchpad per rimetterlo al centro." : ""}{" "}
+                Il nome comparirà nella classifica pubblica dell&apos;evento.
               </p>
             </section>
           </div>
@@ -606,6 +610,9 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
           <div key={countdown} className="font-f1-display text-[12rem] font-black leading-none text-white drop-shadow-[0_8px_40px_rgba(199,0,11,0.9)]">
             {countdown > 0 ? countdown : "VIA!"}
           </div>
+          {gyroOn ? (
+            <p className="mt-4 font-f1-italic text-xl font-bold uppercase tracking-[0.2em] text-white/80">Tieni il controller dritto</p>
+          ) : null}
         </div>
       ) : null}
 

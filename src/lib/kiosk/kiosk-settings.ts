@@ -29,6 +29,14 @@ export function kioskSettingsFor(
     ghost: false,
     liveryId: eventLivery ? KIOSK_LIVERY_ID : KIOSK_NEUTRAL_LIVERY_ID,
     mouseSteer: false,
+    // Tilt steering as the staff set it, never as this browser's full game saved it (both ways: the kiosk never saves);
+    // only with the controller
+    dualSense: {
+      ...own.dualSense,
+      gyroSteer: config.device === "controller" && config.gyroSteer,
+      gyroLockDeg: config.gyroLockDeg,
+      gyroSensitivity: config.gyroSensitivity,
+    },
     // No soundtrack on the stand (upstream's music player, with its English "now playing" card): every track off, so
     // none loads or is announced; the car, the tyres and the kerbs still sound
     audio: { ...own.audio, musicMuted: true, musicOff: [...MUSIC_TRACK_IDS], menuMusic: 0, raceMusic: 0, replayMusic: 0 },

@@ -79,6 +79,10 @@ export const KIOSK_GRAPHICS: readonly { id: KioskGraphics; label: string }[] = [
   { id: "high", label: "Alta" },
 ];
 
+/** The tilt steering's ranges, the game's own (src/lib/input/gyro-steer.ts GYRO_LOCK_* / GYRO_SENSITIVITY_*) */
+export const KIOSK_GYRO_LOCK_DEG = { min: 10, max: 90 } as const;
+export const KIOSK_GYRO_SENSITIVITY = { min: 0.5, max: 1.5 } as const;
+
 /** The admin's settings for every session on the kiosk */
 export interface KioskConfig {
   limitMode: KioskLimitMode;
@@ -94,6 +98,15 @@ export interface KioskConfig {
   difficulty: AssistPreset;
   /** What the visitors drive with */
   device: KioskInputDevice;
+  /**
+   * Steering by tilting a PlayStation pad (DualShock 4 or DualSense, over WebHID), added to the stick: only with the
+   * controller. Off, the pad is not opened over WebHID at all and drives as on the kiosk before the gyro existed
+   */
+  gyroSteer: boolean;
+  /** How far the pad leans each way for full steering (degrees, 10..90) */
+  gyroLockDeg: number;
+  /** The tilt's curve: under 1 calmer near the centre, over 1 sharper (0.5..1.5) */
+  gyroSensitivity: number;
   graphics: KioskGraphics;
   /** Laps outside the track limits: timed with a penalty, or not counted for the ranking */
   invalidLaps: KioskInvalidLapRule;
@@ -120,6 +133,11 @@ export const DEFAULT_KIOSK_CONFIG: KioskConfig = {
   carId: "sf26",
   difficulty: "assisted",
   device: "controller",
+  // Off until the staff try it on the stand's pads; a wider lock and a calmer centre than the game's own (35°, 1) for
+  // first-time players
+  gyroSteer: false,
+  gyroLockDeg: 45,
+  gyroSensitivity: 0.85,
   graphics: "medium",
   invalidLaps: "penalty",
   penaltyS: 5,
@@ -165,6 +183,9 @@ export function sanitizeKioskConfig(raw: unknown): KioskConfig {
     carId,
     difficulty,
     device,
+    gyroSteer: typeof r.gyroSteer === "boolean" ? r.gyroSteer : d.gyroSteer,
+    gyroLockDeg: num(r.gyroLockDeg, KIOSK_GYRO_LOCK_DEG.min, KIOSK_GYRO_LOCK_DEG.max, d.gyroLockDeg),
+    gyroSensitivity: num(r.gyroSensitivity, KIOSK_GYRO_SENSITIVITY.min, KIOSK_GYRO_SENSITIVITY.max, d.gyroSensitivity, 0.05),
     graphics,
     invalidLaps: r.invalidLaps === "exclude" || r.invalidLaps === "penalty" ? r.invalidLaps : d.invalidLaps,
     penaltyS: num(r.penaltyS, 0, 60, d.penaltyS, 0.5),
