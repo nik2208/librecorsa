@@ -9,7 +9,7 @@ raggiunge con i pulsanti a schermo, il controller o il touch.
 1. **Caricamento**: schermata dell'evento con la percentuale. Se il caricamento fallisce o si blocca, la pagina riprova
    da sola.
 2. **Menu**: grande pulsante **GIOCA**, classifica, **Impostazioni** (PIN). Auto e circuito sono già impostati:
-   **Ferrari SF-26 a Monza**.
+   **Monoposto 2026 a Monza**, in livrea Applikat.
 3. **Chi guida?**: nome del giocatore (tastiera a schermo o fisica) e difficoltà **Facile / Medio / Difficile**, poi
    **Via!**. Con il controller: frecce per la difficoltà, A per partire, B per tornare al menu. Dopo 90 s senza
    nessuno torna al menu.
@@ -135,7 +135,7 @@ Monza spariscono e RISE torna ai suoi striscioni originali.
 Ogni logo predefinito porta con sé gli altri riferimenti al suo marchio, che si accendono e si spengono con lui:
 
 - **HUAWEI**: il nome della sfida ("HUAWEI RACING CHALLENGE", altrimenti "RACING CHALLENGE"), la scritta "HUAWEI RACING"
-  accanto allo stemma del gioco completo e la livrea della Monoposto 2026 (altrimenti la livrea di LibreCorsa);
+  accanto allo stemma del gioco completo e la livrea Huawei della Monoposto 2026 (altrimenti la livrea Applikat);
 - **Milan Games Week**: date e luogo dell'evento nelle intestazioni e sui maxischermi, "MGW" sullo stemma (altrimenti
   solo l'anno);
 - **WINDTRE**: solo il suo logo e il suo cartellone.
@@ -190,7 +190,7 @@ curl -X PUT -H "X-Kiosk-Pin: 1234" -H "Content-Type: application/json" -d '{"log
 Risposta di `/leaderboard`:
 
 ```json
-{ "mode": "best", "trackId": "monza", "carId": "sf26", "laps": null, "total": 42, "generatedAt": "…",
+{ "mode": "best", "trackId": "monza", "carId": "lc26", "laps": null, "total": 42, "generatedAt": "…",
   "rows": [ { "rank": 1, "id": "…", "name": "MARIO", "difficulty": "assisted", "bestLapMs": 101234,
               "bestLapPenalised": false, "totalTimeMs": null, "lapsCompleted": 3, "validLaps": 3, "createdAt": "…" } ] }
 ```
@@ -224,27 +224,31 @@ in cache. Senza un'immagine il gioco scrive il nome del marchio nei suoi colori.
 `kiosk/brand/` è nel `.gitignore`: gli asset di marca restano sulla macchina. Dettagli e opzioni (`KIOSK_BRAND=0`,
 `npm run kiosk:brand -- --force`): `kiosk/brand/README.md`. Testi, date e colori: `src/lib/kiosk/event-brand.ts`.
 
-## Ferrari SF-26 e Monza
+## Auto e circuito
 
-Sono nel repository su questo branch (`public/cars/sf26/`, `public/tracks/monza/`), recuperati dalla storia di
-LibreCorsa (commit `7b009d9`) su richiesta del proprietario del fork, e sono auto e circuito predefiniti del kiosk.
-Upstream li ha rimossi il 12/11/2026 per motivi di diritti:
+**Monza** è nel repository su questo branch (`public/tracks/monza/`), recuperata dalla storia di LibreCorsa (commit
+`7b009d9`) su richiesta del proprietario del fork, ed è il circuito predefinito del kiosk. Upstream l'ha rimossa il
+12/11/2026 per motivi di diritti: il modello viene da una conversione di Assetto Corsa e contiene uno striscione "Kunos
+Simulazioni". Una build con `NEXT_PUBLIC_EXTRA_CONTENT=""` la esclude; le impostazioni permettono di tornare a RISE
+Motordrome.
 
-- la carrozzeria della SF-26 è estratta da un videogioco di F1 e ha la livrea originale, con i marchi Ferrari e degli
-  sponsor reali (tra cui HP, IBM, AWS);
-- il modello di Monza viene da una conversione di Assetto Corsa e contiene uno striscione "Kunos Simulazioni".
+L'auto è la **Monoposto 2026** di LibreCorsa (id `lc26`, `vf26` prima del cambio di nome di upstream: configurazioni e
+risultati salvati con il vecchio nome valgono ancora), in **livrea Applikat**: carrozzeria nera, alettoni rosso Applikat,
+il gatto e APPLIKAT su pance, muso e alettone, applikat.it sul cofano (`src/lib/kiosk/applikat-livery.ts`, immagine
+`public/cars/f12026/liveries/applikat/decals.png` dal logo di applikat.it e dal carattere Martian Mono). Con il logo
+HUAWEI acceso indossa la livrea Huawei.
 
-Le impostazioni permettono di tornare a RISE Motordrome e alla Monoposto 2026 (in livrea Huawei con il logo HUAWEI
-acceso). Una build con
-`NEXT_PUBLIC_EXTRA_CONTENT=""` li esclude del tutto.
+La **Ferrari SF-26** che il kiosk usava prima non c'è più: l'evento non può usarla (la carrozzeria è estratta da un
+videogioco di F1, con i marchi Ferrari e degli sponsor reali). I suoi file sono stati tolti dal branch; una
+configurazione o un risultato che la nomina usa la Monoposto 2026.
 
 ## Licenze e diritti
 
 - **Codice**: LibreCorsa, MIT (uso commerciale consentito).
-- **Ferrari SF-26 e Monza**: senza licenza (vedi sopra).
+- **Monza**: senza licenza (vedi sopra).
 - **Circuito RISE Motordrome** (alternativo): CC BY-NC-SA 4.0, non commerciale; serve il permesso dell'autore
   (Alp Yalay, LibreCorsa).
-- **Monoposto 2026 Prototype** (alternativa): Qvist Designs, CC BY 4.0. I suoni dei motori hanno autori e licenze non
+- **Monoposto 2026 Prototype**: Qvist Designs, CC BY 4.0. I suoni dei motori hanno autori e licenze non
   indicati (CREDITS.md).
 - **Marchi Huawei, WINDTRE e Milan Games Week**: usare solo l'artwork fornito dai titolari. I file scaricati da
   Wikimedia Commons sono loghi di solo testo, di pubblico dominio come immagini, ma restano marchi registrati (WINDTRE è

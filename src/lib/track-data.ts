@@ -14,6 +14,7 @@ import type { LapStretches } from "./sim/course-limits";
 import { correctedDrsZones } from "./drs-zone-fixes";
 import { isStoreBuild } from "./store-mode";
 import { EVENT_LIVERY } from "@/lib/kiosk/event-livery";
+import { APPLIKAT_LIVERY } from "@/lib/kiosk/applikat-livery";
 
 /** Raw `track_data.json` layout shared by every circuit (the bundled circuit's file is the reference schema) */
 export type RawTrackJson = typeof rawTrackJson;
@@ -214,8 +215,9 @@ const ALL_LIVERIES: LiveryConfig[] = [
     decals: ORACLE_RED_BULL_DECALS,
     notInStoreBuild: true,
   },
-  // Event branch: the event's livery (src/lib/kiosk/event-livery.ts), the kiosk's car
+  // Event branch: the sponsor's livery (src/lib/kiosk/event-livery.ts) and Applikat's (applikat-livery.ts), the kiosk's car
   EVENT_LIVERY,
+  APPLIKAT_LIVERY,
 ];
 
 /**

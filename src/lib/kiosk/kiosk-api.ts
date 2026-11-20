@@ -19,7 +19,8 @@ import {
 
 const API_BASE = (process.env.NEXT_PUBLIC_KIOSK_API || "").trim().replace(/\/+$/, "");
 const TIMEOUT_MS = 6000;
-// v2: the kiosk opens on the Ferrari SF-26 at Monza (a v1 copy would bring back the earlier circuit and car)
+// v2: the kiosk opens at Monza (a v1 copy would bring back the earlier circuit and car; a v2 copy naming the SF-26
+// runs the 2026 Prototype, as sanitizeKioskConfig makes it)
 const CONFIG_CACHE_KEY = "kiosk.config.v2";
 const QUEUE_KEY = "kiosk.queue.v1";
 const PIN_KEY = "kiosk.pin";

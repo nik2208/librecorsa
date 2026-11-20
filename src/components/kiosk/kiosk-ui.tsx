@@ -326,9 +326,9 @@ export function useStaffGesture(onTrigger: () => void, enabled = true): () => vo
 /** Credits and provenance, for the staff (the admin page): the visitors' screens carry the event's brand only */
 export const KioskCredits: React.FC<{ className?: string }> = ({ className = "" }) => (
   <p className={`font-f1-italic text-xs leading-snug text-white/50 ${className}`}>
-    Motore di gioco: LibreCorsa di KhazP (MIT, github.com/KhazP/librecorsa) · Monza e Ferrari SF-26: modelli recuperati dalla
-    storia del progetto LibreCorsa, senza licenza (vedi kiosk/README.md) · RISE Motordrome di Alp Yalay, CC BY-NC-SA 4.0 ·
-    Monoposto 2026 di Qvist Designs, CC BY 4.0 · Loghi HUAWEI e WINDTRE: marchi dei rispettivi titolari (file da Wikimedia
-    Commons) · Evento non affiliato a Formula 1, FIA o Ferrari.
+    Motore di gioco: LibreCorsa di KhazP (MIT, github.com/KhazP/librecorsa) · Monza: modello recuperato dalla storia del
+    progetto LibreCorsa, senza licenza (vedi kiosk/README.md) · RISE Motordrome di Alp Yalay, CC BY-NC-SA 4.0 · Monoposto
+    2026 di Qvist Designs, CC BY 4.0, in livrea Applikat (applikat.it) · Loghi HUAWEI e WINDTRE: marchi dei rispettivi
+    titolari (file da Wikimedia Commons) · Evento non affiliato a Formula 1 o FIA.
   </p>
 );

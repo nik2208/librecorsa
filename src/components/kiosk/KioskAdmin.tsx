@@ -525,7 +525,7 @@ export const KioskAdmin: React.FC = () => {
             <p className="font-f1-italic text-xs text-white/55">
               Aprila da un altro schermo o da un telefono collegato alla stessa rete. Indirizzo usato da questo browser: {leaderboardUrl}
             </p>
-            <p className="font-f1-mono text-[11px] text-white/45">JSON: ?mode=best|total · &amp;track=monza · &amp;car=sf26 · &amp;laps=3 · &amp;limit=20 · &amp;unique=0</p>
+            <p className="font-f1-mono text-[11px] text-white/45">JSON: ?mode=best|total · &amp;track=monza · &amp;car=lc26 · &amp;laps=3 · &amp;limit=20 · &amp;unique=0</p>
           </div>
           <KioskCredits className="mt-2" />
         </section>

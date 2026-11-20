@@ -1,5 +1,5 @@
 import type { VehicleModelId } from "@/types/f1";
-import { BMW_M4_GT3_SOUND, F1_2026_SOUND, SF26_SOUND, type CarSoundSource } from "@/lib/sim/CarAudio";
+import { BMW_M4_GT3_SOUND, F1_2026_SOUND, type CarSoundSource } from "@/lib/sim/CarAudio";
 import { AMG_GT3_SOUND } from "@/lib/sim/gt3/AmgGt3Sim";
 import { SUZUKI_LIANA_SOUND } from "@/lib/sim/road/SuzukiLianaSim";
 import { MTR_496R_SOUND } from "@/lib/sim/proto/Mtr496rSim";
@@ -25,7 +25,6 @@ import { carListed, REPO_CAR_IDS } from "@/lib/hosted-content";
  */
 export type CarId =
   | "lc26"
-  | "sf26"
   | "amg-gt3"
   | "bmw-m4-gt3"
   | "mtr-496r"
@@ -290,29 +289,6 @@ const ALL_CARS: readonly CarDefinition[] = [
     physics: "lc26",
     year: 2026,
     sound: F1_2026_SOUND,
-  },
-  // Event branch: an extra, listed only when a build names it in NEXT_PUBLIC_EXTRA_CONTENT (its files are restored
-  // from git history by scripts/kiosk/restore-extra-content.mjs). Upstream removed it on 2026-11-12: the body was
-  // ripped from an F1 game, so it carries no licence (kiosk/README.md, "Contenuti extra")
-  {
-    id: "sf26",
-    classId: "f1",
-    title: "SF-26",
-    sub: "2026 car",
-    badge: "SF-26",
-    quality: "shared",
-    credit: {
-      title: "2026 Ferrari SF-26",
-      author: "Dave Love SketchFab",
-      url: "https://sketchfab.com/3d-models/2026-ferrari-sf-26-e5ca6cecdc42449283f4bed27360f2a7",
-      license: "Not licensed (ripped from an F1 game)",
-      licenseUrl: "https://sketchfab.com/3d-models/2026-ferrari-sf-26-e5ca6cecdc42449283f4bed27360f2a7",
-      note: "Removed from LibreCorsa on 2026-11-12 because it was ripped from an F1 game.",
-    },
-    physics: "f12026-car",
-    year: 2026,
-    modelUrl: "/cars/sf26/model/sf26.glb",
-    sound: SF26_SOUND,
   },
   {
     id: "amg-gt3",

@@ -26,16 +26,16 @@ export type KioskTrackId = (typeof KIOSK_TRACKS)[number]["id"];
 /** The 2026 Prototype (CC BY body by Qvist Designs), in the event livery: the car of a build without the extras */
 export const KIOSK_CAR_ID = "lc26";
 export const KIOSK_LIVERY_ID = "huawei_mgw";
-/** The livery while the sponsor's logo is off: the game's own (src/lib/track-data.ts LIVERIES) */
-export const KIOSK_NEUTRAL_LIVERY_ID = "librecorsa";
+/** The livery while the sponsor's logo is off: Applikat's, the stand's own (src/lib/kiosk/applikat-livery.ts) */
+export const KIOSK_NEUTRAL_LIVERY_ID = "applikat";
 /** RISE Motordrome's short layout: the circuit of a build without the extras */
 export const KIOSK_FALLBACK_TRACK_ID = "rwanda_official_short";
 
-/** The cars a kiosk can run: the Ferrari SF-26 (the event's car), and the 2026 Prototype in the event livery */
-export const KIOSK_CARS = [
-  { id: "sf26", label: "Ferrari SF-26", extra: true },
-  { id: "lc26", label: "Monoposto 2026", extra: false },
-] as const;
+/**
+ * The car a kiosk runs: LibreCorsa's 2026 Prototype, in Applikat's livery (the sponsor's with its logo on). The Ferrari
+ * SF-26 it ran before is gone: the event can't use it (a config or result that names it falls back to this one)
+ */
+export const KIOSK_CARS = [{ id: "lc26", label: "Monoposto 2026", extra: false }] as const;
 export type KioskCarId = (typeof KIOSK_CARS)[number]["id"];
 
 /** The 2026 Prototype was "vf26" until upstream renamed it (8cffd303): configs and results saved before keep working */
@@ -130,7 +130,7 @@ export const DEFAULT_KIOSK_CONFIG: KioskConfig = {
   minutes: 5,
   maxMinutes: 10,
   trackId: "monza",
-  carId: "sf26",
+  carId: "lc26",
   difficulty: "assisted",
   device: "controller",
   // Off until the staff try it on the stand's pads; a wider lock and a calmer centre than the game's own (35°, 1) for

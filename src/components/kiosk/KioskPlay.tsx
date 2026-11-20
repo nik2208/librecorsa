@@ -16,26 +16,14 @@ import { runnableCarId, runnableTrackId, type KioskConfig } from "@/lib/kiosk/ki
 import type { KioskMode } from "@/lib/kiosk/kiosk-bridge";
 import type { AssistPreset } from "@/types/f1";
 import { withBasePath } from "@/lib/base-path";
-import { pinF1ModPhysics } from "@/lib/cars/f1-mod-physics";
 
 /** Results still waiting in this browser (the server was down) are sent again this often */
 const QUEUE_RETRY_MS = 60_000;
-
-/** The vehicle model a ported F1 car (the SF-26) drives on in the kiosk: its registry model, whatever the full game's
- * switch says, so one car has one leaderboard on one model */
-const KIOSK_F1_MOD_PHYSICS = "f12026-car" as const;
 
 export const KioskPlay: React.FC = () => {
   const [state, setState] = useState<{ config: KioskConfig; source: ConfigSource } | null>(null);
   // The level the player picked on the start screen (each player starts from the admin's)
   const [difficulty, setDifficulty] = useState<AssistPreset | null>(null);
-  // Pinned before the game below first reads it (render), again after a dev remount (effect), and let go on the way
-  // out, so the full game shows the staff's own choice again even after a client-side navigation
-  pinF1ModPhysics(KIOSK_F1_MOD_PHYSICS);
-  useEffect(() => {
-    pinF1ModPhysics(KIOSK_F1_MOD_PHYSICS);
-    return () => pinF1ModPhysics(null);
-  }, []);
 
   const refresh = useCallback(() => {
     void loadKioskConfig().then((next) =>
@@ -53,7 +41,7 @@ export const KioskPlay: React.FC = () => {
 
   const staffExit = useCallback(() => window.location.assign(withBasePath("/kiosk/admin")), []);
 
-  // A config naming an extra this build doesn't list (Monza, the SF-26) runs the defaults instead
+  // A config naming what this build doesn't list (Monza left out, or the SF-26 of an earlier version) runs the defaults
   const config = useMemo(
     () => (state ? { ...state.config, trackId: runnableTrackId(state.config.trackId), carId: runnableCarId(state.config.carId) } : undefined),
     [state]
