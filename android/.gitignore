@@ -1,0 +1,22 @@
+# Gradle and Android Studio local state
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+captures/
+
+# Signing keys and secrets (must live outside the repo)
+*.jks
+*.keystore
+*.p12
+*.pem
+keystore.properties
+*password*
+
+# Built release binaries
+*.apk
+*.apks
+*.aab
+*.idsig

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CarTelemetry, TireCompound } from "@/types/f1";
 import type { LapDeltaTracker } from "@/lib/sim/lap-delta";
-import { VF26_CHASSIS } from "@/lib/sim/vf26-data";
+import { LC26_CHASSIS } from "@/lib/sim/lc26-data";
 import { raceState } from "./hud-format";
 
 /** One line of the relative: a car near the player on the road, whatever its race position */
@@ -33,13 +33,15 @@ function wrapDs(a: number, b: number, L: number): number {
 
 /**
  * On-track relative table: the cars nearest the player by road distance, `n` ahead and `n` behind, with the
- * time it takes to close the gap on the road and how many laps up or down each car is.
+ * time it takes to close the gap on the road and how many laps up or down each car is. The player goes by their
+ * race standing's code, or `playerCode` (their own, Settings > Display > Driver) outside a race.
  */
 export function computeRelatives(
   t: CarTelemetry,
   tracker: LapDeltaTracker | null,
   L: number,
   playerCompound: TireCompound,
+  playerCode: string,
   n = 3,
 ): RelativeRow[] {
   const playerS = t.trackDistanceM;
@@ -87,8 +89,9 @@ export function computeRelatives(
   const behind = placed.filter((r) => r.dsM < 0).sort((a, b) => b.dsM - a.dsM).slice(0, n);
   const player: RelativeRow = {
     key: "player",
-    code: me?.driverCode ?? "YOU",
-    color: me?.teamColorHex ?? "#CCFF00",
+    code: me?.driverCode ?? playerCode,
+    // The player's own colour, or the player's volt (a CSS colour: the relative page draws it in style)
+    color: me?.teamColorHex ?? "var(--color-lc-volt)",
     isPlayer: true,
     position: t.race?.position,
     dsM: 0,
@@ -131,7 +134,7 @@ export function useLapHistory(t: CarTelemetry): LapRecord[] {
     const runId = t.runId ?? 0;
     const now = { fuel: t.fuelKg, ers: t.ersBatteryPercent, wear: meanWear(t) };
     if (p && runId !== p.runId) {
-      // The shell restarted the run (restart, new session, teleport, flashback, car change): a new history
+      // The shell restarted the run (restart, new session, teleport, car change): a new history
       setLaps([]);
       start.current = now;
     } else if (p && t.lapCount === p.lapCount + 1 && t.lastLapTimeMs !== null) {
@@ -214,7 +217,7 @@ export function fuelStrategy(t: CarTelemetry, laps: LapRecord[], L: number): Fue
     targetKg,
     saveKg,
     // Coasting saves the full-throttle flow for as long as the driver is off the pedal
-    liftS: saveKg !== null ? saveKg / VF26_CHASSIS.fuelFlowKgS : null,
+    liftS: saveKg !== null ? saveKg / LC26_CHASSIS.fuelFlowKgS : null,
     marginKg: hasFuel && avgFuelKg !== null && raceLapsLeft !== null ? t.fuelKg - avgFuelKg * raceLapsLeft : null,
     samples: n,
   };

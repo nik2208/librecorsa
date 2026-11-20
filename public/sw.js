@@ -1,42 +1,339 @@
 /*
- * Asset cache for repeat visits: circuits, car models, textures and sounds (tens of MB) are served from the browser's
- * cache after the first visit instead of downloading again. Registered by src/lib/service-worker.ts in production
- * builds only, as `sw.js?v=<build id>`: each deploy installs a new worker with a new cache and deletes the old ones,
- * so a visit never mixes files from two builds.
+ * Keeps the circuits, cars, textures and sounds a player has downloaded (tens of MB each), across deploys. Registered
+ * by src/lib/service-worker.ts in production builds only. Pages and scripts never come from here.
+ *
+ * Most of these files keep their name when they change: a circuit's GLB and track_data.json, a layout's file, car
+ * models and sounds get replaced in place on R2. So a kept copy is only used once the server says it is current: the
+ * first time a page asks for a file, this asks the server with the copy's ETag. A 304 (a few hundred bytes) serves the
+ * copy; a 200 is a new file, which is served and kept in its place. The page then uses that copy until it closes. The
+ * answer always comes from what the server has now, so it doesn't matter which build's worker answers (the previous
+ * build's worker can still control the first page after a deploy).
+ *
+ * The check asks the plain URL, so it gets Cloudflare's edge copy. A re-uploaded file reaches the edge at the next
+ * deploy (cloudflare/worker.js), and a player gets it then, like a player without this worker.
+ *
+ * Offline, or with no answer within CHECK_TIMEOUT_MS, the kept copy is served. A file the server no longer has (404)
+ * is dropped. Files unused for MAX_IDLE_MS are dropped, and once the kept files pass the budget (MAX_BYTES, or
+ * QUOTA_SHARE of the site's storage quota if that is smaller) the least recently used go first.
+ *
+ * scripts/verify-asset-cache.ts runs this file against a stand-in server and cache.
  */
-const VERSION = new URL(self.location.href).searchParams.get("v") || "dev";
-const CACHE = `librecorsa-assets-${VERSION}`;
-const PREFIX = "librecorsa-assets-";
-/** Folders (under the site's base path) whose files are content of this build: models, textures, sounds, track data */
+
+/** The kept files, one per URL */
+const FILES = "librecorsa-files-v1";
+/** When each kept file was last used and its size, as one small record per URL, so a file is never rewritten to note a use */
+const USED = "librecorsa-files-v1-used";
+/** The earlier worker's caches, one per build (`librecorsa-assets-<build>`): deleted */
+const LEGACY_PREFIX = "librecorsa-assets-";
+/** Folders (under the site's base path) of hosted files: models, textures, sounds, track data */
 const ASSET_PATH = /\/(tracks|cars|lc26|gt3|audio)\/[^?#]+\.(glb|gltf|bin|webp|png|jpg|jpeg|ktx2|ogg|wav|mp3|json)$/i;
+/** The KTX2 texture transcoder (src/lib/render/ktx2.ts), which a phone fetches with every circuit: kept and checked the same way */
+const TRANSCODER_PATH = /\/basis\/basis_transcoder\.(js|wasm)$/;
+
+/** How long a check may wait for the server's answer before the kept copy is served */
+const CHECK_TIMEOUT_MS = 6000;
+/** A file not used for this long is dropped (a circuit taken out of the game goes this way) */
+const MAX_IDLE_MS = 45 * 24 * 3600 * 1000;
+/** The most the kept files may take */
+const MAX_BYTES = 1024 * 1024 * 1024;
+/** And at most this share of the storage quota the browser gives the site */
+const QUOTA_SHARE = 0.5;
+/** The clean-up runs at most this often (the time of the last one is kept with the records), and when a write nears the budget */
+const SWEEP_EVERY_MS = 3600 * 1000;
+/** A use is noted when the last one is older than this */
+const TOUCH_EVERY_MS = 10 * 60 * 1000;
+/** The record that holds when the clean-up last ran */
+const SWEPT = `${self.location.origin}/__librecorsa-files-swept`;
+
+/** `<page> <url>` for each file a page has had checked (lost when the browser stops this worker, which only means one more check) */
+const checked = new Set();
+let lastSweepCheck = -Infinity;
+let sweeping = Promise.resolve();
+/** The kept files' size at the last clean-up plus what was written since, and the budget then (unknown until one runs) */
+let keptBytes = null;
+let keptLimit = MAX_BYTES;
+/** Each URL's record changes, one after another */
+const recordChain = new Map();
 
 self.addEventListener("install", () => self.skipWaiting());
 
-self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    (async () => {
-      for (const key of await caches.keys()) {
-        if (key.startsWith(PREFIX) && key !== CACHE) await caches.delete(key);
-      }
-      await self.clients.claim();
-    })()
-  );
-});
+self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
-  if (req.method !== "GET" || req.headers.has("range")) return;
+  if (req.method !== "GET" || req.headers.has("range") || req.cache === "no-store" || req.cache === "reload") return;
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin || !ASSET_PATH.test(url.pathname)) return;
-  event.respondWith(
+  // A query string asks past the edge copy: that request is left to the network as it is
+  if (url.origin !== self.location.origin || url.search || !(ASSET_PATH.test(url.pathname) || TRANSCODER_PATH.test(url.pathname))) return;
+  // The work after the answer (keeping a download, noting a use, the clean-up) is collected while serving it
+  const later = [];
+  const answer = serve(event, url.origin + url.pathname, later);
+  event.respondWith(answer);
+  const settle = () => Promise.all(later).catch(() => {});
+  event.waitUntil(answer.then(settle, settle));
+});
+
+async function serve(event, key, later) {
+  if (Date.now() - lastSweepCheck >= SWEEP_EVERY_MS) {
+    lastSweepCheck = Date.now();
+    later.push(sweep(0, "", { ifDue: true }));
+  }
+  const seen = event.clientId ? `${event.clientId} ${key}` : "";
+  const files = await caches.open(FILES);
+  const kept = await files.match(key);
+  // Downloaded past the browser's own cache: a copy from there would keep the headers of when it was stored (an older
+  // server's, without X-File-Size for the loading bar), and the file would sit on disk twice
+  if (!kept || !validator(kept)) return keep(later, files, key, await fetch(event.request, { cache: "no-store" }), !!kept, seen);
+
+  if (seen && checked.has(seen)) {
+    later.push(touch(key));
+    return kept;
+  }
+  let res;
+  try {
+    res = await check(key, kept);
+  } catch {
+    // Offline, or no answer in time: the kept copy, and this page doesn't wait on this file again
+    remember(seen);
+    later.push(touch(key));
+    return kept;
+  }
+  if (res.status === 304 || (res.status === 200 && sameVersion(res, kept))) {
+    // A server that ignored the condition sends the whole file again: only its first bytes are read
+    if (res.status === 200) res.body?.cancel().catch(() => {});
+    remember(seen);
+    later.push(touch(key));
+    return kept;
+  }
+  if (res.status === 404 || res.status === 410) {
+    later.push(drop(key));
+    return res;
+  }
+  if (res.status !== 200 || res.type !== "basic") {
+    // A server error: the kept copy
+    res.body?.cancel().catch(() => {});
+    return kept;
+  }
+  // A new file under the same name
+  return keep(later, files, key, res, true, seen);
+}
+
+/** Asks the server whether the kept copy is current: a 304 when it is */
+async function check(key, kept) {
+  const headers = new Headers();
+  const etag = kept.headers.get("etag");
+  if (etag) headers.set("If-None-Match", etag);
+  else headers.set("If-Modified-Since", kept.headers.get("last-modified"));
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), CHECK_TIMEOUT_MS);
+  try {
+    // no-store: the 304 comes back here (not a copy from the browser's own cache), and a new file isn't kept twice
+    return await fetch(new Request(key, { headers, cache: "no-store", credentials: "same-origin", signal: abort.signal }));
+  } finally {
+    // Only the wait for the answer is timed: a new file's body takes what it takes
+    clearTimeout(timer);
+  }
+}
+
+/** Serves a download and keeps it as it arrives (`replacing`: the copy kept under this name is out of date) */
+function keep(later, files, key, res, replacing, seen) {
+  const keepIt = keepable(res);
+  const copy = keepIt ? res.clone() : null;
+  const tally = keepIt ? res.clone() : null;
+  later.push(
     (async () => {
-      const cache = await caches.open(CACHE);
-      const hit = await cache.match(req, { ignoreSearch: true });
-      if (hit) return hit;
-      const res = await fetch(req);
-      // Whole, successful same-origin responses only (a 206 or an error page must never be served again)
-      if (res.ok && res.status === 200 && res.type === "basic") event.waitUntil(cache.put(req, res.clone()).catch(() => {}));
-      return res;
+      if (replacing) await files.delete(key);
+      if (keepIt) await store(files, key, copy, tally, seen);
     })()
   );
-});
+  return res;
+}
+
+async function store(files, key, copy, tally, seen) {
+  const counted = countBytes(tally);
+  const declared = declaredSize(copy);
+  try {
+    // A size known up front makes room before the write
+    if (declared && !roomFor(declared)) await sweep(declared, key, {});
+    await files.put(key, copy);
+  } catch (err) {
+    // Out of space: whatever room it takes is made for next time (the page has its copy already)
+    if (err && err.name === "QuotaExceededError") await sweep(declared || (await counted), key, { force: true });
+    return;
+  }
+  const size = await counted;
+  await updateRecord(key, size);
+  remember(seen);
+  if (keptBytes !== null) keptBytes += size;
+  if (!roomFor(0)) await sweep(0, key, {});
+}
+
+/** Whether `need` more bytes fit the budget, going by the last clean-up (false when none has run in this worker) */
+function roomFor(need) {
+  return keptBytes !== null && keptBytes + need <= keptLimit;
+}
+
+/** A whole, successful same-origin response that can be checked later (an ETag or Last-Modified) */
+function keepable(res) {
+  if (res.status !== 200 || res.type !== "basic" || !validator(res)) return false;
+  return !/no-store/i.test(res.headers.get("cache-control") || "");
+}
+
+function validator(res) {
+  return res.headers.get("etag") || res.headers.get("last-modified");
+}
+
+/** Whether a 200 is the same version as the kept copy (weak and strong forms of one ETag are the same) */
+function sameVersion(res, kept) {
+  const a = res.headers.get("etag");
+  const b = kept.headers.get("etag");
+  if (a && b) return a.replace(/^W\//, "") === b.replace(/^W\//, "");
+  const m = res.headers.get("last-modified");
+  return !a && !b && !!m && m === kept.headers.get("last-modified");
+}
+
+/** The decoded size the server states: X-File-Size, or Content-Length on a body sent as it is */
+function declaredSize(res) {
+  const stated = Number(res.headers.get("x-file-size"));
+  if (stated > 0) return stated;
+  if (res.headers.get("content-encoding")) return 0;
+  return Number(res.headers.get("content-length")) || 0;
+}
+
+async function countBytes(res) {
+  let n = 0;
+  try {
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return n;
+      n += value.byteLength;
+    }
+  } catch {
+    return n;
+  }
+}
+
+function remember(seen) {
+  if (!seen) return;
+  if (checked.size > 5000) checked.clear();
+  checked.add(seen);
+}
+
+// --- Records: when each file was last used, and its size ---
+
+function recordResponse(record) {
+  return new Response(JSON.stringify(record), { headers: { "Content-Type": "application/json" } });
+}
+
+async function readRecord(used, key) {
+  try {
+    const r = await used.match(key);
+    if (!r) return null;
+    const record = await r.json();
+    return typeof record.used === "number" && typeof record.size === "number" ? record : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Notes a use of a kept file, with its size when it was just written (`size`). A use alone is noted only on a file
+ * that has a record (the clean-up gives one to a file without) and at most every TOUCH_EVERY_MS.
+ */
+function updateRecord(key, size) {
+  const run = async () => {
+    const used = await caches.open(USED);
+    const now = Date.now();
+    if (size === undefined) {
+      const record = await readRecord(used, key);
+      if (!record || now - record.used < TOUCH_EVERY_MS) return;
+      size = record.size;
+    }
+    await used.put(key, recordResponse({ used: now, size }));
+  };
+  const next = (recordChain.get(key) || Promise.resolve()).then(run).catch(() => {});
+  recordChain.set(key, next);
+  next.then(() => {
+    if (recordChain.get(key) === next) recordChain.delete(key);
+  });
+  return next;
+}
+
+function touch(key) {
+  return updateRecord(key, undefined);
+}
+
+async function drop(key) {
+  const files = await caches.open(FILES);
+  const used = await caches.open(USED);
+  await files.delete(key);
+  await used.delete(key);
+}
+
+// --- Clean-up ---
+
+/** The most the kept files may take now */
+async function budget() {
+  try {
+    const { quota } = await navigator.storage.estimate();
+    if (quota > 0) return Math.min(MAX_BYTES, quota * QUOTA_SHARE);
+  } catch {
+    // No estimate in this browser
+  }
+  return MAX_BYTES;
+}
+
+/**
+ * One clean-up at a time. `need` bytes are about to be written for `keepKey`, which is never dropped. `force` frees
+ * that much whatever the budget says (a write just ran out of space); `ifDue` skips it when one ran in the last
+ * SWEEP_EVERY_MS.
+ */
+function sweep(need, keepKey, { force = false, ifDue = false }) {
+  sweeping = sweeping.then(() => runSweep(need, keepKey, force, ifDue)).catch(() => {});
+  return sweeping;
+}
+
+async function runSweep(need, keepKey, force, ifDue) {
+  // Several downloads that queued a clean-up before the first one ran: the first one may have made room for all
+  if (!force && !ifDue && roomFor(need)) return;
+  const used = await caches.open(USED);
+  const now = Date.now();
+  if (ifDue) {
+    const last = await readRecord(used, SWEPT);
+    if (last && now - last.used < SWEEP_EVERY_MS) return;
+  }
+  for (const name of await caches.keys()) {
+    if (name.startsWith(LEGACY_PREFIX)) await caches.delete(name);
+  }
+  const files = await caches.open(FILES);
+  const urls = new Set((await files.keys()).map((r) => r.url));
+  for (const r of await used.keys()) {
+    if (r.url !== SWEPT && !urls.has(r.url)) await used.delete(r);
+  }
+  const entries = [];
+  for (const url of urls) {
+    let record = await readRecord(used, url);
+    if (!record) {
+      // Kept without a record (its write was cut off): counted from now
+      const kept = await files.match(url);
+      if (!kept) continue;
+      record = { used: now, size: declaredSize(kept) || (await kept.blob()).size };
+      await used.put(url, recordResponse(record));
+    }
+    entries.push({ url, used: record.used, size: record.size });
+  }
+  let total = entries.reduce((sum, e) => sum + e.size, 0);
+  keptLimit = await budget();
+  const limit = force ? Math.min(keptLimit, total) : keptLimit;
+  entries.sort((a, b) => a.used - b.used);
+  for (const e of entries) {
+    if (e.url === keepKey) continue;
+    if (now - e.used <= MAX_IDLE_MS && total + need <= limit) break;
+    await files.delete(e.url);
+    await used.delete(e.url);
+    total -= e.size;
+  }
+  keptBytes = total;
+  await used.put(SWEPT, recordResponse({ used: now, size: 0 }));
+}

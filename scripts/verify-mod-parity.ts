@@ -10,13 +10,21 @@
  * Where a config departs from its source on purpose (a value fitted to telemetry, a model this sim has and the source
  * doesn't), the key is left out of that car's list here and the reason is in the config.
  */
-import { compoundData, F12026_CAR_CONFIG, type CarPhysicsConfig, type TyreGeometry, type TyresCompoundData } from '../src/lib/sim/f12026-car/F12026CarConfig';
+import { compoundData, F12026_CAR_CONFIG, turboSteadyBoost, type CarPhysicsConfig, type TyreGeometry, type TyresCompoundData } from '../src/lib/sim/f12026-car/F12026CarConfig';
 import { AMG_GT3_CONFIG } from '../src/lib/sim/gt3/AmgGt3Config';
 import { modBodyHeightM, modCornerStops, type ModCornerStops } from '../src/lib/sim/mod-suspension';
 import { MTR_496R_CONFIG, MTR_496R_ELECTRONICS } from '../src/lib/sim/proto/Mtr496rConfig';
 import { SUZUKI_LIANA_CONFIG, SUZUKI_LIANA_ELECTRONICS } from '../src/lib/sim/road/SuzukiLianaConfig';
 import { MTR_496R_SIM_PROFILE } from '../src/lib/sim/proto/Mtr496rSim';
 import { SUZUKI_LIANA_SIM_PROFILE } from '../src/lib/sim/road/SuzukiLianaSim';
+import { VW_SCIROCCO_CONFIG, VW_SCIROCCO_ELECTRONICS } from '../src/lib/sim/road/VwSciroccoConfig';
+import { VW_SCIROCCO_SIM_PROFILE } from '../src/lib/sim/road/VwSciroccoSim';
+import { BMW_M1_PROCAR_CONFIG, BMW_M1_PROCAR_ELECTRONICS } from '../src/lib/sim/classic/BmwM1ProcarConfig';
+import { BMW_M1_PROCAR_SIM_PROFILE } from '../src/lib/sim/classic/BmwM1ProcarSim';
+import { CHAPARRAL_2D_67_CONFIG, CHAPARRAL_2D_CONFIG, CHAPARRAL_2D_ELECTRONICS } from '../src/lib/sim/classic/Chaparral2dConfig';
+import { CHAPARRAL_2D_67_SIM_PROFILE, CHAPARRAL_2D_SIM_PROFILE } from '../src/lib/sim/classic/Chaparral2dSim';
+import { PORSCHE_934_RSR_CONFIG, PORSCHE_934_RSR_ELECTRONICS } from '../src/lib/sim/classic/Porsche934RsrConfig';
+import { PORSCHE_934_RSR_SIM_PROFILE } from '../src/lib/sim/classic/Porsche934RsrSim';
 import type { CarSimProfile } from '../src/lib/sim/f12026-car/F12026CarSim';
 import { lutAt, lutGap, modDir, ModData, type Lut } from './lib/mod-data';
 
@@ -73,6 +81,10 @@ const NOT_CARRIED: [RegExp, string][] = [
   [/^tyres\.ini \[THERMAL_(FRONT|REAR)\] /, "tyre heat flow: this sim's own thermal model, not yet fitted to these"],
   [/^tyres\.ini \[(FRONT|REAR)\] (DY0|DY1|DX0|DX1|DY_REF|DX_REF)$/, 'replaced by the load curves the data also gives'],
   [/^tyres\.ini \[(FRONT|REAR)\] (FLEX|XMU)$/, 'not read by this tyre data version, or carried in a derived form (the Liana: peak angle against load)'],
+  [/^tyres\.ini \[(FRONT|REAR)\] DCAMBER_LUT_SMOOTH$/, 'the camber table is read linearly between its points (where the config carries it)'],
+  [/^tyres\.ini \[(FRONT|REAR)\] (COMBINED_FACTOR_1|FALLOFF_YSPEED_MULT|FALLOFF_LEVEL_CURVE|FALLOFF_SPEED_CURVE|SAT_PEAK_K|SAT_MULT|SAT_MIN_REF|SAT_LOAD_K|SAT_MULT_K|SIDEWALL_K_MULT|SIDEWALL_K_MULT_X)$/, "an extension's tyre terms (falloff with heat and yaw speed, self-aligning torque, sidewall stiffness): not modelled"],
+  [/^tyres\.ini \[THERMAL2_(FRONT|REAR)(_\d+)?\] /, "an extension's three-layer tyre heat: this sim's own layers, not fitted to these"],
+  [/^engine\.ini \[ENGINE_DATA\] DEFAULT_TURBO_ADJUSTMENT$/, "the driver's boost knob: not fitted (the car runs its full boost)"],
   [/^tyres\.ini \[(FRONT|REAR)\] DCAMBER_LUT(_SMOOTH)?$/, "names a table that isn't in the data; the camber terms stand in"],
   [/^tyres\.ini \[(FRONT|REAR)\] PRESSURE_FLEX_GAIN$/, 'not carried for this tyre data version (the Liana)'],
   [/^tyres\.ini \[(FRONT|REAR)\] (ANGULAR_INERTIA|ROLLING_RESISTANCE_[01]|ROLLING_RESISTANCE_SLIP|PRESSURE_RR_GAIN|RADIUS_ANGULAR_K|BRAKE_DX_MOD)$/, "taken from another data set or this sim's own (f12026 tyres, the other compounds' wheels)"],
@@ -98,6 +110,8 @@ const NOT_CARRIED: [RegExp, string][] = [
   [/^aero\.ini \[WING_\d+\] ZONE_/, 'slipstream and damage zones: not modelled per element'],
   [/^aero\.ini \[(WING_0|FIN_0|WING_1)\] /, 'the body (and the Liana\'s boot) as constant drag and lift; the 496R\'s fin has no tables'],
   [/^electronics\.ini \[(ABS|TRACTION_CONTROL)\] CURVE$/, 'the switch positions are listed in the config'],
+  [/^electronics\.ini \[ABS_V2\] (CURVE|CHANNELS)$/, "the switch positions are listed in the config; the ABS (an aid the car doesn't have) works per wheel"],
+  [/^drivetrain\.ini \[UPSHIFT_PROFILE\] \*$/, 'the auto clutch has no up-shift profile (UPSHIFT_PROFILE=NONE): unused'],
   [/^electronics\.ini \[EDL\] /, 'electronic diff lock by the brakes: not fitted to this car (PRESENT 0), or its switches'],
 ];
 
@@ -323,8 +337,10 @@ function checkSuspension(label: string, mod: ModData, config: CarPhysicsConfig, 
       eq(`${name} heave DAMP_FAST_REBOUNDTHRESHOLD`, damp.heaveFastReboundThresholdMs ?? NaN, s(heave, 'DAMP_FAST_REBOUNDTHRESHOLD'));
     }
 
+    // A strut's top mount is the upright's upper joint; its lower ball joint (where the lower arm meets the upright,
+    // WBTYRE_BOTTOM) the lower one, which the strut's own foot (STRUT_TYRE) may or may not share
     for (const i of opts.hardpoints[lower]) {
-      const key = opts.strutFront && axle === 'FRONT' && i === 4 ? 'STRUT_CAR' : opts.strutFront && axle === 'FRONT' && i === 5 ? 'STRUT_TYRE' : HARDPOINT_KEYS[i];
+      const key = opts.strutFront && axle === 'FRONT' && i === 4 ? 'STRUT_CAR' : HARDPOINT_KEYS[i];
       const theirs = mod.vec('suspensions.ini', axle, key);
       const ours = sus.hardpoints?.[i] ?? [NaN, NaN, NaN];
       for (let k = 0; k < 3; k++) eq(`${name} ${key}[${k}]`, ours[k], theirs[k]);
@@ -349,15 +365,19 @@ function checkSuspension(label: string, mod: ModData, config: CarPhysicsConfig, 
 }
 
 /** Engine, gearbox, clutch, differential, brakes */
-function checkDriveline(label: string, mod: ModData, config: CarPhysicsConfig): void {
+/** `dataFrontShare`: a car whose default tune moves the brake bias off the data's checks the data's own share instead */
+function checkDriveline(label: string, mod: ModData, config: CarPhysicsConfig, opts: { dataFrontShare?: number } = {}): void {
   const e = (sec: string, key: string) => mod.num('engine.ini', sec, key);
   const d = (sec: string, key: string) => mod.num('drivetrain.ini', sec, key);
-  // power.lut is torque at the wheels' side of the driveline: the config's crank power × its efficiency, as torque
+  // power.lut is torque at the wheels' side of the driveline: the config's crank power × its efficiency, as torque. A
+  // turbo car's curve carries the full-throttle boost: taken off here, as torque ∝ 1 + boost
   const power = mod.lut('power.lut');
+  const turbo = config.engine.turbo;
   let worst = 0;
   for (const [rpm, nm] of power) {
     if (rpm <= 0 || rpm > e('ENGINE_DATA', 'LIMITER')) continue;
-    const ours = ((lutAt(config.engine.powerCurve, rpm) * 1000 * 30) / (Math.PI * rpm)) * config.gearbox.efficiency;
+    const boost = turbo ? 1 + turboSteadyBoost(turbo, rpm) : 1;
+    const ours = ((lutAt(config.engine.powerCurve, rpm) * 1000 * 30) / (Math.PI * rpm)) * config.gearbox.efficiency / boost;
     worst = Math.max(worst, Math.abs(ours - nm) / Math.max(1, nm));
   }
   eq(`${label} power.lut (worst point, relative)`, worst, 0, 2e-3);
@@ -385,7 +405,7 @@ function checkDriveline(label: string, mod: ModData, config: CarPhysicsConfig): 
   eq(`${label} autoclutch MAX_RPM`, config.clutch.lockRpm, d('AUTOCLUTCH', 'MAX_RPM'));
   shiftData(label, config, mod);
   eq(`${label} brake MAX_TORQUE`, config.brakes.maxTorqueNm, mod.num('brakes.ini', 'DATA', 'MAX_TORQUE'));
-  eq(`${label} brake FRONT_SHARE`, config.brakes.front_bias, mod.num('brakes.ini', 'DATA', 'FRONT_SHARE'));
+  eq(`${label} brake FRONT_SHARE`, opts.dataFrontShare ?? config.brakes.front_bias, mod.num('brakes.ini', 'DATA', 'FRONT_SHARE'));
 }
 
 /**
@@ -533,6 +553,211 @@ section('Suzuki Liana', 'suzuki_liana', (mod) => {
   }
 });
 
+section('VW Scirocco GTX 16V', 'pfa_vw_scirocco_53b', (mod) => {
+  const config = VW_SCIROCCO_CONFIG;
+  checkChassis('Scirocco', mod, config);
+  checkProfile('Scirocco', mod, config, VW_SCIROCCO_SIM_PROFILE);
+  // The front is a strut (its virtual upper arm is this model's); the rear's two arms share one pivot axis in the data,
+  // and are solved here as two parallel arms on it (the config says why): only the lower arm's pivots, the ball joints
+  // and the toe link's body end are the source's own
+  checkSuspension('Scirocco', mod, config, { hardpoints: { front: [2, 3, 4, 5, 6, 7], rear: [2, 3, 4, 5] }, strutFront: true });
+  checkDriveline('Scirocco', mod, config);
+  eq('Scirocco ALTITUDE_SENSITIVITY', config.engine.airDensitySensitivity ?? NaN, mod.num('engine.ini', 'ENGINE_DATA', 'ALTITUDE_SENSITIVITY'));
+  eq('Scirocco CHANGE_DN_TIME', config.gearbox.downshiftTimeS, mod.num('drivetrain.ini', 'GEARBOX', 'CHANGE_DN_TIME') / 1000);
+  eq('Scirocco HANDBRAKE_TORQUE', config.brakes.handbrakeTorqueNm, mod.num('brakes.ini', 'DATA', 'HANDBRAKE_TORQUE'));
+  const el = (sec: string, key: string) => mod.num('electronics.ini', sec, key);
+  eq('Scirocco ABS SLIP_RATIO_LIMIT', VW_SCIROCCO_ELECTRONICS.absDefault, el('ABS', 'SLIP_RATIO_LIMIT'));
+  eq('Scirocco ABS RATE_HZ', VW_SCIROCCO_ELECTRONICS.absRateHz, el('ABS', 'RATE_HZ'));
+  eq('Scirocco TC SLIP_RATIO_LIMIT', VW_SCIROCCO_ELECTRONICS.tcDefault, el('TRACTION_CONTROL', 'SLIP_RATIO_LIMIT'));
+  eq('Scirocco TC RATE_HZ', VW_SCIROCCO_ELECTRONICS.tcRateHz, el('TRACTION_CONTROL', 'RATE_HZ'));
+  eq('Scirocco TC MIN_SPEED_KMH', VW_SCIROCCO_ELECTRONICS.tcMinSpeedKmh, el('TRACTION_CONTROL', 'MIN_SPEED_KMH'));
+
+  // The street tyre in every slot, with the load tables and falloff of the newer tyre data
+  const compound = compoundData(config, config.compoundSlots.soft);
+  const keys = ['WIDTH', 'RADIUS', 'RIM_RADIUS', 'DAMP', 'XMU', 'RELAXATION_LENGTH', 'ROLLING_RESISTANCE_0', 'ROLLING_RESISTANCE_1', 'ROLLING_RESISTANCE_SLIP', 'PRESSURE_RR_GAIN', 'CAMBER_GAIN', 'DCAMBER_0', 'DCAMBER_1', 'PRESSURE_IDEAL', 'PRESSURE_STATIC', 'PRESSURE_D_GAIN', 'FZ0', 'LS_EXPY', 'LS_EXPX', 'BRAKE_DX_MOD', 'RADIUS_ANGULAR_K', ...V10_SHAPE.filter((k) => k !== 'COMBINED_FACTOR')];
+  for (const axle of ['front', 'rear'] as const) {
+    const AX = axle.toUpperCase();
+    checkTyre(`Scirocco ${axle}`, mod, axleTyre(compound, axle), { sectionName: AX, thermalName: `THERMAL_${AX}`, keys, loadCurvesToN: 24_000, rate: true, wear: true, thermalCurve: true, tread: true });
+  }
+});
+
+section('BMW M1 Procar', 'pddw_bmw_procar_m1', (mod) => {
+  const config = BMW_M1_PROCAR_CONFIG;
+  checkChassis('M1', mod, config);
+  checkProfile('M1', mod, config, BMW_M1_PROCAR_SIM_PROFILE);
+  checkSuspension('M1', mod, config, { hardpoints: { front: ALL, rear: ALL } });
+  checkDriveline('M1', mod, config);
+  eq('M1 ALTITUDE_SENSITIVITY', config.engine.airDensitySensitivity ?? NaN, mod.num('engine.ini', 'ENGINE_DATA', 'ALTITUDE_SENSITIVITY'));
+  eq('M1 CHANGE_DN_TIME', config.gearbox.downshiftTimeS, mod.num('drivetrain.ini', 'GEARBOX', 'CHANGE_DN_TIME') / 1000);
+  const el = (sec: string, key: string) => mod.num('electronics.ini', sec, key);
+  eq('M1 ABS SLIP_RATIO_LIMIT', BMW_M1_PROCAR_ELECTRONICS.absDefault, el('ABS', 'SLIP_RATIO_LIMIT'));
+  eq('M1 ABS RATE_HZ', BMW_M1_PROCAR_ELECTRONICS.absRateHz, el('ABS', 'RATE_HZ'));
+  eq('M1 TC SLIP_RATIO_LIMIT', BMW_M1_PROCAR_ELECTRONICS.tcDefault, el('TRACTION_CONTROL', 'SLIP_RATIO_LIMIT'));
+  eq('M1 TC RATE_HZ', BMW_M1_PROCAR_ELECTRONICS.tcRateHz, el('TRACTION_CONTROL', 'RATE_HZ'));
+  eq('M1 TC MIN_SPEED_KMH', BMW_M1_PROCAR_ELECTRONICS.tcMinSpeedKmh, el('TRACTION_CONTROL', 'MIN_SPEED_KMH'));
+
+  // The "Vintage Slicks" in every dry slot: the newer tyre data, peak μ at FZ0 falling with load by a power law
+  const compound = compoundData(config, config.compoundSlots.soft);
+  const keys = ['WIDTH', 'RADIUS', 'RIM_RADIUS', 'DAMP', 'XMU', 'RELAXATION_LENGTH', 'ROLLING_RESISTANCE_0', 'ROLLING_RESISTANCE_1', 'ROLLING_RESISTANCE_SLIP', 'PRESSURE_RR_GAIN', 'CAMBER_GAIN', 'DCAMBER_0', 'DCAMBER_1', 'PRESSURE_IDEAL', 'PRESSURE_STATIC', 'PRESSURE_D_GAIN', 'FZ0', 'LS_EXPY', 'LS_EXPX', 'BRAKE_DX_MOD', 'RADIUS_ANGULAR_K', ...V10_SHAPE.filter((k) => k !== 'COMBINED_FACTOR')];
+  for (const axle of ['front', 'rear'] as const) {
+    const AX = axle.toUpperCase();
+    const tyre = axleTyre(compound, axle);
+    checkTyre(`M1 ${axle}`, mod, tyre, { sectionName: AX, thermalName: `THERMAL_${AX}`, keys, rate: true, wear: true, thermalCurve: true, tread: true });
+    eq(`M1 ${axle} DY_REF`, tyre.model.Dy0, mod.num('tyres.ini', AX, 'DY_REF'));
+    eq(`M1 ${axle} DX_REF`, tyre.model.Dx0, mod.num('tyres.ini', AX, 'DX_REF'));
+  }
+});
+
+// The Chaparral 2Ds, 1966 and 1967: one data set each, the same electronics, tyres and brakes
+for (const [title, folder, label, config, profile] of [
+  ['Chaparral 2D (1966)', 'wsc_legends_chaparral_2d_66', '2D 66', CHAPARRAL_2D_CONFIG, CHAPARRAL_2D_SIM_PROFILE],
+  ['Chaparral 2D (1967)', 'wsc_legends_chaparral_2d_67', '2D 67', CHAPARRAL_2D_67_CONFIG, CHAPARRAL_2D_67_SIM_PROFILE],
+] as const) {
+  section(title, folder, (mod) => {
+    const c = config as unknown as CarPhysicsConfig;
+    checkChassis(label, mod, c);
+    checkProfile(label, mod, c, profile);
+    checkSuspension(label, mod, c, { hardpoints: { front: ALL, rear: ALL } });
+    // The default tune moves the bias forward from the data's 56 % (Chaparral2dConfig BRAKES)
+    checkDriveline(label, mod, c, { dataFrontShare: 0.56 });
+    eq(`${label} ALTITUDE_SENSITIVITY`, c.engine.airDensitySensitivity ?? NaN, mod.num('engine.ini', 'ENGINE_DATA', 'ALTITUDE_SENSITIVITY'));
+    eq(`${label} CHANGE_DN_TIME`, c.gearbox.downshiftTimeS ?? NaN, mod.num('drivetrain.ini', 'GEARBOX', 'CHANGE_DN_TIME') / 1000);
+    // No down-shift protection in the data: the box takes one up to the engine's damage threshold
+    eq(`${label} DAMAGE RPM_THRESHOLD`, c.gearbox.gears.redline_rpm + (c.gearbox.downshift?.overRevRpm ?? NaN), mod.num('engine.ini', 'DAMAGE', 'RPM_THRESHOLD'));
+    const el = (sec: string, key: string) => mod.num('electronics.ini', sec, key);
+    eq(`${label} ABS SLIP_RATIO_LIMIT`, CHAPARRAL_2D_ELECTRONICS.absDefault, el('ABS', 'SLIP_RATIO_LIMIT'));
+    eq(`${label} ABS RATE_HZ`, CHAPARRAL_2D_ELECTRONICS.absRateHz, el('ABS', 'RATE_HZ'));
+    eq(`${label} TC SLIP_RATIO_LIMIT`, CHAPARRAL_2D_ELECTRONICS.tcDefault, el('TRACTION_CONTROL', 'SLIP_RATIO_LIMIT'));
+    eq(`${label} TC RATE_HZ`, CHAPARRAL_2D_ELECTRONICS.tcRateHz, el('TRACTION_CONTROL', 'RATE_HZ'));
+    eq(`${label} TC MIN_SPEED_KMH`, CHAPARRAL_2D_ELECTRONICS.tcMinSpeedKmh, el('TRACTION_CONTROL', 'MIN_SPEED_KMH'));
+    // "LM60" in every dry slot: the newer tyre data, peak μ at FZ0 falling with load by a power law
+    const compound = compoundData(c, c.compoundSlots.soft);
+    const keys = ['WIDTH', 'RADIUS', 'RIM_RADIUS', 'DAMP', 'XMU', 'RELAXATION_LENGTH', 'ROLLING_RESISTANCE_0', 'ROLLING_RESISTANCE_1', 'ROLLING_RESISTANCE_SLIP', 'PRESSURE_RR_GAIN', 'CAMBER_GAIN', 'DCAMBER_0', 'DCAMBER_1', 'PRESSURE_IDEAL', 'PRESSURE_STATIC', 'PRESSURE_D_GAIN', 'FZ0', 'LS_EXPY', 'LS_EXPX', 'BRAKE_DX_MOD', 'RADIUS_ANGULAR_K', ...V10_SHAPE.filter((k) => k !== 'COMBINED_FACTOR')];
+    for (const axle of ['front', 'rear'] as const) {
+      const AX = axle.toUpperCase();
+      const tyre = axleTyre(compound, axle);
+      checkTyre(`${label} ${axle}`, mod, tyre, { sectionName: AX, thermalName: `THERMAL_${AX}`, keys, rate: true, wear: true, thermalCurve: true, tread: true });
+      eq(`${label} ${axle} DY_REF`, tyre.model.Dy0, mod.num('tyres.ini', AX, 'DY_REF'));
+      eq(`${label} ${axle} DX_REF`, tyre.model.Dx0, mod.num('tyres.ini', AX, 'DX_REF'));
+    }
+  });
+}
+
+// Pfalzdriver's Porsche 934 Turbo RSR: a turbo, a strut front, two tyre sets (the slicks in the soft and medium slots,
+// the data's default; the Group 4 tyres in the hard)
+section('Porsche 934 Turbo RSR', 'pfa_porsche_934t_rsr_rr', (mod) => {
+  const config = PORSCHE_934_RSR_CONFIG as unknown as CarPhysicsConfig;
+  const profile = PORSCHE_934_RSR_SIM_PROFILE;
+  checkChassis('934', mod, config);
+  // The profile's steering and fuel; the pads' friction against temperature is one curve here, the front's: the rear's
+  // is the same to 600 °C and falls to 70 % at 800 where the front's falls to 80 %
+  eq('934 STEER_RATIO', profile.steerRatio ?? NaN, mod.num('car.ini', 'CONTROLS', 'STEER_RATIO'));
+  eq('934 FUEL CONSUMPTION', profile.fuelLPerS1000Rpm ?? NaN, mod.num('car.ini', 'FUEL', 'CONSUMPTION'));
+  const pads = config.brakes.padMuCurve ?? [];
+  sameCurve('934 brake PERF_CURVE front', pads, mod.lutOf('brakes.ini', 'TEMPS_FRONT', 'PERF_CURVE'), 1e-9);
+  sameCurve('934 brake PERF_CURVE rear (to 600 °C)', upTo(pads, 600), upTo(mod.lutOf('brakes.ini', 'TEMPS_REAR', 'PERF_CURVE'), 600), 1e-9);
+  // The front is a strut (its virtual upper arm is this model's)
+  checkSuspension('934', mod, config, { hardpoints: { front: [2, 3, 4, 5, 6, 7], rear: ALL }, strutFront: true });
+  // The strut's foot (STRUT_TYRE) is the upright's lower ball joint, the config's sixth hardpoint
+  const foot = mod.vec('suspensions.ini', 'FRONT', 'STRUT_TYRE');
+  for (let k = 0; k < 3; k++) eq(`934 front STRUT_TYRE[${k}]`, config.suspensions.front.hardpoints?.[5][k] ?? NaN, foot[k]);
+  checkDriveline('934', mod, config);
+  eq('934 ALTITUDE_SENSITIVITY', config.engine.airDensitySensitivity ?? NaN, mod.num('engine.ini', 'ENGINE_DATA', 'ALTITUDE_SENSITIVITY'));
+  eq('934 CHANGE_DN_TIME', config.gearbox.downshiftTimeS ?? NaN, mod.num('drivetrain.ini', 'GEARBOX', 'CHANGE_DN_TIME') / 1000);
+  // No down-shift protection in the data: the box takes one up to the engine's damage threshold
+  eq('934 DAMAGE RPM_THRESHOLD', config.gearbox.gears.redline_rpm + (config.gearbox.downshift?.overRevRpm ?? NaN), mod.num('engine.ini', 'DAMAGE', 'RPM_THRESHOLD'));
+  eq('934 AUTO_SHIFTER UP', config.gearbox.gears.upshift_rpm, mod.num('drivetrain.ini', 'AUTO_SHIFTER', 'UP'));
+  eq('934 AUTO_SHIFTER DOWN', config.gearbox.gears.downshift_rpm, mod.num('drivetrain.ini', 'AUTO_SHIFTER', 'DOWN'));
+  eq('934 HANDBRAKE_TORQUE', config.brakes.handbrakeTorqueNm ?? NaN, mod.num('brakes.ini', 'DATA', 'HANDBRAKE_TORQUE'));
+  eq('934 brake ADJUST_STEP', config.brakes.ebbStep, mod.num('brakes.ini', 'DATA', 'ADJUST_STEP') / 100);
+  const el = (sec: string, key: string) => mod.num('electronics.ini', sec, key);
+  const E = PORSCHE_934_RSR_ELECTRONICS;
+  eq('934 ABS SLIP_RATIO_LIMIT', E.absDefault, el('ABS_V2', 'SLIP_RATIO_LIMIT'));
+  eq('934 ABS RATE_HZ', E.absRateHz, el('ABS_V2', 'RATE_HZ'));
+  eq('934 TC SLIP_RATIO_LIMIT', E.tcDefault, el('TRACTION_CONTROL', 'SLIP_RATIO_LIMIT'));
+  eq('934 TC RATE_HZ', E.tcRateHz, el('TRACTION_CONTROL', 'RATE_HZ'));
+  eq('934 TC MIN_SPEED_KMH', E.tcMinSpeedKmh, el('TRACTION_CONTROL', 'MIN_SPEED_KMH'));
+
+  // The turbo: the boost law, its cap, the lags (closing (1 − LAG) of the gap 444 times a second) and the gauge
+  const turbo = config.engine.turbo!;
+  const t = (key: string) => mod.num('engine.ini', 'TURBO_0', key);
+  eq('934 TURBO MAX_BOOST', turbo.maxBoost, t('MAX_BOOST'));
+  eq('934 TURBO WASTEGATE (no lower than MAX_BOOST)', turbo.maxBoost, Math.min(t('MAX_BOOST'), t('WASTEGATE')));
+  eq('934 TURBO REFERENCE_RPM', turbo.referenceRpm, t('REFERENCE_RPM'));
+  eq('934 TURBO GAMMA', turbo.gamma, t('GAMMA'));
+  eq('934 TURBO LAG_UP', turbo.spoolUpS, 1 / ((1 - t('LAG_UP')) * 444), 1e-3);
+  eq('934 TURBO LAG_DN', turbo.spoolDownS, 1 / ((1 - t('LAG_DN')) * 444), 1e-3);
+  eq('934 TURBO DISPLAY_MAX_BOOST', turbo.displayMaxBoostBar, t('DISPLAY_MAX_BOOST'));
+  eq('934 TURBO the throttle inside the boost law', turbo.throttleInBoostLaw ? 1 : 0, 1);
+  // The boost controller's wastegate (ctrl_turbo0.ini, by rpm) stands above the turbo's own boost at every rpm, so the
+  // config leaves it out
+  const ctrl = mod.lutOf('ctrl_turbo0.ini', 'CONTROLLER_0', 'LUT');
+  let ctrlBinds = 0;
+  for (let rpm = 0; rpm <= mod.num('engine.ini', 'ENGINE_DATA', 'LIMITER'); rpm += 25) {
+    if (lutAt(ctrl, rpm) < turboSteadyBoost(turbo, rpm) - 1e-9) ctrlBinds++;
+  }
+  eq('934 ctrl_turbo0 never under the turbo\'s boost', ctrl.length ? ctrlBinds : NaN, 0);
+
+  // The slicks (FRONT_1 / REAR_1): the newer tyre data, peak μ at FZ0 falling with load by a power law. One wear and
+  // one temperature curve, the front's: the rear's wear runs 41 % longer past 2 km and its grip comes in later
+  // (58–75 °C), but from 75 to 130 °C they agree within 0.2 %
+  const slick = compoundData(config, config.compoundSlots.soft);
+  const slickKeys = ['WIDTH', 'RADIUS', 'RIM_RADIUS', 'DAMP', 'XMU', 'RELAXATION_LENGTH', 'ROLLING_RESISTANCE_0', 'ROLLING_RESISTANCE_1', 'ROLLING_RESISTANCE_SLIP', 'PRESSURE_RR_GAIN', 'CAMBER_GAIN', 'DCAMBER_0', 'DCAMBER_1', 'PRESSURE_IDEAL', 'PRESSURE_STATIC', 'PRESSURE_D_GAIN', 'FZ0', 'LS_EXPY', 'LS_EXPX', 'RADIUS_ANGULAR_K', ...V10_SHAPE.filter((k) => k !== 'COMBINED_FACTOR')];
+  for (const axle of ['front', 'rear'] as const) {
+    const AX = axle.toUpperCase();
+    const tyre = axleTyre(slick, axle);
+    checkTyre(`934 slick ${axle}`, mod, tyre, { sectionName: `${AX}_1`, thermalName: `THERMAL_${AX}_1`, keys: slickKeys, rate: true, wear: axle === 'front', thermalCurve: axle === 'front', tread: true });
+    eq(`934 slick ${axle} DY_REF`, tyre.model.Dy0, mod.num('tyres.ini', `${AX}_1`, 'DY_REF'));
+    eq(`934 slick ${axle} DX_REF`, tyre.model.Dx0, mod.num('tyres.ini', `${AX}_1`, 'DX_REF'));
+    eq(`934 slick ${axle} no BRAKE_DX_MOD`, tyre.model.brakeDxMod ?? NaN, Number.isFinite(mod.num('tyres.ini', `${AX}_1`, 'BRAKE_DX_MOD')) ? NaN : 0);
+    sameCurve(`934 slick ${axle} DCAMBER_LUT`, slick.camberData.dcamberLut ?? [], mod.lutOf('tyres.ini', `${AX}_1`, 'DCAMBER_LUT'), 1e-9);
+  }
+  const from75 = (lut: Lut): Lut => lut.filter(([x]) => x >= 75 && x <= 130);
+  sameCurve('934 slick rear PERFORMANCE_CURVE (75–130 °C)', from75(slick.thermalData.thermalPerformanceCurve), from75(mod.lutOf('tyres.ini', 'THERMAL_REAR_1', 'PERFORMANCE_CURVE')), 2e-3);
+  eq('934 VIRTUALKM USE_LOAD', slick.wear?.loadScaled ? 1 : 0, mod.num('tyres.ini', 'VIRTUALKM', 'USE_LOAD'));
+  eq('934 COMPOUND_DEFAULT is the slicks (soft)', mod.num('tyres.ini', 'COMPOUND_DEFAULT', 'INDEX'), 1);
+
+  // The Group 4 tyres (FRONT / REAR): grip from the load tables, the newer shape data, the same curves front and rear
+  const g4 = compoundData(config, config.compoundSlots.hard);
+  const g4Keys = ['WIDTH', 'RADIUS', 'RIM_RADIUS', 'DAMP', 'XMU', 'RELAXATION_LENGTH', 'ROLLING_RESISTANCE_0', 'ROLLING_RESISTANCE_1', 'ROLLING_RESISTANCE_SLIP', 'PRESSURE_RR_GAIN', 'CAMBER_GAIN', 'DCAMBER_0', 'DCAMBER_1', 'PRESSURE_IDEAL', 'PRESSURE_STATIC', 'PRESSURE_D_GAIN', 'FZ0', 'LS_EXPY', 'LS_EXPX', 'BRAKE_DX_MOD', 'RADIUS_ANGULAR_K', ...V10_SHAPE];
+  for (const axle of ['front', 'rear'] as const) {
+    const AX = axle.toUpperCase();
+    const tyre = axleTyre(g4, axle);
+    checkTyre(`934 Group 4 ${axle}`, mod, tyre, { sectionName: AX, thermalName: `THERMAL_${AX}`, keys: g4Keys, loadCurvesToN: 24_000, rate: true, wear: true, thermalCurve: true, tread: true });
+    sameCurve(`934 Group 4 ${axle} DCAMBER_LUT`, g4.camberData.dcamberLut ?? [], mod.lutOf('tyres.ini', AX, 'DCAMBER_LUT'), 1e-9);
+  }
+
+  // Aero: the body as a constant drag at its 0° CD, no lift; the spoiler and the wing with their tables × the gains
+  const a0 = (key: string) => mod.num('aero.ini', 'WING_0', key);
+  eq('934 WING_0 CHORD × SPAN × CD(0°) × CD_GAIN', config.aero.drag, a0('CHORD') * a0('SPAN') * lutAt(mod.lutOf('aero.ini', 'WING_0', 'LUT_AOA_CD'), 0) * a0('CD_GAIN'), 1e-4);
+  eq('934 WING_0 CL_GAIN (no lift)', config.aero.front_lift + config.aero.rear_lift, a0('CL_GAIN'));
+  eq('934 WING_0 POSITION y', config.aero.dragCentreY ?? NaN, mod.vec('aero.ini', 'WING_0', 'POSITION')[1]);
+  for (const [name, sec] of [['FRONT_WING', 'WING_1'], ['REAR_WING', 'WING_2']] as const) {
+    const wing = config.aero.wings.find((w) => w.name === name);
+    const a = (key: string) => mod.num('aero.ini', sec, key);
+    if (!wing) {
+      eq(`934 ${sec} present`, NaN, 1);
+      continue;
+    }
+    const pos = mod.vec('aero.ini', sec, 'POSITION');
+    eq(`934 ${sec} CHORD × SPAN`, wing.area, a('CHORD') * a('SPAN'));
+    eq(`934 ${sec} POSITION z`, wing.positionZ, pos[2]);
+    eq(`934 ${sec} POSITION y`, wing.dragY ?? NaN, pos[1], 1e-3);
+    eq(`934 ${sec} ANGLE`, wing.angleDeg, a('ANGLE'));
+    sameCurve(`934 ${sec} LUT_AOA_CL × CL_GAIN`, wing.lutAOA_CL, scale(mod.lutOf('aero.ini', sec, 'LUT_AOA_CL'), a('CL_GAIN')), 1e-3);
+    sameCurve(`934 ${sec} LUT_AOA_CD × CD_GAIN`, wing.lutAOA_CD, scale(mod.lutOf('aero.ini', sec, 'LUT_AOA_CD'), a('CD_GAIN')), 1e-3);
+    // No yaw gain in the data
+    eq(`934 ${sec} no YAW_CL_GAIN`, lutAt(wing.lutYaw_CL_mult ?? [], 10), Number.isFinite(a('YAW_CL_GAIN')) ? NaN : 1);
+    // Ground-height tables at the element's own height: the spoiler sits above the front pickup the config reads
+    const drop = name === 'FRONT_WING' ? mod.num('car.ini', 'RIDE', 'PICKUP_FRONT_HEIGHT') - pos[1] : 0;
+    const shift = (lut: Lut): Lut => lut.map(([x, y]) => [x + drop, y]);
+    const ghCl = mod.lutOf('aero.ini', sec, 'LUT_GH_CL');
+    const ghCd = mod.lutOf('aero.ini', sec, 'LUT_GH_CD');
+    if (ghCl.length) sameCurve(`934 ${sec} LUT_GH_CL`, wing.lutGH_CL_mult, shift(ghCl), 1e-3);
+    if (ghCd.length) sameCurve(`934 ${sec} LUT_GH_CD`, wing.lutGH_CD_mult, shift(ghCd), 1e-3);
+  }
+});
+
 /** A gear change by the car's own data: the time between gears, the ignition cut, the down-shift's clutch and blip */
 function shiftData(label: string, config: CarPhysicsConfig, mod: ModData): void {
   const d = (sec: string, key: string) => mod.num('drivetrain.ini', sec, key);
@@ -545,7 +770,9 @@ function shiftData(label: string, config: CarPhysicsConfig, mod: ModData): void 
   eq(`${label} DOWNSHIFT_PROFILE POINT_2`, dn?.clutchHomeS ?? NaN, d('DOWNSHIFT_PROFILE', 'POINT_2') / 1000);
   eq(`${label} AUTOBLIP LEVEL`, dn?.blip?.level ?? NaN, d('AUTOBLIP', 'LEVEL'));
   eq(`${label} AUTOBLIP POINT_0`, dn?.blip?.riseS ?? NaN, d('AUTOBLIP', 'POINT_0') / 1000);
-  if (dn?.overRevRpm !== undefined) eq(`${label} DOWNSHIFT_PROTECTION OVERREV`, dn.overRevRpm, d('DOWNSHIFT_PROTECTION', 'OVERREV'));
+  // A car whose data has no down-shift protection takes its over-rev from elsewhere (the config says where)
+  if (dn?.overRevRpm !== undefined && Number.isFinite(d('DOWNSHIFT_PROTECTION', 'OVERREV')))
+    eq(`${label} DOWNSHIFT_PROTECTION OVERREV`, dn.overRevRpm, d('DOWNSHIFT_PROTECTION', 'OVERREV'));
 }
 
 // The GT3's base is a data set this machine doesn't hold; what it took from its second reference is checked here
@@ -554,21 +781,26 @@ section('AMG GT3 (second reference)', 'gt3_ref', (mod) => {
   const s = (sec: string, key: string) => mod.num('suspensions.ini', sec, key);
   eq('GT3 ARB front', config.suspensions.front.arb, s('ARB', 'FRONT'));
   eq('GT3 ARB rear', config.suspensions.rear.arb, s('ARB', 'REAR'));
-  eq('GT3 front SPRING_RATE', config.suspensions.front.springs.wheel_rate, s('FRONT', 'SPRING_RATE'));
-  eq('GT3 rear SPRING_RATE', config.suspensions.rear.springs.wheel_rate, s('REAR', 'SPRING_RATE'));
+  // The endurance balance of performance's trim moves the springs (168 / 132 N/mm), the coast lock (0.58) and the
+  // preload (60 Nm) off the reference's: those are held to the trim, the rest to the reference
+  eq('GT3 front SPRING_RATE (the endurance trim)', config.suspensions.front.springs.wheel_rate, 168_000);
+  eq('GT3 rear SPRING_RATE (the endurance trim)', config.suspensions.rear.springs.wheel_rate, 132_000);
   const diff = config.differential.settings;
   eq('GT3 diff POWER', diff.power, mod.num('drivetrain.ini', 'DIFFERENTIAL', 'POWER'));
-  eq('GT3 diff COAST', diff.coast, mod.num('drivetrain.ini', 'DIFFERENTIAL', 'COAST'));
-  eq('GT3 diff PRELOAD', diff.preload, mod.num('drivetrain.ini', 'DIFFERENTIAL', 'PRELOAD'));
+  eq('GT3 diff COAST (the endurance trim)', diff.coast, 0.58);
+  eq('GT3 diff PRELOAD (the endurance trim)', diff.preload, 60);
   // The gear change is this reference's; the limiter stays the base data set's
   shiftData('GT3', config, mod);
   const compound = compoundData(config, config.compoundSlots.soft);
   const keys = ['FLEX_GAIN', 'PRESSURE_FLEX_GAIN', 'COMBINED_FACTOR', 'CX_MULT', 'SPEED_SENSITIVITY', 'FALLOFF_LEVEL', 'FALLOFF_SPEED', 'PRESSURE_D_GAIN', 'BRAKE_DX_MOD', 'DCAMBER_0', 'DCAMBER_1', 'DAMP'];
   for (const axle of ['front', 'rear'] as const) {
     const AX = axle.toUpperCase();
-    // One wear curve per compound: the front's
-    checkTyre(`GT3 ${axle}`, mod, axleTyre(compound, axle), { sectionName: AX, thermalName: `THERMAL_${AX}`, keys, tread: true, wear: axle === 'front' });
+    checkTyre(`GT3 ${axle}`, mod, axleTyre(compound, axle), { sectionName: AX, thermalName: `THERMAL_${AX}`, keys, tread: true, wear: false });
   }
+  // One wear curve per compound, the front's: the reference's grip against distance, the distances × the endurance
+  // soft's tread life (0.47)
+  const softLife = 0.47;
+  sameCurve('GT3 front WEAR_CURVE (distances × the endurance soft\'s 0.47)', (compound.wear?.curve ?? []).map(([km, pct]) => [km / softLife, pct] as [number, number]), mod.lutOf('tyres.ini', 'FRONT', 'WEAR_CURVE'), 0.05);
   eq('GT3 VIRTUALKM USE_LOAD', compound.wear?.loadScaled ? 1 : 0, mod.num('tyres.ini', 'VIRTUALKM', 'USE_LOAD'));
 }, false);
 

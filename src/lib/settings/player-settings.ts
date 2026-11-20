@@ -3,15 +3,22 @@
  * Everything is validated on load: a corrupt or partial save falls back field by field to the defaults.
  */
 import { DEFAULT_RACE_SETUP, parseRaceSetup, type RaceSetup } from "@/lib/sim/race-setup";
+import { MUSIC_TRACK_IDS } from "@/lib/audio/music-catalog";
 import type { AssistPreset, CameraMode } from "@/types/f1";
 import {
   DEFAULT_KEY_BINDINGS,
+  BUMPER_SHIFT_BUTTONS,
   DEFAULT_PAD_BUTTONS,
   KEY_ACTIONS,
+  DEFAULT_PAD_PEDAL_SOURCES,
   PAD_ACTIONS,
+  PAD_PEDALS,
+  samePedalSource,
   RESERVED_CODES,
   type KeyBindings,
   type PadButtonBindings,
+  type PadPedalSource,
+  type PadPedalSources,
 } from "@/lib/input/bindings";
 import {
   DEFAULT_WHEEL_SETTINGS,
@@ -20,16 +27,20 @@ import {
   type AxisBinding,
   type ButtonBinding,
   type InputDevice,
+  type PadPedalTuning,
   type PadSensitivity,
   type PedalBinding,
   type WheelSettings,
 } from "@/lib/input/device-input";
 import { KB_STEER_RETURN_S, KB_STEER_RISE_S } from "@/lib/input/keyboard-steer";
+import { GYRO_LOCK_MAX_DEG, GYRO_LOCK_MIN_DEG, GYRO_SENSITIVITY_MAX, GYRO_SENSITIVITY_MIN } from "@/lib/input/gyro-steer";
+import { isTouchDevice } from "@/lib/input/touch-input";
 import { isCameraMode } from "@/lib/render/camera-modes";
 import { parseCameraNudges, type CameraNudges } from "@/lib/settings/camera-nudges";
 import { resolveCarId, type CarId } from "@/lib/cars/car-registry";
 import { AI_SKILL_DEFAULT } from "@/lib/sim/ai-tuning";
 import { DEFAULT_DEVICE_ASSIST_TUNING, sanitizeAssistTuning, type DeviceAssistTuning } from "@/lib/sim/steering-assist";
+import { DEFAULT_HUD_PRESET, parseHudPreset, type HudPreset } from "@/lib/settings/hud-layouts";
 import { SIM_REALISM_LEVELS, type SimRealism } from "@/lib/sim/sim-realism";
 import { DEFAULT_SESSION_CONDITIONS, sanitizeConditions, type SessionConditions } from "@/lib/sim/weather";
 
@@ -55,6 +66,8 @@ export interface PlayerSettings {
   cameraNudges: CameraNudges;
   /** Controller stick / trigger shaping (the sensitivity presets fill in its rate and dead zone) */
   padTuning: PadTuning;
+  /** DualSense over WebHID: adaptive triggers, rumble, HD haptics (USB) and lights */
+  dualSense: DualSenseSettings;
   /** Keyboard pedal / steering ramps and the half-throttle key */
   keyboardTuning: KeyboardTuning;
   hud: HudSettings;
@@ -74,6 +87,58 @@ export interface PlayerSettings {
   conditions: SessionConditions;
   /** Starred and recently chosen cars and circuits (the car and circuit browsers) */
   library: ContentLibrary;
+  /** Master volume and mute (Settings > Audio) */
+  audio: AudioSettings;
+  /** Units, UI scale, colour palette and how much of Settings is shown (Settings > Display > Interface) */
+  ui: InterfaceSettings;
+}
+
+export interface AudioSettings {
+  /** Master volume, 0 to 1 */
+  volume: number;
+  /** The tyres' roar and rumble on the kerbs, 0 to 1.5 of their own level */
+  kerbs: number;
+  /** Silences everything without losing the volume (the Mute key toggles it) */
+  muted: boolean;
+  /** The music's level in the menus, in a race (from the lights out to the flag) and over the results and replays, 0 to 1 */
+  menuMusic: number;
+  raceMusic: number;
+  replayMusic: number;
+  /** Soundtrack tracks switched off (ids from music-catalog.ts) */
+  musicOff: string[];
+  /** The music alone is off (the title screen's music button), every other sound playing on */
+  musicMuted: boolean;
+}
+
+export type SpeedUnit = "kmh" | "mph";
+export type TemperatureUnit = "c" | "f";
+export type PressureUnit = "bar" | "psi";
+
+export interface UnitSettings {
+  speed: SpeedUnit;
+  temperature: TemperatureUnit;
+  pressure: PressureUnit;
+}
+
+/**
+ * Which colours carry gain / loss, cold / hot and the like. "standard" is the palette of docs/DESIGN.md; the others
+ * swap the pairs that the named colour-vision type confuses. The volt cursor never changes.
+ */
+export type ColorPalette = "standard" | "protan" | "deutan" | "tritan";
+export const COLOR_PALETTES: readonly ColorPalette[] = ["standard", "protan", "deutan", "tritan"];
+
+/** Simple shows the short list of settings; Advanced shows every row */
+export type SettingsDetail = "simple" | "advanced";
+
+export const UI_SCALE_MIN = 0.8;
+export const UI_SCALE_MAX = 1.5;
+
+export interface InterfaceSettings {
+  units: UnitSettings;
+  /** Multiplies the automatic big-screen scale (src/lib/ui-zoom.ts); 1 = as the screen size decides */
+  scale: number;
+  palette: ColorPalette;
+  detail: SettingsDetail;
 }
 
 export type LibraryKind = "cars" | "circuits";
@@ -88,7 +153,7 @@ export interface ContentLibrary {
   recent: Record<LibraryKind, string[]>;
 }
 
-export interface PadTuning extends DeviceAssistTuning {
+export interface PadTuning extends DeviceAssistTuning, PadPedalTuning {
   /** Stick smoothing rate multiplier of the steering assist (higher = quicker) */
   steeringRate: number;
   /** Inner stick dead zone (0..0.3) */
@@ -97,7 +162,7 @@ export interface PadTuning extends DeviceAssistTuning {
   outerDeadzone: number;
   /** Stick response curve: 1 linear, > 1 finer near centre (0.5..3) */
   linearity: number;
-  /** Trigger response curves: 1 linear, > 1 finer at light pressure (0.5..3) */
+  /** Throttle / brake response curves, whatever they are read from: 1 linear, > 1 finer at light pressure (0.5..3) */
   throttleGamma: number;
   brakeGamma: number;
   /** Impulse-trigger rumble (Xbox): ABS in LT, wheelspin in RT */
@@ -105,6 +170,49 @@ export interface PadTuning extends DeviceAssistTuning {
   /** Buzz LT / RT as the tyres near their peak slip with ABS / traction control on too (off: only with them off) */
   triggerSlipAlwaysOn: boolean;
 }
+
+/** What the lightbar shows while driving: the revs (green to red, flashing at the shift), the driver colour, nothing */
+export type DualSenseLightbar = "revs" | "driver" | "off";
+
+export interface DualSenseSettings {
+  /** Brake and throttle resistance, with ABS, lock-up, wheelspin and traction control felt in L2 / R2 */
+  adaptiveTriggers: boolean;
+  /** Trigger resistance and vibration 0..1 */
+  triggerStrength: number;
+  /** Rumble emulation strength 0..1.5 (Bluetooth, or USB with HD haptics off) */
+  rumbleStrength: number;
+  /** HD haptics through the pad's USB audio (asks the browser to list audio devices once) */
+  hdHaptics: boolean;
+  /** HD haptics level 0..1.5 */
+  hapticStrength: number;
+  /** Engine vibration in the HD haptics 0..1 */
+  engineHaptics: number;
+  lightbar: DualSenseLightbar;
+  /** The five player LEDs as rev lights */
+  revLeds: boolean;
+  /** Gyro steering: tilt the pad like a steering wheel, alongside the stick (WebHID only; the DualShock 4's too) */
+  gyroSteer: boolean;
+  /** Tilt for full lock, degrees each way (10..90) */
+  gyroLockDeg: number;
+  /** Response around the centre (0.5..1.5): 1 linear, below 1 calmer, above 1 sharper */
+  gyroSensitivity: number;
+}
+
+export const DUALSENSE_LIGHTBAR_MODES = ["revs", "driver", "off"] as const satisfies readonly DualSenseLightbar[];
+
+export const DEFAULT_DUALSENSE_SETTINGS: DualSenseSettings = {
+  adaptiveTriggers: true,
+  triggerStrength: 0.6,
+  rumbleStrength: 1,
+  hdHaptics: false,
+  hapticStrength: 1,
+  engineHaptics: 0.3,
+  lightbar: "revs",
+  revLeds: true,
+  gyroSteer: false,
+  gyroLockDeg: 35,
+  gyroSensitivity: 1,
+};
 
 export interface KeyboardTuning extends DeviceAssistTuning {
   /** Pedal ramp times 0 → 1 (s) */
@@ -115,6 +223,8 @@ export interface KeyboardTuning extends DeviceAssistTuning {
   steerReturnS: number;
   /** Throttle while the half-throttle key is held with throttle (0.2..0.9) */
   halfThrottle: number;
+  /** Brake while the half-brake key is held (0.2..0.9) */
+  halfBrake: number;
   /** With traction control off, eases the throttle key back while the rear tyres pass their grip */
   exitAssist: boolean;
   /** With ABS off, eases the brake key back while the tyres pass their grip */
@@ -125,10 +235,11 @@ export interface KeyboardTuning extends DeviceAssistTuning {
 
 /**
  * In-race HUD style: Broadcast (TV graphics), Wheel Dash (steering-wheel screen), Telemetry (the dash
- * plus tyres, channels and inputs), or the earlier Classic layout and its Minimal cut.
+ * plus tyres, channels and inputs), the earlier Classic layout and its Minimal cut, or a third-party layout
+ * (the list and the credits: hud-layouts.ts)
  */
-export type HudPreset = "broadcast" | "dash" | "telemetry" | "classic" | "minimal";
-export const HUD_PRESETS: readonly HudPreset[] = ["broadcast", "dash", "telemetry", "classic", "minimal"];
+export type { HudPreset } from "@/lib/settings/hud-layouts";
+export { HUD_PRESETS } from "@/lib/settings/hud-layouts";
 
 export interface HudSettings {
   preset: HudPreset;
@@ -140,7 +251,7 @@ export interface HudSettings {
   deltaBar: boolean;
   /** Card with sectors, corner speeds and the theoretical best after every lap */
   lapSummary: boolean;
-  /** HUD rear-view mirror: auto = onboard views without wing mirrors on screen */
+  /** HUD rear-view mirror: auto = with other cars about (a race, other players), in onboard views without wing mirrors on screen */
   virtualMirror: VirtualMirrorMode;
   /** Timing tower gaps: to the car ahead (interval) or to the leader */
   towerGaps: "interval" | "leader";
@@ -161,7 +272,15 @@ export interface HudSettings {
    * does, and turns it a little toward the corner; "static" bolts it to the car with no head motion or shake.
    */
   headMovement: "natural" | "static";
+  /**
+   * The lap board while driving (large screens, outside races): folded to one line and opened for a few seconds after
+   * each lap ("lapEnd"), always open, or always folded
+   */
+  boardWidget: BoardWidgetMode;
 }
+
+export type BoardWidgetMode = "lapEnd" | "open" | "closed";
+export const BOARD_WIDGET_MODES: readonly BoardWidgetMode[] = ["lapEnd", "open", "closed"];
 
 export type VirtualMirrorMode = "auto" | "always" | "off";
 
@@ -171,7 +290,19 @@ export interface GraphicsSettings {
   quality: GraphicsQuality;
   /** Render resolution relative to the screen (0.5..1.5) */
   renderScale: number;
+  /** The drivers' bodies and arms in the cars that have them (their helmets always show) */
+  driverBody: boolean;
+  /**
+   * Lower the graphics a step at a time when the frames stay slow while driving (render/adaptive-quality.ts); on by
+   * default on touch screens, whose phones slow down as they heat up
+   */
+  autoQuality: boolean;
+  /** Frames drawn per second at most: 0 = as many as the screen shows, 30 = every other frame of a 60 Hz screen */
+  fpsCap: FpsCap;
 }
+
+export type FpsCap = 0 | 30;
+export const FPS_CAPS: readonly FpsCap[] = [0, 30];
 
 export type TouchMode = "auto" | "on" | "off";
 
@@ -203,6 +334,9 @@ export const DEFAULT_PAD_TUNING: PadTuning = {
   linearity: 1,
   throttleGamma: 1,
   brakeGamma: 1,
+  // The triggers until the player picks the right stick (Buttons card, or the GT classic layout)
+  pedalSources: DEFAULT_PAD_PEDAL_SOURCES,
+  stickPedalDeadzone: 0.1,
   triggerRumble: true,
   triggerSlipAlwaysOn: false,
   ...DEFAULT_DEVICE_ASSIST_TUNING,
@@ -214,6 +348,7 @@ export const DEFAULT_KEYBOARD_TUNING: KeyboardTuning = {
   steerRiseS: KB_STEER_RISE_S,
   steerReturnS: KB_STEER_RETURN_S,
   halfThrottle: 0.5,
+  halfBrake: 0.5,
   exitAssist: true,
   brakeAssist: true,
   pedalAssistStrength: 0.5,
@@ -228,6 +363,7 @@ export const PAD_FINE_TUNING_FIELDS = [
   "linearity",
   "throttleGamma",
   "brakeGamma",
+  "stickPedalDeadzone",
   "triggerRumble",
   "triggerSlipAlwaysOn",
 ] as const satisfies readonly (keyof PadTuning)[];
@@ -237,6 +373,7 @@ export const KEYBOARD_FEEL_FIELDS = [
   "steerRiseS",
   "steerReturnS",
   "halfThrottle",
+  "halfBrake",
 ] as const satisfies readonly (keyof KeyboardTuning)[];
 export const KEYBOARD_PEDAL_HELP_FIELDS = ["pedalAssistStrength", "exitAssist", "brakeAssist"] as const satisfies readonly (keyof KeyboardTuning)[];
 /** The pause menu's rows under its steering assist card */
@@ -260,7 +397,7 @@ export const resetKeyboardTuning = (tuning: KeyboardTuning, fields: readonly (ke
   withDefaults(tuning, DEFAULT_KEYBOARD_TUNING, fields);
 
 export const DEFAULT_HUD_SETTINGS: HudSettings = {
-  preset: "broadcast",
+  preset: DEFAULT_HUD_PRESET,
   scale: 1,
   inputTrace: false,
   deltaBar: true,
@@ -275,6 +412,7 @@ export const DEFAULT_HUD_SETTINGS: HudSettings = {
   drsBeep: true,
   shiftBeep: false,
   headMovement: "natural",
+  boardWidget: "lapEnd",
 };
 
 export const DEFAULT_CONTENT_LIBRARY: ContentLibrary = {
@@ -286,9 +424,52 @@ export const LIBRARY_FAVORITES_MAX = 256;
 export const LIBRARY_RECENT_MAX = 12;
 const LIBRARY_ID_MAX_LENGTH = 64;
 
-export const DEFAULT_GRAPHICS_SETTINGS: GraphicsSettings = { quality: "high", renderScale: 1 };
+/** The graphics defaults the page is prerendered with (no device to ask on the server); see defaultGraphicsSettings */
+export const DEFAULT_GRAPHICS_SETTINGS: GraphicsSettings = {
+  quality: "high",
+  renderScale: 1,
+  driverBody: false,
+  autoQuality: false,
+  fpsCap: 0,
+};
+
+/**
+ * The graphics a player starts on until they pick their own: on a touch screen (phones and tablets) Medium (no bloom,
+ * half the MSAA, fewer trees) with automatic quality on, elsewhere High with it off. It asks the device, so call it in
+ * the browser (on the server it is DEFAULT_GRAPHICS_SETTINGS); a saved choice always wins over it.
+ *
+ * Automatic quality is off on desktops: their GPUs don't slow down with heat the way a phone's do, their players pick
+ * a preset on purpose, and a desktop's stutters mostly come from stalls (shader compiles, uploads, Firefox's startup)
+ * that a lower resolution doesn't cure. A laptop that struggles can switch it on.
+ *
+ * The frame rate is the screen's everywhere: 60 fps feels better while a phone is cool, and the step-down handles the
+ * heat; 30 fps is the player's choice for long sessions.
+ */
+export function defaultGraphicsSettings(): GraphicsSettings {
+  const touch = isTouchDevice();
+  return { ...DEFAULT_GRAPHICS_SETTINGS, quality: touch ? "medium" : DEFAULT_GRAPHICS_SETTINGS.quality, autoQuality: touch };
+}
 
 export const DEFAULT_TOUCH_SETTINGS: TouchSettings = { mode: "auto", tiltSteer: false, tiltRangeDeg: 30 };
+
+/** The race music 12 dB under the menus' (a quarter of the level), under the engine and the tyres */
+export const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
+  volume: 1,
+  kerbs: 1,
+  muted: false,
+  menuMusic: 0.8,
+  raceMusic: 0.2,
+  replayMusic: 0.8,
+  musicOff: [],
+  musicMuted: false,
+};
+
+export const DEFAULT_INTERFACE_SETTINGS: InterfaceSettings = {
+  units: { speed: "kmh", temperature: "c", pressure: "bar" },
+  scale: 1,
+  palette: "standard",
+  detail: "simple",
+};
 
 export const DEFAULT_DRIVER_PROFILE: DriverProfile = { name: "Driver", code: "DRV", color: "#E10600", generated: false, autoUpload: true };
 
@@ -314,12 +495,12 @@ export const codeFromName = (name: string) => sanitizeDriverCode(name);
 
 /** Three upper-case letters from any input ("" → the default code) */
 export const sanitizeDriverCode = (v: string) => {
-  const letters = v.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3);
+  const letters = v.normalize("NFD").toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3);
   return letters.length === 3 ? letters : (letters + DEFAULT_DRIVER_PROFILE.code).slice(0, 3);
 };
 /** Printable name of at most 16 characters */
 export const sanitizeDriverName = (v: string) =>
-  v.replace(/[\u0000-\u001f\u007f<>]/g, "").trim().slice(0, 16) || DEFAULT_DRIVER_PROFILE.name;
+  Array.from(v.replace(/[\u0000-\u001f\u007f<>]/g, "").trim()).slice(0, 16).join("") || DEFAULT_DRIVER_PROFILE.name;
 export const sanitizeColor = (v: string) => (/^#[0-9a-fA-F]{6}$/.test(v) ? v.toUpperCase() : DEFAULT_DRIVER_PROFILE.color);
 
 export const SETTINGS_STORAGE_KEY = "bugesera.settings.v1";
@@ -348,6 +529,7 @@ export const DEFAULT_PLAYER_SETTINGS: PlayerSettings = {
   cockpitFovDeg: null,
   cameraNudges: {},
   padTuning: DEFAULT_PAD_TUNING,
+  dualSense: DEFAULT_DUALSENSE_SETTINGS,
   keyboardTuning: DEFAULT_KEYBOARD_TUNING,
   hud: DEFAULT_HUD_SETTINGS,
   graphics: DEFAULT_GRAPHICS_SETTINGS,
@@ -359,7 +541,17 @@ export const DEFAULT_PLAYER_SETTINGS: PlayerSettings = {
   realism: "full",
   conditions: DEFAULT_SESSION_CONDITIONS,
   library: DEFAULT_CONTENT_LIBRARY,
+  audio: DEFAULT_AUDIO_SETTINGS,
+  ui: DEFAULT_INTERFACE_SETTINGS,
 };
+
+/**
+ * DEFAULT_PLAYER_SETTINGS with this device's graphics (defaultGraphicsSettings): what a first visit, a reset or a
+ * row's default means in the browser. The other groups are the shared defaults themselves, so copy before editing.
+ */
+export function defaultPlayerSettings(): PlayerSettings {
+  return { ...DEFAULT_PLAYER_SETTINGS, graphics: defaultGraphicsSettings() };
+}
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => Boolean(v) && typeof v === "object" && !Array.isArray(v);
@@ -392,8 +584,11 @@ function parseKeys(v: unknown): KeyBindings {
 }
 
 function parsePadButtons(v: unknown): PadButtonBindings {
+  // No saved map: a new player, on today's default
   if (!isObj(v)) return { ...DEFAULT_PAD_BUTTONS };
-  const out = { ...DEFAULT_PAD_BUTTONS };
+  // A saved map was made on Bumper shift or from it: an action it lacks takes that layout's button, not GT style's
+  const base = BUMPER_SHIFT_BUTTONS;
+  const out = { ...base };
   const claimed = new Set<number>();
   const saved = new Set<string>();
   for (const { id } of PAD_ACTIONS) {
@@ -405,7 +600,7 @@ function parsePadButtons(v: unknown): PadButtonBindings {
   }
   // Same for the controller: a default button the player has given to another action stays unbound here
   for (const { id } of PAD_ACTIONS) {
-    const d = DEFAULT_PAD_BUTTONS[id];
+    const d = base[id];
     if (!saved.has(id) && d !== null && claimed.has(d)) out[id] = null;
   }
   return out;
@@ -439,6 +634,7 @@ function parseWheel(v: unknown): WheelSettings {
     steer: parseAxis(v.steer),
     throttle: parsePedal(v.throttle),
     brake: parsePedal(v.brake),
+    clutch: parsePedal(v.clutch),
     brakeGamma: num(v.brakeGamma, 0.5, 3, d.brakeGamma),
     steerDeadzone: num(v.steerDeadzone, 0, 0.2, d.steerDeadzone),
     steerSmoothingS: num(v.steerSmoothingS, 0, 0.2, d.steerSmoothingS),
@@ -488,6 +684,31 @@ function parsePerCarFfb(v: unknown): WheelSettings["ffbPerCar"] {
   return out;
 }
 
+/** A saved pedal source, or undefined when it is not one */
+function parsePedalSource(v: unknown): PadPedalSource | null | undefined {
+  if (v === null) return null;
+  if (!isObj(v)) return undefined;
+  if (v.kind === "button" && index(v.button)) return { kind: "button", button: v.button as number };
+  if (v.kind === "axis" && index(v.axis) && (v.sign === -1 || v.sign === 1)) return { kind: "axis", axis: v.axis as number, sign: v.sign };
+  return undefined;
+}
+
+/**
+ * Each pedal's saved source; a missing or broken one takes its default. A pedal with a source by default (the throttle,
+ * the brake) cannot be saved off the controller: null there takes the default too
+ */
+function parsePedalSources(v: unknown): PadPedalSources {
+  const out = { ...DEFAULT_PAD_PEDAL_SOURCES };
+  if (!isObj(v)) return out;
+  for (const p of PAD_PEDALS) {
+    const source = parsePedalSource(v[p]);
+    if (source !== undefined && (source !== null || DEFAULT_PAD_PEDAL_SOURCES[p] === null)) out[p] = source;
+  }
+  // A clutch on the throttle's or the brake's own source would open the clutch with every press of that pedal
+  if (out.clutch && (samePedalSource(out.clutch, out.throttle) || samePedalSource(out.clutch, out.brake))) out.clutch = null;
+  return out;
+}
+
 function parsePadTuning(v: unknown): PadTuning {
   const d = DEFAULT_PAD_TUNING;
   if (!isObj(v)) return structuredClone(d);
@@ -498,9 +719,30 @@ function parsePadTuning(v: unknown): PadTuning {
     linearity: num(v.linearity, 0.5, 3, d.linearity),
     throttleGamma: num(v.throttleGamma, 0.5, 3, d.throttleGamma),
     brakeGamma: num(v.brakeGamma, 0.5, 3, d.brakeGamma),
+    // Saves from before pedal sources have none: the triggers, as they drove
+    pedalSources: parsePedalSources(v.pedalSources),
+    stickPedalDeadzone: num(v.stickPedalDeadzone, 0, 0.3, d.stickPedalDeadzone),
     triggerRumble: bool(v.triggerRumble, d.triggerRumble),
     triggerSlipAlwaysOn: bool(v.triggerSlipAlwaysOn, d.triggerSlipAlwaysOn),
     ...sanitizeAssistTuning(v),
+  };
+}
+
+function parseDualSense(v: unknown): DualSenseSettings {
+  const d = DEFAULT_DUALSENSE_SETTINGS;
+  if (!isObj(v)) return structuredClone(d);
+  return {
+    adaptiveTriggers: bool(v.adaptiveTriggers, d.adaptiveTriggers),
+    triggerStrength: num(v.triggerStrength, 0, 1, d.triggerStrength),
+    rumbleStrength: num(v.rumbleStrength, 0, 1.5, d.rumbleStrength),
+    hdHaptics: bool(v.hdHaptics, d.hdHaptics),
+    hapticStrength: num(v.hapticStrength, 0, 1.5, d.hapticStrength),
+    engineHaptics: num(v.engineHaptics, 0, 1, d.engineHaptics),
+    lightbar: oneOf(v.lightbar, DUALSENSE_LIGHTBAR_MODES, d.lightbar),
+    revLeds: bool(v.revLeds, d.revLeds),
+    gyroSteer: bool(v.gyroSteer, d.gyroSteer),
+    gyroLockDeg: num(v.gyroLockDeg, GYRO_LOCK_MIN_DEG, GYRO_LOCK_MAX_DEG, d.gyroLockDeg),
+    gyroSensitivity: num(v.gyroSensitivity, GYRO_SENSITIVITY_MIN, GYRO_SENSITIVITY_MAX, d.gyroSensitivity),
   };
 }
 
@@ -513,6 +755,7 @@ function parseKeyboardTuning(v: unknown): KeyboardTuning {
     steerRiseS: num(v.steerRiseS, 0.05, 1, d.steerRiseS),
     steerReturnS: num(v.steerReturnS, 0.05, 1, d.steerReturnS),
     halfThrottle: num(v.halfThrottle, 0.2, 0.9, d.halfThrottle),
+    halfBrake: num(v.halfBrake, 0.2, 0.9, d.halfBrake),
     exitAssist: bool(v.exitAssist, d.exitAssist),
     brakeAssist: bool(v.brakeAssist, d.brakeAssist),
     pedalAssistStrength: num(v.pedalAssistStrength, 0, 1, d.pedalAssistStrength),
@@ -524,8 +767,9 @@ function parseHud(v: unknown): HudSettings {
   const d = DEFAULT_HUD_SETTINGS;
   if (!isObj(v)) return structuredClone(d);
   return {
-    // Older saves: "full" (the old default) moves to the new default, "engineer" to Telemetry
-    preset: v.preset === "engineer" ? "telemetry" : oneOf(v.preset, HUD_PRESETS, d.preset),
+    // Older saves: "full" (the old default) moves to the new default, "engineer" to Telemetry; a layout this build
+    // doesn't have (a newer build's, a removed one) to Broadcast
+    preset: parseHudPreset(v.preset),
     scale: num(v.scale, 0.75, 1.5, d.scale),
     inputTrace: bool(v.inputTrace, d.inputTrace),
     deltaBar: bool(v.deltaBar, d.deltaBar),
@@ -540,15 +784,21 @@ function parseHud(v: unknown): HudSettings {
     shiftBeep: bool(v.shiftBeep, d.shiftBeep),
     // Older saves: Neck FX switched off asked for a still camera
     headMovement: oneOf(v.headMovement, ["natural", "static"] as const, v.neckFx === false ? "static" : d.headMovement),
+    boardWidget: oneOf(v.boardWidget, BOARD_WIDGET_MODES, d.boardWidget),
   };
 }
 
 function parseGraphics(v: unknown): GraphicsSettings {
-  const d = DEFAULT_GRAPHICS_SETTINGS;
-  if (!isObj(v)) return structuredClone(d);
+  // A save without graphics (or without a valid preset) gets this device's default; a saved preset is kept
+  const d = defaultGraphicsSettings();
+  if (!isObj(v)) return d;
   return {
     quality: oneOf(v.quality, ["low", "medium", "high"] as const, d.quality),
     renderScale: num(v.renderScale, 0.5, 1.5, d.renderScale),
+    driverBody: bool(v.driverBody, d.driverBody),
+    // Saves from before these two take this device's defaults
+    autoQuality: bool(v.autoQuality, d.autoQuality),
+    fpsCap: FPS_CAPS.includes(v.fpsCap as FpsCap) ? (v.fpsCap as FpsCap) : d.fpsCap,
   };
 }
 
@@ -559,6 +809,37 @@ function parseTouch(v: unknown): TouchSettings {
     mode: oneOf(v.mode, ["auto", "on", "off"] as const, d.mode),
     tiltSteer: bool(v.tiltSteer, d.tiltSteer),
     tiltRangeDeg: num(v.tiltRangeDeg, 10, 60, d.tiltRangeDeg),
+  };
+}
+
+function parseAudio(v: unknown): AudioSettings {
+  const d = DEFAULT_AUDIO_SETTINGS;
+  if (!isObj(v)) return { ...d, musicOff: [] };
+  return {
+    volume: num(v.volume, 0, 1, d.volume),
+    kerbs: num(v.kerbs, 0, 1.5, d.kerbs),
+    muted: bool(v.muted, d.muted),
+    menuMusic: num(v.menuMusic, 0, 1, d.menuMusic),
+    raceMusic: num(v.raceMusic, 0, 1, d.raceMusic),
+    replayMusic: num(v.replayMusic, 0, 1, d.replayMusic),
+    musicOff: Array.isArray(v.musicOff) ? [...new Set(v.musicOff.filter((id) => isStr(id) && MUSIC_TRACK_IDS.has(id)))] : [],
+    musicMuted: bool(v.musicMuted, d.musicMuted),
+  };
+}
+
+export function parseInterface(v: unknown): InterfaceSettings {
+  const d = DEFAULT_INTERFACE_SETTINGS;
+  if (!isObj(v)) return structuredClone(d);
+  const units = isObj(v.units) ? v.units : {};
+  return {
+    units: {
+      speed: oneOf(units.speed, ["kmh", "mph"] as const, d.units.speed),
+      temperature: oneOf(units.temperature, ["c", "f"] as const, d.units.temperature),
+      pressure: oneOf(units.pressure, ["bar", "psi"] as const, d.units.pressure),
+    },
+    scale: num(v.scale, UI_SCALE_MIN, UI_SCALE_MAX, d.scale),
+    palette: oneOf(v.palette, COLOR_PALETTES, d.palette),
+    detail: oneOf(v.detail, ["simple", "advanced"] as const, d.detail),
   };
 }
 
@@ -619,7 +900,7 @@ export function pushLibraryRecent(lib: ContentLibrary, kind: LibraryKind, id: st
 export function parsePlayerSettings(raw: unknown): PlayerSettings {
   const d = DEFAULT_PLAYER_SETTINGS;
   // A copy: handing out the shared defaults would let any in-place edit corrupt them for the rest of the session
-  if (!isObj(raw)) return structuredClone(d);
+  if (!isObj(raw)) return structuredClone(defaultPlayerSettings());
   return {
     device: oneOf(raw.device, ["keyboard", "controller", "wheel"] as const, d.device),
     keys: parseKeys(raw.keys),
@@ -646,6 +927,7 @@ export function parsePlayerSettings(raw: unknown): PlayerSettings {
           steeringRate: PAD_SENSITIVITY[oneOf(raw.padSensitivity, Object.keys(PAD_SENSITIVITY) as PadSensitivity[], d.padSensitivity)].steeringRate,
           deadzone: PAD_SENSITIVITY[oneOf(raw.padSensitivity, Object.keys(PAD_SENSITIVITY) as PadSensitivity[], d.padSensitivity)].deadzone,
         },
+    dualSense: parseDualSense(raw.dualSense),
     keyboardTuning: parseKeyboardTuning(raw.keyboardTuning),
     hud: parseHud(raw.hud),
     graphics: parseGraphics(raw.graphics),
@@ -657,11 +939,13 @@ export function parsePlayerSettings(raw: unknown): PlayerSettings {
     realism: oneOf(raw.realism, SIM_REALISM_LEVELS, d.realism),
     conditions: sanitizeConditions(raw.conditions),
     library: parseLibrary(raw.library),
+    audio: parseAudio(raw.audio),
+    ui: parseInterface(raw.ui),
   };
 }
 
 export function loadPlayerSettings(): PlayerSettings {
-  let settings = DEFAULT_PLAYER_SETTINGS;
+  let settings = defaultPlayerSettings();
   let rawProfile: unknown = undefined;
   try {
     const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
@@ -727,15 +1011,15 @@ export function saveOnboarded() {
 const CAR_STORAGE_KEY = "bugesera.vehicle";
 const RUMBLE_STORAGE_KEY = "bugesera.rumble";
 
-/** The car to drive: `?car=` in the URL, else the last choice, else the VF26 */
+/** The car to drive: `?car=` in the URL, else the last choice, else the LC26 */
 export function loadCarChoice(): CarId {
   try {
     const fromUrl = new URLSearchParams(window.location.search).get("car");
     const linked = resolveCarId(fromUrl);
     if (linked) return linked;
-    return resolveCarId(localStorage.getItem(CAR_STORAGE_KEY)) ?? "vf26";
+    return resolveCarId(localStorage.getItem(CAR_STORAGE_KEY)) ?? "lc26";
   } catch {
-    return "vf26";
+    return "lc26";
   }
 }
 

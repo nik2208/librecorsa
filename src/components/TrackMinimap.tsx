@@ -2,13 +2,23 @@
 
 import React, { useMemo } from "react";
 import type { CarTelemetry } from "@/types/f1";
-import { type BuiltTrackData, DEFAULT_TRACK_ID, TURN_METADATA } from "@/lib/track-data";
+import { type BuiltTrackData, DEFAULT_TRACK_ID, inDeadZone, TURN_METADATA } from "@/lib/track-data";
 import { getTrackInfo } from "@/lib/track-registry";
 
 /** Elevation profile size (SVG units): the profile, its viewBox and the progress dot all use it */
 const ELEV_W = 252;
 const ELEV_H = 44;
-import { HUD_CYAN, HUD_GLASS, HUD_LBL, HUD_PINK, HUD_RED, HUD_VOLT, HUD_WELL } from "./hud/hud-format";
+import { HUD_CYAN, HUD_GLASS, HUD_LBL, HUD_PINK, HUD_VOLT, HUD_WELL } from "./hud/hud-format";
+import { useUnits } from "@/lib/settings/ui-prefs";
+import { DISTANCE_LABEL, distanceIn, HEIGHT_LABEL, heightIn } from "@/lib/settings/units";
+
+/**
+ * Turn numbers drawn in the SVG: the 280 × 200 view is drawn 150 px tall (0.75 px per unit), so 12 units are 9 px on
+ * screen, the HUD's floor
+ */
+const MAP_FONT = 12;
+/** Labels under the elevation profile: the HUD label, tracked tighter so three fit on one line */
+const ELEV_LBL = `${HUD_LBL} tracking-[0.06em]`;
 
 const SECTOR_LEGEND = [
   ["Sector 1", HUD_CYAN],
@@ -28,6 +38,7 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
   onSelectTurn,
 }) => {
   const trackInfo = getTrackInfo(track.id ?? DEFAULT_TRACK_ID);
+  const units = useUnits();
 
   const {
     svgData,
@@ -37,8 +48,14 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
     elevationPath,
     elevationAreaPath,
     elevation,
+    profileLengthM,
   } = useMemo(() => {
-    const samples = track.samples;
+    // A point-to-point course (a hill climb): its road only, without the stretch that closes its loop; the elevation
+    // profile runs from the start line to the end of the road
+    const p2p = track.pointToPoint;
+    const samples = p2p ? track.samples.filter((s) => !inDeadZone(p2p, s.s)) : track.samples;
+    const profiled = p2p ? samples.filter((s) => s.s <= p2p.endS) : samples;
+    const profileLengthM = p2p ? p2p.endS : track.totalLengthM;
     let minX = Infinity;
     let maxX = -Infinity;
     let minZ = Infinity;
@@ -73,6 +90,8 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
     for (let i = 0; i < samples.length; i += 2) {
       const s0 = samples[i];
       const s1 = samples[(i + 2) % samples.length];
+      // An open road's ends are not joined
+      if (p2p && Math.abs(s1.s - s0.s) > 30) continue;
       const p0 = toSvg(s0.position.x, s0.position.z);
       const p1 = toSvg(s1.position.x, s1.position.z);
       const seg = `M ${p0.x.toFixed(1)} ${p0.y.toFixed(1)} L ${p1.x.toFixed(1)} ${p1.y.toFixed(1)}`;
@@ -97,20 +116,20 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
 
     const elevW = ELEV_W;
     const elevH = ELEV_H;
-    let low = samples[0];
-    let high = samples[0];
-    for (const s of samples) {
+    let low = profiled[0];
+    let high = profiled[0];
+    for (const s of profiled) {
       if (s.position.y < low.position.y) low = s;
       if (s.position.y > high.position.y) high = s;
     }
     const yMin = low.position.y;
     const ySpan = Math.max(1, high.position.y - yMin);
     const toElevY = (y: number) => elevH - ((y - yMin) / ySpan) * (elevH - 8) - 4;
-    const toElevX = (s: number) => (s / track.totalLengthM) * elevW;
+    const toElevX = (s: number) => (s / profileLengthM) * elevW;
     const turnAt = (s: (typeof samples)[number]) => (s.turnNumber ? `T${s.turnNumber} ` : "");
     const elevPts: string[] = [];
-    for (let i = 0; i < samples.length; i += 6) {
-      const s = samples[i];
+    for (let i = 0; i < profiled.length; i += 6) {
+      const s = profiled[i];
       const ex = toElevX(s.s);
       const ey = toElevY(s.position.y);
       elevPts.push(
@@ -134,41 +153,40 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
       elevation: {
         toY: toElevY,
         span: Math.round(ySpan),
-        sfLabel: `S/F ${Math.round(samples[0].position.y - yMin)}m`,
-        low: { x: toElevX(low.s), label: `${turnAt(low)}+0m` },
-        high: { x: toElevX(high.s), label: `${turnAt(high)}+${Math.round(ySpan)}m` },
+        // Heights in metres here; written in the player's unit where they are shown
+        sf: { word: p2p ? "Start" : "S/F", m: track.getSampleAtDistance(0).position.y - yMin },
+        low: { x: toElevX(low.s), turn: turnAt(low) },
+        high: { x: toElevX(high.s), turn: turnAt(high), m: ySpan },
       },
+      profileLengthM,
     };
   }, [track]);
 
   const currentSample = track.getSampleAtDistance(telemetry.trackDistanceM);
   const carSvg = carPoint(currentSample.position.x, currentSample.position.z);
-  const elevProgressX = (telemetry.trackDistanceM / track.totalLengthM) * ELEV_W;
+  const elevProgressX = Math.min(1, telemetry.trackDistanceM / profileLengthM) * ELEV_W;
   const elevProgressY = elevation.toY(telemetry.trackElevationM);
 
   // Elevation extremes, in lap order for the label row under the profile
   const lowFirst = elevation.low.x <= elevation.high.x;
-  const lowMark = <span className={`${HUD_LBL} !text-[8px]`}>{elevation.low.label}</span>;
-  const highMark = (
-    <span className={`${HUD_LBL} !text-[8px]`} style={{ color: HUD_VOLT }}>
-      {elevation.high.label}
-    </span>
-  );
+  // Heights and altitude in metres, or feet with the mph units
+  const hUnit = HEIGHT_LABEL[units.speed];
+  const height = (m: number, digits = 0) => `${heightIn(m, units.speed).toFixed(digits)} ${hUnit}`;
+  const lowMark = <span className={ELEV_LBL}>{`${elevation.low.turn}+0 ${hUnit}`}</span>;
+  const highMark = <span className={`${ELEV_LBL} text-lc-chalk`}>{`${elevation.high.turn}+${height(elevation.high.m)}`}</span>;
 
   return (
     <section
       aria-label="Circuit map"
-      className={`flex w-[290px] flex-col rounded-[22px] p-3.5 text-[#F5F7FA] select-none ${HUD_GLASS}`}
+      className={`flex w-72.5 flex-col rounded-lc-card p-3.5 text-lc-chalk select-none ${HUD_GLASS}`}
     >
       {/* Circuit name, country, length and turns */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="lc-title line-clamp-2 text-[14px] leading-tight">{trackInfo.name}</div>
-          <p className={`${HUD_LBL} mt-0.5`}>
-            {trackInfo.country} · {(track.totalLengthM / 1000).toFixed(2)} km · {TURN_METADATA.length} turns
-          </p>
-        </div>
-        <span className="lc-data shrink-0 rounded-full bg-[#CCFF00] px-[7px] py-0.5 text-[9px] text-[#08090D]">GPS</span>
+      <div className="min-w-0">
+        <div className="lc-title line-clamp-2 text-[14px] leading-tight">{trackInfo.name}</div>
+        <p className={`${HUD_LBL} mt-0.5`}>
+          {trackInfo.country} · {distanceIn((track.pointToPoint?.finishS ?? track.totalLengthM) / 1000, units.speed).toFixed(2)}{" "}
+          {DISTANCE_LABEL[units.speed]} · {TURN_METADATA.length} turns
+        </p>
       </div>
 
       {/* Circuit map: sector 1 cyan, sector 2 volt, sector 3 pink */}
@@ -177,7 +195,7 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
         <path
           d={`${svgData.s1} ${svgData.s2} ${svgData.s3}`}
           fill="none"
-          stroke="#1B1F2B"
+          stroke="var(--color-lc-titanium)"
           strokeWidth="11"
           strokeLinecap="round"
         />
@@ -191,7 +209,7 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
           y1={startFinishPoint.y - 7}
           x2={startFinishPoint.x}
           y2={startFinishPoint.y + 7}
-          stroke="#F5F7FA"
+          stroke="var(--color-lc-chalk)"
           strokeWidth="3"
         />
 
@@ -207,17 +225,17 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
               <circle
                 cx={tp.x}
                 cy={tp.y}
-                r={isCurrent ? 7.4 : 6.4}
-                fill={isCurrent ? HUD_VOLT : "#11131A"}
-                stroke={isCurrent ? "#08090D" : "#5B6275"}
+                r={isCurrent ? 10.4 : 9.6}
+                fill={isCurrent ? HUD_VOLT : "var(--color-lc-carbon)"}
+                stroke={isCurrent ? "var(--color-lc-void)" : "var(--color-lc-dim)"}
                 strokeWidth={isCurrent ? 1.4 : 1}
               />
               <text
                 x={tp.x}
-                y={tp.y + 2.4}
+                y={tp.y + 4.2}
                 textAnchor="middle"
-                fill={isCurrent ? "#08090D" : "#F5F7FA"}
-                fontSize="6.6"
+                fill={isCurrent ? "var(--color-lc-void)" : "var(--color-lc-chalk)"}
+                fontSize={MAP_FONT}
                 fontWeight="800"
                 fontFamily="var(--font-geist-mono), ui-monospace, monospace"
               >
@@ -227,19 +245,22 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
           );
         })}
 
-        {/* Opponents and multiplayer peers */}
+        {/* Opponents and multiplayer peers, with a void halo round their codes so they read over the turns */}
         {(telemetry.peers ?? []).map((peer) => {
           const pSample = track.getSampleAtDistance(peer.trackDistanceM);
           const pSvg = carPoint(pSample.position.x, pSample.position.z);
           return (
             <g key={peer.peerId}>
-              <circle cx={pSvg.x} cy={pSvg.y} r="4.6" fill={peer.teamColorHex} stroke="#08090D" strokeWidth="1.4" />
+              <circle cx={pSvg.x} cy={pSvg.y} r="4.6" fill={peer.teamColorHex} stroke="var(--color-lc-void)" strokeWidth="1.4" />
               <text
                 x={pSvg.x}
-                y={pSvg.y - 6.5}
+                y={pSvg.y - 7.5}
                 textAnchor="middle"
                 fill={peer.teamColorHex}
-                fontSize="6.2"
+                stroke="var(--color-lc-void)"
+                strokeWidth={2.4}
+                paintOrder="stroke"
+                fontSize={MAP_FONT}
                 fontWeight="800"
                 fontFamily="var(--font-geist-mono), ui-monospace, monospace"
               >
@@ -250,50 +271,49 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
         })}
 
         {/* You */}
-        <circle cx={carSvg.x} cy={carSvg.y} r="6" fill={HUD_VOLT} stroke="#08090D" strokeWidth="2.4" />
+        <circle cx={carSvg.x} cy={carSvg.y} r="6" fill={HUD_VOLT} stroke="var(--color-lc-void)" strokeWidth="2.4" />
       </svg>
 
       {/* Sector legend */}
       <div className="mt-1.5 flex gap-3">
         {SECTOR_LEGEND.map(([label, color]) => (
-          <span key={label} className={`${HUD_LBL} inline-flex items-center gap-[5px]`}>
-            <span className="h-2 w-2 rounded-[3px]" style={{ backgroundColor: color }} />
+          <span key={label} className={`${HUD_LBL} inline-flex items-center gap-1.25`}>
+            <span className="size-2 rounded-xs" style={{ backgroundColor: color }} />
             {label}
           </span>
         ))}
       </div>
 
       {/* Elevation profile */}
-      <div className={`mt-2.5 rounded-[14px] p-2.5 ${HUD_WELL}`}>
+      <div className={`mt-2.5 rounded-lc-row p-2.5 ${HUD_WELL}`}>
         <div className="flex items-center justify-between gap-2">
-          <span className={HUD_LBL}>Elevation profile</span>
-          <span className="lc-data text-[12px] text-[#F5F7FA]">
+          <span className={HUD_LBL}>Elevation</span>
+          <span className="lc-data text-[12px] text-lc-chalk">
             {telemetry.trackElevationM >= 0 ? "+" : ""}
-            {telemetry.trackElevationM.toFixed(1)}m
-            <span className="ml-1 text-[#8E96AA]">Δ {elevation.span}m</span>
+            {height(telemetry.trackElevationM, 1)}
+            <span className="ml-1 text-lc-slate">Δ {height(elevation.span)}</span>
           </span>
         </div>
         <div className="mt-0.5 flex items-center justify-between">
-          <span className={`${HUD_LBL} !text-[8px]`}>ALT {telemetry.altitudeM.toFixed(0)} M</span>
-          <span className={`${HUD_LBL} !text-[8px]`}>
+          <span className={ELEV_LBL}>Alt {height(telemetry.altitudeM)}</span>
+          <span className={ELEV_LBL}>
             GRADE {telemetry.slopePercent >= 0 ? "+" : ""}
             {telemetry.slopePercent.toFixed(1)}%
           </span>
         </div>
         <svg viewBox={`0 0 ${ELEV_W} ${ELEV_H}`} className="mt-1.5 block h-11 w-full overflow-visible" aria-hidden="true">
           <defs>
-            <linearGradient id="lcElevGrad" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor={HUD_RED} stopOpacity="0.38" />
-              <stop offset="50%" stopColor={HUD_CYAN} stopOpacity="0.38" />
-              <stop offset="100%" stopColor={HUD_VOLT} stopOpacity="0.38" />
+            <linearGradient id="lcElevGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--color-lc-chalk)" stopOpacity="0.22" />
+              <stop offset="100%" stopColor="var(--color-lc-chalk)" stopOpacity="0.02" />
             </linearGradient>
           </defs>
           <path d={elevationAreaPath} fill="url(#lcElevGrad)" />
-          <path d={elevationPath} fill="none" stroke="#F5F7FA" strokeWidth="1.5" />
+          <path d={elevationPath} fill="none" stroke="var(--color-lc-chalk)" strokeWidth="1.5" />
           <circle cx={elevProgressX} cy={elevProgressY} r="4" fill={HUD_VOLT} />
         </svg>
         <div className="mt-0.5 flex items-center justify-between">
-          <span className={`${HUD_LBL} !text-[8px]`}>{elevation.sfLabel}</span>
+          <span className={ELEV_LBL}>{`${elevation.sf.word} ${height(elevation.sf.m)}`}</span>
           {lowFirst ? lowMark : highMark}
           {lowFirst ? highMark : lowMark}
         </div>

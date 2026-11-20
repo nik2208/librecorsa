@@ -1,28 +1,126 @@
 import type { CarTelemetry } from "@/types/f1";
+import type { OvertakingRules } from "@/lib/sim/overtaking-rules";
+import type { BadgeToneProp, BadgeVariant } from "@/components/ui/Badge";
+import type { IconName } from "@/components/ui/icons/registry";
 
 /** The flaps as every HUD panel shows them */
 export interface AeroReadout {
-  /** As the car's era names it: "NO DRS", "DRS OPEN" / "DRS ARMED" / "DRS", "X-MODE" / "X ARMED" / "Z-MODE" */
+  /**
+   * As the car's era names it: "NO DRS", "DRS OPEN" / "DRS ARMED" / "DRS QUEUED" / "DRS", "X-MODE" / "X ARMED" /
+   * "X QUEUED" / "Z-MODE"
+   */
   label: string;
   /** The flaps are open (X-mode, DRS open) */
   open: boolean;
   /** Shut, but may be opened here (a DRS zone the car is allowed to use) */
   armed: boolean;
+  /** Shut, with a press of the button kept for the zone the car is on or coming to: it opens them there */
+  queued: boolean;
+  /** The 2026 rules: both flaps on every straight for every car, the 1 s gap earning Overtake Mode instead */
+  straightMode: boolean;
 }
 
 /**
  * The flaps' state as the car's era names it: no DRS before 2011, rear-flap DRS from 2011 to 2025, X-mode (Straight
- * Mode) / Z-mode from 2026. The era comes from the car's overtaking rules; "armed" from the 6-DOF car's DRS channel.
+ * Mode) / Z-mode from 2026. The era comes from the car's overtaking rules; "armed" and "queued" from the 6-DOF car's
+ * DRS channels.
  */
 export function aeroReadout(t: Pick<CarTelemetry, "activeAeroMode" | "overtakingRules" | "f12026">): AeroReadout {
-  if (t.overtakingRules === "none") return { label: "NO DRS", open: false, armed: false };
+  if (t.overtakingRules === "none") return { label: "NO DRS", open: false, armed: false, queued: false, straightMode: false };
   const open = t.activeAeroMode === "X_MODE";
-  const armed = !open && t.f12026?.hasDrs === true && t.f12026.drsAvailable === true;
-  if (t.overtakingRules === "drs-rear") return { label: open ? "DRS OPEN" : armed ? "DRS ARMED" : "DRS", open, armed };
-  return { label: open ? "X-MODE" : armed ? "X ARMED" : "Z-MODE", open, armed };
+  const fitted = t.f12026?.hasDrs === true;
+  const armed = !open && fitted && t.f12026?.drsAvailable === true;
+  const queued = !open && fitted && t.f12026?.drsQueued === true;
+  if (t.overtakingRules === "drs-rear") {
+    return { label: open ? "DRS OPEN" : queued ? "DRS QUEUED" : armed ? "DRS ARMED" : "DRS", open, armed, queued, straightMode: false };
+  }
+  return {
+    label: open ? "X-MODE" : queued ? "X QUEUED" : armed ? "X ARMED" : "Z-MODE",
+    open,
+    armed,
+    queued,
+    straightMode: t.overtakingRules === "straight-mode-2026",
+  };
 }
 
 /** The label alone (see `aeroReadout`) */
 export function aeroModeLabel(t: Pick<CarTelemetry, "activeAeroMode" | "overtakingRules" | "f12026">): string {
   return aeroReadout(t).label;
+}
+
+/** What the HUD's race-control notice can be about */
+export type AeroNoticeEvent =
+  /** A DRS detection point (2011 to 2025): whether DRS was earned for its zone */
+  | { kind: "detection"; zone: string; eligible: boolean }
+  /** 2026: a stretch where both flaps may open (Straight Mode) is coming up */
+  | { kind: "straight" }
+  /** 2026, in a race: race control's Overtake Mode verdict at the detection point */
+  | { kind: "overtake"; earned: boolean }
+  /** A press of the flap button is kept for the zone ahead */
+  | { kind: "queued" };
+
+/** The notice as the HUD shows it: a badge and a line of text */
+export interface AeroNotice {
+  badge: string;
+  text: string;
+  tone: BadgeToneProp;
+  variant: BadgeVariant;
+  icon: IconName;
+}
+
+/**
+ * The notice for an event in the car's era's words, or null when that era has no such notice. A 2026 car's flaps
+ * open on every straight for every car, so it never hears "DRS (not) enabled": the 1 s gap there earns Overtake Mode
+ */
+export function aeroNotice(rules: OvertakingRules | undefined, e: AeroNoticeEvent): AeroNotice | null {
+  if (rules === "drs-rear") {
+    if (e.kind === "detection") {
+      return {
+        badge: e.zone,
+        text: e.eligible ? "DRS enabled" : "DRS not enabled",
+        tone: e.eligible ? "info" : "neutral",
+        variant: e.eligible ? "solid" : "soft",
+        icon: e.eligible ? "drsOpen" : "drsClosed",
+      };
+    }
+    if (e.kind === "queued") return { badge: "DRS", text: "Opens in the zone", tone: "info", variant: "outline", icon: "drsClosed" };
+    return null;
+  }
+  if (rules === "straight-mode-2026") {
+    switch (e.kind) {
+      case "straight":
+        return { badge: "X-MODE", text: "Straight Mode ahead", tone: "info", variant: "solid", icon: "drsOpen" };
+      case "queued":
+        return { badge: "X-MODE", text: "Opens on the straight", tone: "info", variant: "outline", icon: "drsClosed" };
+      case "overtake":
+        return {
+          badge: "OVERTAKE",
+          text: e.earned ? "Earned for the next lap" : "Not earned this lap",
+          tone: e.earned ? "info" : "neutral",
+          variant: e.earned ? "solid" : "soft",
+          icon: "overtake",
+        };
+      default:
+        return null;
+    }
+  }
+  return null;
+}
+
+/** The newest notice event of the car's era in its channels, with its sim time (ms) */
+export function latestAeroEvent(
+  t: Pick<CarTelemetry, "overtakingRules" | "f12026">
+): (AeroNoticeEvent & { atMs: number }) | null {
+  const c = t.f12026;
+  if (!c) return null;
+  if (t.overtakingRules === "drs-rear") {
+    return c.drsDetection ? { kind: "detection", zone: c.drsDetection.zone, eligible: c.drsDetection.eligible, atMs: c.drsDetection.atMs } : null;
+  }
+  if (t.overtakingRules === "straight-mode-2026") {
+    const ahead = c.straightModeAhead;
+    const ot = c.overtakeDetection;
+    if (ot && (!ahead || ot.atMs >= ahead.atMs)) return { kind: "overtake", earned: ot.earned, atMs: ot.atMs };
+    return ahead ? { kind: "straight", atMs: ahead.atMs } : null;
+  }
+  return null;
 }

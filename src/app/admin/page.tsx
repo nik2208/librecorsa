@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
 import { AdminStats } from "./AdminStats";
 
-// The owner's numbers. Not linked from anywhere and not indexed; the page itself holds no data: it asks the online
-// side with the admin key (cloudflare/api/admin.ts), which answers no one else
+// The owner's numbers. Not linked from anywhere, not in the sitemap and not indexed; the title and the page say nothing
+// until the key opens it. The page holds no data: it asks the online side with the key (cloudflare/api/admin.ts),
+// which answers no one else
 export const metadata: Metadata = {
-  title: "Numbers",
-  robots: { index: false, follow: false, nocache: true },
+  title: { absolute: "LibreCorsa" },
+  robots: { index: false, follow: false, nocache: true, googleBot: { index: false, follow: false } },
 };
 
 export default function AdminPage() {

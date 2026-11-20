@@ -28,7 +28,10 @@ npm run verify
 ```
 
 `npm run verify` runs every `scripts/verify-*.ts` suite (physics, both car models, GT3, input, lap tools, race
-session, realism, telemetry out, WebHID force feedback). It takes a few minutes. Physics changes must keep it
+session, realism, telemetry out, WebHID force feedback). It takes a few minutes, several suites at once, longest
+first (`scripts/verify-timings.json`; `npm run verify -- --record` updates the times, and `VERIFY_JOBS=1` runs the
+suites one after another). A failing suite doesn't stop the others: the run ends with every suite that failed and
+the command that reruns it, such as `node scripts/run-verify.mjs tyre-thermal`. Physics changes must keep it
 passing. If a change is meant to move a number, update the check and say why in the pull request.
 `npm run verify:laps` is the slow full-pace lap check; run it when you touch tyres, aero, the drivetrain or the
 racing-line optimiser.
@@ -52,10 +55,11 @@ terms, see the asset notice in CREDITS.md) or written permission from the creato
 creator's permission. Credit every asset in [CREDITS.md](CREDITS.md) with its author, link and
 license.
 
-- **Tracks** are converted with `scripts/tracks/build_track.py`, then compressed with
-  `npm run compress-tracks`, which also checks the physics meshes come out bit-exact. Then
-  `npm run home-outlines` draws the new circuit's map for the home page.
+- **Tracks** are converted from a mod with `scripts/tracks/port_ac_track.py` or built from a Blender model with
+  `scripts/tracks/build_blender_track.py` (see [Porting circuits](docs/PORTING-TRACKS.md)). Both compress what they
+  write. `npm run compress-tracks` compresses any circuit that isn't yet and checks the physics meshes come out
+  bit-exact. Then `npm run home-outlines` draws the new circuit's map for the home page.
 - **Big files**: compress models (meshopt, WebP textures) before committing. The whole site is downloaded by
   players.
 
-By contributing you agree your code is released under the [MIT License](LICENSE).
+By contributing you agree your code is released under the [GNU Affero General Public License v3.0 or later](LICENSE) (AGPL-3.0-or-later).

@@ -11,7 +11,19 @@ import type { TelemetryData, VehicleModelId } from '@/types/f1';
  * The closed-wheel cars: their shell muffles what reaches an interior camera, and their steel discs squeal far more
  * readily than the open-wheelers' carbon-ceramic ones
  */
-const GT_MODELS: ReadonlySet<string> = new Set<VehicleModelId>(['amg-gt3', 'liana', 'mtr-496r']);
+const GT_MODELS: ReadonlySet<string> = new Set<VehicleModelId>([
+  'amg-gt3',
+  'liana',
+  'mtr-496r',
+  'lc-lmdh',
+  'nissan-r33-jgtc',
+  'nissan-r32-jtcc',
+  'bmw-m1-procar',
+  'vw-scirocco-gtx',
+  'chaparral-2d',
+  'chaparral-2d-67',
+  'porsche-934-rsr',
+]);
 
 /** Squeal pitch factor per wheel (FL, FR, RL, RR): the larger front discs ring a little lower */
 const BRAKE_PITCH = [0.49, 0.49, 0.54, 0.54] as const;

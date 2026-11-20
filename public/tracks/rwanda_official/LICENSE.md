@@ -16,6 +16,9 @@ You may copy, share and adapt it (port it to another simulator, rebuild it, chan
 - The circuit in this folder and in `../rwanda_official_short/` (the short lap's data over the same model):
   `rwanda_official.glb`, both `track_data.json` files, and the scenery's layout.
 - The circuit's source in `scripts/rwanda-official/`: its design data, its textures and whatever the scripts build.
+- The scenery of its [Assetto Corsa release](https://www.overtake.gg/downloads/rise-motordrome-bugesera-rwanda.88890/)
+  that the model carries (lakeside, village, facades, dressing, lights and more): the release is under this same
+  licence.
 
 ## What it does not cover
 
@@ -25,4 +28,4 @@ You may copy, share and adapt it (port it to another simulator, rebuild it, chan
   Asphalt Pit Lane, Gravel Floor 02), which are CC0. They stay as free as the originals.
 - The real circuit: this is my reading of the design planned at Bugesera, traced from its published renders. The
   design, the venue's name and any marks belong to their owners, and this licence gives no rights to them.
-- The game's code, which is under the MIT License (`LICENSE` at the repository's root).
+- The game's code, which is under the GNU AGPL v3.0 or later (`LICENSE` at the repository's root).

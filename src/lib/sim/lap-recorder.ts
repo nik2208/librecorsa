@@ -3,8 +3,8 @@
  * summary (deltas, sector and corner bests) and plays recorded laps back as ghosts.
  * Also validates untrusted recordings (imported files, downloads) before they are used.
  */
-import { isVehicleModelId, type AssistPreset, type CarTelemetry, type TireCompound, type VehicleModelId } from "@/types/f1";
-import { ASSIST_PRESETS, LAP_SAMPLE_STRIDE, lapPhysicsVersion, parseLapConditions } from "./lap-types";
+import { foldVehicleModelId, isVehicleModelId, type AssistPreset, type CarTelemetry, type TireCompound, type VehicleModelId } from "@/types/f1";
+import { ASSIST_PRESETS, LAP_SAMPLE_STRIDE, lapPhysicsVersion, parseLapConditions, type LapInput } from "./lap-types";
 import { SIM_REALISM_LEVELS, type SimRealism } from "./sim-realism";
 import type { CornerStat, LapConditions, LapRecording, LapSample, LapSummaryData } from "./lap-types";
 
@@ -27,6 +27,8 @@ export interface LapRecorderInput {
    * realistic level, any wet surface seen and whether the autopilot ever drove
    */
   conditions?: LapConditions & { autopilot: boolean };
+  /** What is driving the car this frame; null (or absent) while nothing is pressed. The lap keeps the one used most */
+  input?: LapInput | null;
 }
 
 export interface CompletedLap {
@@ -145,7 +147,7 @@ export class LapRecorder {
   /** Turns in track order, with the half-width of each corner window */
   private readonly corners: CornerWindow[];
   private vehicle: VehicleModelId;
-  /** Physics revision this car's laps are driven under, read once when the car is set */
+  /** The revision this car's laps on this circuit are ranked under, read once when the car is set */
   private physicsVersion: number;
   private driverName: string;
   private driverCode: string;
@@ -167,6 +169,8 @@ export class LapRecorder {
   private lapConditions: LapConditions | null = null;
   /** The autopilot drove at some point of the lap in progress */
   private autopilotUsed = false;
+  /** Frames of the lap in progress driven with each input */
+  private inputFrames = new Map<LapInput, number>();
 
   constructor(opts: LapRecorderOptions) {
     this.trackLengthM = opts.trackLengthM;
@@ -175,7 +179,7 @@ export class LapRecorder {
     this.sampleHz = opts.sampleHz ?? DEFAULT_SAMPLE_HZ;
     this.period = 1 / this.sampleHz;
     this.vehicle = opts.vehicle;
-    this.physicsVersion = lapPhysicsVersion(opts.vehicle);
+    this.physicsVersion = lapPhysicsVersion(opts.vehicle, opts.trackId);
     this.driverName = cleanDriverName(opts.driverName);
     this.driverCode = opts.driverCode;
     this.pb = opts.personalBestMs ?? null;
@@ -199,7 +203,7 @@ export class LapRecorder {
   setContext(ctx: Partial<Pick<LapRecorderOptions, "vehicle" | "driverName" | "driverCode" | "personalBestMs">>): void {
     if (ctx.vehicle !== undefined && ctx.vehicle !== this.vehicle) {
       this.vehicle = ctx.vehicle;
-      this.physicsVersion = lapPhysicsVersion(ctx.vehicle);
+      this.physicsVersion = lapPhysicsVersion(ctx.vehicle, this.trackId);
       this.sessionSectorBest = [null, null, null];
       this.sessionCornerBest = this.corners.map(() => null);
     }
@@ -218,7 +222,7 @@ export class LapRecorder {
   /** Call every frame while driving; returns the lap once one is completed, else null */
   update(input: LapRecorderInput): CompletedLap | null {
     const t = input.telemetry;
-    // A new run (restart, teleport, flashback, new session) since the last update: whatever the lap counter did in
+    // A new run (restart, teleport, new session) since the last update: whatever the lap counter did in
     // between, it is not a line crossing. The recorder may not have been updated for a while (a race in between)
     const runId = t.runId ?? 0;
     if (this.lastRunId !== null && runId !== this.lastRunId) this.reset();
@@ -279,6 +283,7 @@ export class LapRecorder {
     this.rows = [];
     this.lapConditions = null;
     this.autopilotUsed = false;
+    this.inputFrames.clear();
   }
 
   private abandon(): void {
@@ -288,6 +293,7 @@ export class LapRecorder {
     this.rows = [];
     this.lapConditions = null;
     this.autopilotUsed = false;
+    this.inputFrames.clear();
   }
 
   /** Folds this moment's assists, realism, tyre and surface into the lap's conditions */
@@ -307,10 +313,24 @@ export class LapRecorder {
     };
   }
 
+  /** The input that drove the most frames of the lap in progress; null when none was seen */
+  private mostUsedInput(): LapInput | null {
+    let best: LapInput | null = null;
+    let most = 0;
+    for (const [kind, frames] of this.inputFrames) {
+      if (frames > most) {
+        best = kind;
+        most = frames;
+      }
+    }
+    return best;
+  }
+
   /** Adds this update to the lap in progress: validity and a sample when one is due */
   private collect(input: LapRecorderInput): void {
     if (!this.recording) return;
     this.noteConditions(input);
+    if (input.input) this.inputFrames.set(input.input, (this.inputFrames.get(input.input) ?? 0) + 1);
     // The physics' own verdict when it judges track limits, else any moment off the track
     if (input.telemetry.lapInvalid ?? input.telemetry.offTrack) this.valid = false;
     const tS = input.telemetry.currentLapTimeMs / 1000;
@@ -406,7 +426,11 @@ export class LapRecorder {
         return acc;
       }, []),
     };
-    if (this.lapConditions) recording.conditions = { ...this.lapConditions };
+    if (this.lapConditions) {
+      recording.conditions = { ...this.lapConditions };
+      const used = this.mostUsedInput();
+      if (used) recording.conditions.input = used;
+    }
     if (this.trackGeometry) {
       recording.trackGeometry = this.trackGeometry;
       recording.trackLengthM = this.trackLengthM;
@@ -540,7 +564,8 @@ export function validateLapRecording(raw: unknown): LapRecording | null {
   const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
   if (r.version !== 1) return null;
-  const { trackId, vehicle, driverName, driverCode, lapTimeMs, recordedAt, sampleHz } = r;
+  const { trackId, driverName, driverCode, lapTimeMs, recordedAt, sampleHz } = r;
+  const vehicle = foldVehicleModelId(r.vehicle);
   if (typeof trackId !== "string" || trackId.length > 64) return null;
   if (!isVehicleModelId(vehicle)) return null;
   if (typeof driverName !== "string") return null;

@@ -1,0 +1,109 @@
+/**
+ * Every in-race HUD layout the player can pick: the game's own, and the third-party ones recreated from other
+ * open-source HUD projects (THIRD_PARTY_NOTICES.md). The one list the settings parser, the pickers, the title menu,
+ * the About page's credits and the verify suite read, so a layout has one id, one name and one credit everywhere.
+ *
+ * Ids are saved in players' settings for good: never rename one, and keep game and product names out of them.
+ */
+
+/** Credit for a layout recreated from another project: shown in the pickers and on the About page */
+export interface HudLayoutCredit {
+  /** The project's GitHub user, shown as "by <author>" */
+  author: string;
+  /** The project's source repository */
+  repoUrl: string;
+  /** SPDX id of the project's licence */
+  license: "MIT" | "GPL-3.0";
+}
+
+/** Where each licence a credited layout comes under can be read */
+export const HUD_LICENSE_URL: Record<HudLayoutCredit["license"], string> = {
+  MIT: "https://opensource.org/license/mit",
+  "GPL-3.0": "https://www.gnu.org/licenses/gpl-3.0.html",
+};
+
+export interface HudLayoutInfo<Id extends string = string> {
+  id: Id;
+  /** Player-facing name */
+  label: string;
+  /** One line under the name */
+  detail: string;
+  /** A third-party layout's source; absent on the game's own */
+  credit?: HudLayoutCredit;
+}
+
+/** The game's own layouts, in picker order (Broadcast first: the default) */
+export const BUILT_IN_HUD_LAYOUTS = [
+  { id: "broadcast", label: "Broadcast", detail: "TV graphics: tower, map, telemetry strip" },
+  { id: "dash", label: "Wheel dash", detail: "A steering-wheel screen, low and centred" },
+  { id: "telemetry", label: "Telemetry", detail: "The dash plus tyres, G, power and inputs" },
+  { id: "classic", label: "Classic", detail: "The original corner panels" },
+  { id: "minimal", label: "Minimal", detail: "Speed, gear and lap only" },
+] as const satisfies readonly HudLayoutInfo[];
+
+/** Layouts recreated from other open-source HUD projects, credited to their authors */
+export const THIRD_PARTY_HUD_LAYOUTS = [
+  {
+    id: "irdashies",
+    label: "irDashies",
+    detail: "Standings, lap timer, inputs and shift lights",
+    credit: { author: "tariknz", repoUrl: "https://github.com/tariknz/irdashies", license: "MIT" },
+  },
+  {
+    id: "racevision",
+    label: "RaceVision",
+    detail: "Standings, relative, input pill and graph",
+    credit: { author: "mpavich2", repoUrl: "https://github.com/mpavich2/RaceVision", license: "MIT" },
+  },
+  {
+    id: "h2h",
+    label: "Head to Head",
+    detail: "The cars ahead and behind, gaps and lap deltas",
+    credit: { author: "emilioSp", repoUrl: "https://github.com/emilioSp/h2h-iracing", license: "MIT" },
+  },
+  {
+    id: "retro",
+    label: "Retro UI",
+    detail: "Warm instruments: round dial, delta bar, laps",
+    credit: { author: "toastbuilds", repoUrl: "https://github.com/toastbuilds/assetto-corsa-retro-engineering-hud", license: "MIT" },
+  },
+  {
+    id: "blocks",
+    label: "Blocks",
+    detail: "Square dark blocks: timing, sectors, tyres, fuel",
+    credit: { author: "C1XTZ", repoUrl: "https://github.com/C1XTZ/ac-rennsporthud", license: "GPL-3.0" },
+  },
+] as const satisfies readonly HudLayoutInfo[];
+
+export type HudPreset = (typeof BUILT_IN_HUD_LAYOUTS)[number]["id"] | (typeof THIRD_PARTY_HUD_LAYOUTS)[number]["id"];
+
+/** Every layout, built-in first */
+export const HUD_LAYOUTS: readonly HudLayoutInfo<HudPreset>[] = [...BUILT_IN_HUD_LAYOUTS, ...THIRD_PARTY_HUD_LAYOUTS];
+
+export const HUD_PRESETS: readonly HudPreset[] = HUD_LAYOUTS.map((l) => l.id);
+
+/** The layout a new player starts on, and the one a save falls back to */
+export const DEFAULT_HUD_PRESET: HudPreset = "broadcast";
+
+/** A layout's entry; an id this build doesn't know gets the default's */
+export function hudLayout(id: string): HudLayoutInfo<HudPreset> {
+  return HUD_LAYOUTS.find((l) => l.id === id) ?? HUD_LAYOUTS.find((l) => l.id === DEFAULT_HUD_PRESET)!;
+}
+
+/**
+ * Whether the HUD draws the Phone HUD instead of the chosen layout. A phone-sized screen always does. With the touch
+ * controls up (their pads take both bottom corners and the top-left), the game's own layouts give way to it at any
+ * size, while a third-party layout keeps its look on a tablet and steps out of the pads' way itself.
+ */
+export function showsPhoneHud(preset: HudPreset, screen: { phone: boolean; touchControls: boolean }): boolean {
+  return screen.phone || (screen.touchControls && !hudLayout(preset).credit);
+}
+
+/**
+ * A saved layout id as this build reads it: a known id is kept, "engineer" (renamed) moves to Telemetry, and
+ * anything else (an older or newer build's layout, a hand-edited save) falls back to Broadcast
+ */
+export function parseHudPreset(value: unknown): HudPreset {
+  if (value === "engineer") return "telemetry";
+  return HUD_PRESETS.includes(value as HudPreset) ? (value as HudPreset) : DEFAULT_HUD_PRESET;
+}

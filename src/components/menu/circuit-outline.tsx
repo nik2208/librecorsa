@@ -3,7 +3,14 @@
 import React, { useEffect, useReducer, useState } from "react";
 import { buildHudMap, mapPoint, SECTOR_COLORS, type HudMap } from "@/components/hud/styles/hud-style-parts";
 import { withBasePath } from "@/lib/base-path";
-import { ACTIVE_TRACK_ID, DEFAULT_TRACK_ID, DEFAULT_TRACK_JSON, getTrackData, type RawTrackJson } from "@/lib/track-data";
+import {
+  ACTIVE_TRACK_ID,
+  DEFAULT_TRACK_ID,
+  DEFAULT_TRACK_JSON,
+  getTrackData,
+  type RawTrackJson,
+  type TrackMetaExtras,
+} from "@/lib/track-data";
 import type { TrackInfo } from "@/lib/track-registry";
 
 /** Circuit outline from a centreline: a volt thumbnail, or coloured by sector with the flow dashes */
@@ -24,18 +31,18 @@ export const TrackOutline: React.FC<{ map: HudMap; sectors?: boolean; className?
       aria-label={label}
       aria-hidden={label ? undefined : true}
     >
-      <path d={map.path} fill="none" stroke={sectors ? "#141822" : "#1B1F2B"} strokeWidth={sectors ? 52 : thin ? 44 : 56} strokeLinejoin="round" />
+      <path d={map.path} fill="none" stroke={sectors ? "var(--color-lc-carbon)" : "var(--color-lc-titanium)"} strokeWidth={sectors ? 52 : thin ? 44 : 56} strokeLinejoin="round" />
       {sectors ? (
         map.sectorPaths.map((d, i) => (
           <path key={i} d={d} fill="none" stroke={SECTOR_COLORS[i]} strokeWidth={16} strokeLinejoin="round" strokeLinecap="round" />
         ))
       ) : (
-        <path d={map.path} fill="none" stroke={thin ? "#C5CBD8" : "#CCFF00"} strokeWidth={thin ? 16 : 22} strokeLinejoin="round" />
+        <path d={map.path} fill="none" stroke={thin ? "var(--color-lc-fog)" : "var(--color-lc-volt)"} strokeWidth={thin ? 16 : 22} strokeLinejoin="round" />
       )}
       {sectors ? (
-        <path d={map.path} fill="none" stroke="#F5F7FA" strokeOpacity={0.7} strokeWidth={4} strokeDasharray="3 37" className="lc-flow" />
+        <path d={map.path} fill="none" stroke="var(--color-lc-chalk)" strokeOpacity={0.7} strokeWidth={4} strokeDasharray="3 37" className="lc-flow" />
       ) : null}
-      <rect x={sx - 6} y={sy - 28} width={12} height={56} rx={3} fill="#F5F7FA" />
+      <rect x={sx - 6} y={sy - 28} width={12} height={56} rx={3} fill="var(--color-lc-chalk)" />
     </svg>
   );
 };
@@ -71,6 +78,7 @@ if (typeof window !== "undefined") {
 const outlineOfRaw = (raw: RawTrackJson): HudMap =>
   buildHudMap({
     totalLengthM: raw.metadata.lengthMeters,
+    pointToPoint: (raw.metadata as RawTrackJson["metadata"] & TrackMetaExtras).pointToPoint,
     samples: raw.samples.map((s) => ({ position: { x: s.p[0], z: s.p[2] }, sector: s.sec })),
   });
 

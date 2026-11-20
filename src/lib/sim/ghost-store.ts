@@ -98,11 +98,13 @@ export async function loadBestLap(trackId: string, vehicle: VehicleModelId, boar
     const lap = validateLapRecording(raw);
     return lap && lap.trackId === trackId && lap.vehicle === vehicle ? lap : null;
   };
+  // A best saved before the 2026 Prototype was renamed sits under its old id
+  const old = vehicle === "lc26" ? ("vf26" as VehicleModelId) : null; // keep-old-id
   if (board) {
-    const lap = await read(lapKey(trackId, vehicle, board));
+    const lap = (await read(lapKey(trackId, vehicle, board))) ?? (old ? await read(lapKey(trackId, old, board)) : null);
     if (lap) return lap;
   }
-  const legacy = await read(lapKey(trackId, vehicle));
+  const legacy = (await read(lapKey(trackId, vehicle))) ?? (old ? await read(lapKey(trackId, old)) : null);
   return legacy && (!board || boardOf(legacy) === null || boardOf(legacy) === board) ? legacy : null;
 }
 
@@ -113,6 +115,8 @@ export async function saveBestLapIfFaster(rec: LapRecording): Promise<boolean> {
   const db = await openDb();
   if (!db) return false;
   const key = lapKey(lap.trackId, lap.vehicle, boardOf(lap));
+  // A best saved before the 2026 Prototype was renamed counts too: a slower first lap under the new id must not hide it
+  const oldKey = lap.vehicle === "lc26" ? lapKey(lap.trackId, "vf26" as VehicleModelId, boardOf(lap)) : null; // keep-old-id
   return new Promise<boolean>((resolve) => {
     try {
       // Read and write in one transaction so two laps cannot race each other
@@ -120,11 +124,20 @@ export async function saveBestLapIfFaster(rec: LapRecording): Promise<boolean> {
       const store = tx.objectStore(STORE_NAME);
       let stored = false;
       const current = store.get(key);
+      const put = () => {
+        store.put(lap, key);
+        stored = true;
+      };
       current.onsuccess = () => {
         const best = validateLapRecording(current.result ?? null);
         if (best && best.lapTimeMs <= lap.lapTimeMs) return;
-        store.put(lap, key);
-        stored = true;
+        if (!oldKey) return put();
+        const prior = store.get(oldKey);
+        prior.onsuccess = () => {
+          const older = validateLapRecording(prior.result ?? null);
+          if (older && older.lapTimeMs <= lap.lapTimeMs) return;
+          put();
+        };
       };
       tx.oncomplete = () => resolve(stored);
       tx.onabort = () => resolve(false);

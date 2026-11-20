@@ -4,18 +4,30 @@
  * binding names its device by `Gamepad.id`.
  *
  * Without a wheel calibration the behaviour matches the original input code: a standard-mapping
- * controller sends its stick through the physics' steering assist, any other device steers the rack
- * from axis 0 with buttons 7 / 6 as throttle / brake.
+ * controller sends its stick through the physics' steering assist (each pedal from its own source: a
+ * trigger, or half a stick axis), any other device steers the rack from axis 0 with buttons 7 / 6 as
+ * throttle / brake.
  */
 import {
-  DEFAULT_PAD_BUTTONS,
+  BUMPER_SHIFT_BUTTONS,
+  DEFAULT_PAD_PEDAL_SOURCES,
   PAD_ACTIONS,
   PAD_BRAKE_BUTTON,
+  PAD_PEDALS,
   PAD_THROTTLE_BUTTON,
   type PadAction,
   type PadButtonBindings,
+  type PadPedal,
+  type PadPedalSource,
+  type PadPedalSources,
 } from "./bindings";
+import { shapeStick } from "./stick-shape";
 import { logitechClassicModel, logitechHidppModel } from "./wheel-support";
+import { isDualSensePadId } from "./dualsense-protocol";
+import { isDualShock4PadId } from "./dualshock4-protocol";
+import { isGyroPadId } from "./gyro-source";
+import { dualShock4Hid } from "./webhid-dualshock4";
+import { dualSenseHid } from "./webhid-dualsense";
 
 export type InputDevice = "keyboard" | "controller" | "wheel";
 export type WheelType = "direct_drive" | "belt_gear";
@@ -49,6 +61,8 @@ export interface WheelSettings {
   steer: AxisBinding | null;
   throttle: PedalBinding | null;
   brake: PedalBinding | null;
+  /** A clutch pedal, when the wheel's pedal set has one and the player calibrated it (1 = pressed, the clutch open) */
+  clutch: PedalBinding | null;
   /** Brake response curve: 1 linear, > 1 finer control at light pressure */
   brakeGamma: number;
   /** Steering dead zone around centre (fraction of half the rotation) */
@@ -118,14 +132,24 @@ export const CAR_WHEEL_LOCK_DEG = 360;
 
 /**
  * Per-car real steering-wheel rotation lock-to-lock (degrees): 360° for Formula cars, 640° for the GT3 (320° each way),
- * 1080° for the Liana (540° each way), 480° for the 496R (240° each way)
+ * 1080° for the Liana (540° each way), 480° for the 496R (240° each way), the classic cars and the Scirocco their own
  */
 export const CAR_WHEEL_LOCKS_DEG: Readonly<Record<string, number>> = {
-  vf26: 360,
+  lc26: 360,
   "f12026-car": 360,
   "amg-gt3": 640,
   liana: 1080,
   "mtr-496r": 480,
+  // 225° each way [est]
+  "lc-lmdh": 450,
+  // Twice each car's STEER_LOCK [spec car.ini]
+  "nissan-r33-jgtc": 500,
+  "nissan-r32-jtcc": 720,
+  "bmw-m1-procar": 720,
+  "vw-scirocco-gtx": 900,
+  "chaparral-2d": 720,
+  "chaparral-2d-67": 720,
+  "porsche-934-rsr": 1080,
 };
 
 /** Range of a player-set steering lock (deg, lock to lock): never slower than the real car's */
@@ -166,6 +190,7 @@ export const DEFAULT_WHEEL_SETTINGS: WheelSettings = {
   steer: null,
   throttle: null,
   brake: null,
+  clutch: null,
   brakeGamma: 1,
   ffbEnabled: false,
   ffbGain: 1,
@@ -199,10 +224,22 @@ export const PAD_SENSITIVITY: Record<PadSensitivity, { steeringRate: number; dea
   sharp: { steeringRate: 0.75, deadzone: 0.04, label: "Sharp", detail: "Quick turn-in" },
 };
 
+/** A controller's pedals: each one's source (a trigger, or half a stick axis), and the dead zone of the stick ones */
+export interface PadPedalTuning {
+  pedalSources: PadPedalSources;
+  /** Stick travel ignored around centre for a pedal on a stick axis (0..0.3), so a resting stick is no throttle */
+  stickPedalDeadzone: number;
+}
+
+/** A pedal on a stick: travel past 1 − this reads as a full pedal, so a push a little off straight up still reaches 100 % */
+export const STICK_PEDAL_OUTER = 0.05;
+
 /** What the simulator needs from the device layer */
 export interface DeviceInputSettings {
   wheel: WheelSettings;
   padButtons: PadButtonBindings;
+  /** The controller's pedals; without it the triggers */
+  padTuning?: PadPedalTuning;
 }
 
 /** Minimal Gamepad shape (the real Gamepad satisfies it; tests pass plain objects) */
@@ -218,10 +255,14 @@ export interface PadLike {
 export interface DeviceFrame {
   throttle: number;
   brake: number;
+  /** Clutch pedal 0..1 (1 = pressed, the clutch open); 0 when the device has none */
+  clutch: number;
   /** Steering straight to the rack (wheel), −1..1, + = right */
   analogSteer?: number;
   /** Raw controller stick for the physics' steering assist */
   padSteer?: number;
+  /** Gyro steering of the DualSense that steers (−1..1, + = right), added to the shaped stick; unset without it */
+  gyroSteer?: number;
   boostHeld: boolean;
   /** Button actions pressed this frame (rising edges) */
   pressed: Set<PadAction>;
@@ -244,7 +285,21 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
  */
 export function connectedPads(): PadLike[] {
   if (typeof navigator === "undefined" || typeof navigator.getGamepads !== "function") return [];
-  const pads = navigator.getGamepads().filter((p): p is Gamepad => Boolean(p && p.connected !== false));
+  const pads: PadLike[] = navigator.getGamepads().filter((p): p is Gamepad => Boolean(p && p.connected !== false));
+  // A DualSense or DualShock 4 on Bluetooth that a WebHID driver opened sends its full report, which the Gamepad API
+  // may no longer read: the pad parsed from the HID reports takes its place, under the browser's id for it
+  const standIns: [PadLike | null, (id: string) => boolean][] = [
+    [dualSenseHid.bluetoothPad(), isDualSensePadId],
+    [dualShock4Hid.bluetoothPad(), isDualShock4PadId],
+  ];
+  for (const [hidPad, isIt] of standIns) {
+    if (!hidPad) continue;
+    const i = pads.findIndex((p) => isIt(p.id));
+    const native = i >= 0 ? pads[i] : undefined;
+    const stand = native ? { ...hidPad, id: native.id, index: native.index } : { ...hidPad, index: pads.length };
+    if (i >= 0) pads[i] = stand;
+    else pads.push(stand);
+  }
   const seen = new Map<string, number>();
   return pads.map((p) => {
     const n = (seen.get(p.id) ?? 0) + 1;
@@ -339,14 +394,54 @@ export function wheelRimAngleDeg(raw: number, binding: Pick<AxisBinding, "center
   return (clamp((raw - binding.center) * (binding.invert ? -1 : 1), -1, 1) * rotationDeg) / 2;
 }
 
+/** One pedal 0..1 from its source on a standard-mapping controller: a button's travel, or its half of a stick axis */
+export function padPedalValue(pad: Pick<PadLike, "axes" | "buttons">, source: PadPedalSource | null, stickDeadzone: number): number {
+  if (!source) return 0;
+  if (source.kind === "button") return pad.buttons[source.button]?.value ?? 0;
+  return Math.max(0, source.sign * shapeStick(pad.axes[source.axis] ?? 0, stickDeadzone, STICK_PEDAL_OUTER, 1));
+}
+
+/**
+ * A standard-mapping controller's pedals 0..1, before the player's curves, each from its own source (the triggers
+ * without settings). Two pedals on the two halves of one axis are never both pressed. The game, the input check and
+ * the curve preview all read this one.
+ */
+export function padPedals(pad: Pick<PadLike, "axes" | "buttons">, tuning: PadPedalTuning | undefined): Record<PadPedal, number> {
+  const sources = tuning?.pedalSources ?? DEFAULT_PAD_PEDAL_SOURCES;
+  const deadzone = tuning?.stickPedalDeadzone ?? 0;
+  const out = {} as Record<PadPedal, number>;
+  for (const p of PAD_PEDALS) out[p] = padPedalValue(pad, sources[p], deadzone);
+  return out;
+}
+
 const buttonDown = (pad: PadLike | undefined, button: number) => {
   const b = pad?.buttons[button];
   return Boolean(b && (b.pressed || b.value > 0.5));
 };
 
+/**
+ * A standard controller's button as an action. RT / LT (bound with stick pedals) count from half their travel: a
+ * browser, or the DualSense's own trigger bit, calls them pressed at a light touch, under a finger resting there.
+ * A trigger that reports no travel at all (a digital one) counts when pressed.
+ */
+const padButtonDown = (pad: PadLike, button: number) => {
+  if (button !== PAD_THROTTLE_BUTTON && button !== PAD_BRAKE_BUTTON) return buttonDown(pad, button);
+  const b = pad.buttons[button];
+  return Boolean(b && (b.value > 0.5 || (b.pressed && !(b.value > 0))));
+};
+
+/** A calibrated clutch pedal 0..1 (1 = pressed), 0 without one or with its device gone */
+function wheelClutch(pads: readonly PadLike[], b: PedalBinding | null): number {
+  if (!b) return 0;
+  const p = findPad(pads, b.padId);
+  return p ? pedalValue(p.axes[b.axis] ?? b.idle, b, 1) : 0;
+}
+
 /** The devices a wheel binding names (the steering's, then any separate pedals'); null without a steering binding */
 function boundWheelDevices(wheel: WheelSettings): string | null {
-  return wheel.steer ? [wheel.steer.padId, wheel.throttle?.padId ?? "", wheel.brake?.padId ?? ""].join("\n") : null;
+  return wheel.steer
+    ? [wheel.steer.padId, wheel.throttle?.padId ?? "", wheel.brake?.padId ?? "", wheel.clutch?.padId ?? ""].join("\n")
+    : null;
 }
 
 /** Per-frame reader: holds the button edge state and the steering filter */
@@ -359,16 +454,28 @@ export class DeviceInputReader {
   private wheelDevices: string | null = null;
   private wheelPresent = false;
 
-  read(pads: readonly PadLike[], settings: DeviceInputSettings, dtSeconds: number, vehicle?: string): DeviceFrame {
+  /**
+   * `gyroSteer` gives the gyro steering (−1..1) of the DualSense or DualShock 4 with that Gamepad API id, streaming
+   * over WebHID, when it is on: it is asked only for the pad that steers, so a pad lying on the desk never steers for
+   * an Xbox pad or for the other kind of Sony pad
+   */
+  read(
+    pads: readonly PadLike[],
+    settings: DeviceInputSettings,
+    dtSeconds: number,
+    vehicle?: string,
+    gyroSteer?: (padId: string) => number | undefined
+  ): DeviceFrame {
     const held = new Set<PadAction>();
-    const frame: DeviceFrame = { throttle: 0, brake: 0, boostHeld: false, pressed: new Set(), source: null };
+    const frame: DeviceFrame = { throttle: 0, brake: 0, clutch: 0, boostHeld: false, pressed: new Set(), source: null };
     const wheel = settings.wheel;
     const wheelPad = wheel.steer ? findPad(pads, wheel.steer.padId) : undefined;
     // Pedals on their own USB device count too: losing the brake pedal silently is worse than losing the wheel
     const present =
       wheelPad !== undefined &&
       (!wheel.throttle || findPad(pads, wheel.throttle.padId) !== undefined) &&
-      (!wheel.brake || findPad(pads, wheel.brake.padId) !== undefined);
+      (!wheel.brake || findPad(pads, wheel.brake.padId) !== undefined) &&
+      (!wheel.clutch || findPad(pads, wheel.clutch.padId) !== undefined);
     // Lost means the same bound devices were all connected last frame and one is gone now: clearing or rebinding the
     // steering (or the pedals) with everything plugged in is a settings change, not an unplug
     const devices = boundWheelDevices(wheel);
@@ -403,6 +510,7 @@ export class DeviceInputReader {
       };
       frame.throttle = pedal(wheel.throttle, 1, PAD_THROTTLE_BUTTON);
       frame.brake = pedal(wheel.brake, wheel.brakeGamma, PAD_BRAKE_BUTTON);
+      frame.clutch = wheelClutch(pads, wheel.clutch);
 
       for (const { id } of PAD_ACTIONS) {
         const b = wheel.buttons[id];
@@ -416,8 +524,12 @@ export class DeviceInputReader {
         if (pad.mapping === "standard") {
           frame.source = "controller";
           frame.padSteer = rawStickX;
-          frame.throttle = pad.buttons[PAD_THROTTLE_BUTTON]?.value ?? 0;
-          frame.brake = pad.buttons[PAD_BRAKE_BUTTON]?.value ?? 0;
+          const gyro = gyroSteer && isGyroPadId(pad.id) ? gyroSteer(pad.id) : undefined;
+          if (gyro !== undefined) frame.gyroSteer = gyro;
+          const pedals = padPedals(pad, settings.padTuning);
+          frame.throttle = pedals.throttle;
+          frame.brake = pedals.brake;
+          frame.clutch = pedals.clutch;
         } else {
           frame.source = "legacy";
           // 4 % dead zone, then a short ramp that rejoins the raw value at 8 %: the output no longer jumps from 0 to
@@ -434,16 +546,21 @@ export class DeviceInputReader {
             wheel.brake && bPad
               ? pedalValue(bPad.axes[wheel.brake.axis] ?? wheel.brake.idle, wheel.brake, wheel.brakeGamma)
               : (pad.buttons[PAD_BRAKE_BUTTON]?.value ?? 0);
+          frame.clutch = wheelClutch(pads, wheel.clutch);
         }
-        const map = pad.mapping === "standard" ? settings.padButtons : DEFAULT_PAD_BUTTONS;
+        // A wheel not set up yet has its paddles where a pad has its bumpers: it shifts there whatever the pad layout
+        const map = isLikelyWheel(pad) ? BUMPER_SHIFT_BUTTONS : settings.padButtons;
         for (const { id } of PAD_ACTIONS) {
           const button = map[id];
-          if (button !== null && buttonDown(pad, button)) held.add(id);
+          if (button !== null && (pad.mapping === "standard" ? padButtonDown(pad, button) : buttonDown(pad, button))) held.add(id);
         }
         source = `${frame.source}:${pad.id}`;
       }
     }
 
+    // Gear up and gear down held together are neutral, on a pad and on a wheel's paddles alike: it fires once, when the
+    // second one goes down (the first may have shifted already; neutral wins in the car)
+    if (held.has("shiftUp") && held.has("shiftDown")) held.add("neutral");
     // The input moved to another device (wheel unplugged, a second pad took over): what is already held there is the
     // new baseline, not a press. From no device at all it counts: a browser shows a pad only once a button is pressed
     const switched = this.prevSource !== null && source !== null && source !== this.prevSource;

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { getActiveSurfaceTable, getActiveTrackData, getActiveTrackMetadata } from '@/lib/track-data';
 import { TrackColliderQuery, TrackWallQuery, type RoadFacing, type TrackColliderBuffers, type TrackWallBuffers } from './f12026-car/TrackColliderQuery';
+import { applyDrawnSurfaceRules } from './drawn-surfaces';
 
 export interface TrackColliders {
   /** Null when the GLB has no `Track_Collider_Road`: the cars stay on the track samples' ground */
@@ -38,7 +39,13 @@ export function trackColliders(root: THREE.Object3D): TrackColliders {
       : undefined;
     // A GLB without a road collider (none of the shipped circuits) leaves the cars on the track samples' ground
     const ground = root.getObjectByName('Track_Collider_Road')
-      ? TrackColliderQuery.fromTrackRoot(root, getActiveSurfaceTable(), { conformSurfaces, drawnGround })
+      ? TrackColliderQuery.fromTrackRoot(root, getActiveSurfaceTable(), {
+          conformSurfaces,
+          // Where the circuit's drawn surfaces say what its physics got wrong (drawn-surfaces.ts)
+          prepare: (r) => applyDrawnSurfaceRules(r, getActiveTrackData(1200), mesh?.roadMaterials, undefined, getActiveSurfaceTable()),
+          // Event branch: a scan driven on as drawn off its own road (track data `mesh.groundMaterials`, Monza)
+          drawnGround,
+        })
       : null;
     colliders = { ground, walls: TrackWallQuery.fromTrackRoot(root, mesh?.barrierMeshes, roadFacing), conformSurfaces };
     cache.set(root, colliders);

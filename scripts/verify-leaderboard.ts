@@ -9,22 +9,50 @@ import { getActiveTrackData } from '../src/lib/track-data';
 import { F1Physics2026 } from '../src/lib/f1-physics-2026';
 import { LapRecorder, validateLapRecording, type CompletedLap } from '../src/lib/sim/lap-recorder';
 import { lapPlausibilityProblem } from '../src/lib/sim/lap-plausibility';
-import { LAP_SAMPLE_STRIDE, PHYSICS_VERSION, lapBoardClass, lapPhysicsVersion, parseLapConditions, type LapRecording } from '../src/lib/sim/lap-types';
+import {
+  LAP_SAMPLE_STRIDE,
+  PHYSICS_VERSION,
+  PHYSICS_VERSIONS,
+  CIRCUIT_REVISION_STEP,
+  boardChoiceOf,
+  boardChoiceOfLap,
+  boardChoices,
+  boardPhysicsVersion,
+  carPhysicsVersion,
+  circuitRevision,
+  currentBoardBase,
+  drivingInputOf,
+  isCurrentLapPhysics,
+  lapBoardClass,
+  lapConditionsNow,
+  lapPhysicsVersion,
+  parseLapConditions,
+  physicsVersionLabel,
+  revisionOnBoard,
+  type LapRecording,
+} from '../src/lib/sim/lap-types';
+import { CIRCUIT_BOARD_RESETS, type CircuitBoardReset } from '../src/lib/circuit-board-resets';
+import { VEHICLE_MODEL_IDS } from '../src/types/f1';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { handleApi } from '../cloudflare/api/index';
 import { boardKeyOf, loadBoardBest, parseRemoteBoard, saveBoardBest } from '../src/lib/net/leaderboard';
 import { challengePlaceLabel, challengeTarget } from '../src/lib/net/challenge-target';
-import { boardDeps, driverNameKey, listLaps, renameDriver, submitLap, type BoardDeps } from '../cloudflare/api/board';
+import { boardDeps, driverNameKey, listLaps, OLDER_PHYSICS, renameDriver, submitLap, type BoardDeps } from '../cloudflare/api/board';
 import { nameProblem } from '../src/lib/net/name-filter';
 import { randomDriverProfile } from '../src/lib/settings/player-settings';
 import type { Env } from '../cloudflare/api/types';
 import { fakeD1, fakeR2 } from './lib/fake-cloudflare';
 import { planImport, type SupabaseDriver, type SupabaseLap } from './migrate-supabase-board';
-import { CHALLENGE_ROTATION, challengeAt, challengeCompound, challengeConditionsLabel, challengeProblem, fitsChallenge, isoWeekId, timeLeftLabel } from '../src/lib/net/weekly-challenge';
+import { carById, type CarId } from '../src/lib/cars/car-registry';
+import { CHALLENGE_ROTATION, challengeAt, challengeCompound, challengeConditionsLabel, challengeProblem, challengesSoFar, fitsChallenge, isoWeekId, timeLeftLabel } from '../src/lib/net/weekly-challenge';
 
-/** The revision the laps here are driven under: the board of the car they are driven in (the VF26's own) */
-const CURRENT = lapPhysicsVersion('vf26');
+/** The circuit of the real lap */
+const TRACK = 'rwanda_official_short';
+/** The revision the laps here are driven under: the board of the car they are driven in (the LC26's own) */
+const CURRENT = lapPhysicsVersion('lc26', TRACK);
+/** Circuits' own board restarts, open for the checks that put one in (and take it out again) */
+const RESETS = CIRCUIT_BOARD_RESETS as Record<string, CircuitBoardReset[]>;
 
 const failures: string[] = [];
 const check = (name: string, ok: boolean, detail = '') => {
@@ -32,7 +60,7 @@ const check = (name: string, ok: boolean, detail = '') => {
   if (!ok) failures.push(name);
 };
 
-// A real lap: the VF26 on autopilot round RISE Motordrome, recorded as the game records it (the second lap, a flying one)
+// A real lap: the LC26 on autopilot round RISE Motordrome, recorded as the game records it (the second lap, a flying one)
 const track = getActiveTrackData();
 const car = new F1Physics2026(track);
 car.aiAutopilot = true;
@@ -40,7 +68,7 @@ const recorder = new LapRecorder({
   trackLengthM: track.totalLengthM,
   turns: [],
   trackId: 'rwanda_official_short',
-  vehicle: 'vf26',
+  vehicle: 'lc26',
   driverName: 'Test Driver',
   driverCode: 'TST',
 });
@@ -64,6 +92,8 @@ for (let f = 0; f < 60 * 600 && !autopilotLap; f++) {
       physicsVersion: CURRENT,
       autopilot: laps === 2 && moment,
     },
+    // Lap 2 is driven on a wheel with a moment of touch and stretches of nothing pressed: it keeps the wheel
+    input: laps === 1 ? (moment ? 'touch' : t.currentLapTimeMs % 2000 < 500 ? null : 'wheel') : 'keyboard',
   });
   if (!done) continue;
   laps++;
@@ -82,36 +112,145 @@ check('a moment on assists makes it an assisted lap', real.conditions?.assists =
 check('a moment on Casual makes it a Casual lap', real.conditions?.realism === 'casual', real.conditions?.realism);
 check('board class', real.conditions !== undefined && lapBoardClass(real.conditions) === `p${CURRENT}-assisted-casual-dry`);
 {
-  // The VF26 ships on the rigid-body engine, with a board of its own; on its older engine (a choice kept in the
+  // The LC26 ships on the rigid-body engine, with a board of its own; on its older engine (a choice kept in the
   // browser) its laps go on the board they always went on
   const g = globalThis as { window?: unknown; localStorage?: unknown };
   const kept = new Map<string, string>();
   const inBrowser = (search: string, stored?: string) => {
     kept.clear();
-    if (stored) kept.set('librecorsa.vf26Engine', stored);
+    if (stored) kept.set('librecorsa.lc26Engine', stored);
     g.window = { location: { search } };
     g.localStorage = { getItem: (k: string) => kept.get(k) ?? null, setItem: (k: string, v: string) => void kept.set(k, v) };
-    const out = { vf26: lapPhysicsVersion('vf26'), others: lapPhysicsVersion('f12026-car'), kept: kept.get('librecorsa.vf26Engine') };
+    const out = { lc26: lapPhysicsVersion('lc26', TRACK), others: lapPhysicsVersion('f12026-car', TRACK), kept: kept.get('librecorsa.lc26Engine'), restarted: inRestart() };
     delete g.window;
     delete g.localStorage;
     return out;
   };
-  const shipped = lapPhysicsVersion('vf26');
+  /** The LC26's revision on a circuit whose boards started again once (this browser's engine) */
+  const inRestart = () => {
+    RESETS.restarted_circuit = [{ physics: PHYSICS_VERSION, oldBoard: 'Old kerbs', why: 'a check' }];
+    try {
+      return lapPhysicsVersion('lc26', 'restarted_circuit');
+    } finally {
+      delete RESETS.restarted_circuit;
+    }
+  };
+  const shipped = lapPhysicsVersion('lc26', TRACK);
   const fresh = inBrowser('');
   const older = inBrowser('', 'classic');
-  const asked = inBrowser('?vf26engine=classic');
-  const back = inBrowser('?vf26engine=rigid', 'classic');
+  const asked = inBrowser('?lc26engine=classic');
+  const back = inBrowser('?lc26engine=rigid', 'classic');
   check(
-    'the VF26 ships on the rigid-body engine with a board of its own, in a script and in a browser that never chose',
-    shipped !== PHYSICS_VERSION && fresh.vf26 === shipped && inBrowser('', 'rigid').vf26 === shipped && parseLapConditions({ ...real.conditions, physicsVersion: shipped }) !== null,
+    'the LC26 ships on the rigid-body engine with a board of its own, in a script and in a browser that never chose',
+    shipped !== PHYSICS_VERSION && fresh.lc26 === shipped && inBrowser('', 'rigid').lc26 === shipped && parseLapConditions({ ...real.conditions, physicsVersion: shipped }) !== null,
     `p${shipped}`
   );
   check(
     'on its older engine its laps keep the board they had: asked for in the address, kept for the browser, and undone the same way',
-    older.vf26 === PHYSICS_VERSION && asked.vf26 === PHYSICS_VERSION && asked.kept === 'classic' && back.vf26 === shipped && back.kept === 'rigid',
-    `p${older.vf26} / p${back.vf26}`
+    older.lc26 === PHYSICS_VERSION && asked.lc26 === PHYSICS_VERSION && asked.kept === 'classic' && back.lc26 === shipped && back.kept === 'rigid',
+    `p${older.lc26} / p${back.lc26}`
   );
-  check('the other cars keep one board whichever engine the VF26 is on', fresh.others === PHYSICS_VERSION && older.others === PHYSICS_VERSION && lapPhysicsVersion() === PHYSICS_VERSION);
+  check('the other cars keep one board whichever engine the LC26 is on', fresh.others === PHYSICS_VERSION && older.others === PHYSICS_VERSION && carPhysicsVersion() === PHYSICS_VERSION);
+
+  // The physics versions the boards are named by: the newest is the one driven now, each older one keeps its numbers
+  const newest = PHYSICS_VERSIONS[PHYSICS_VERSIONS.length - 1];
+  check(
+    'versions: the newest named version is the one driven now, the LC26\'s offset with it',
+    newest.physics === PHYSICS_VERSION && PHYSICS_VERSION + newest.lc26Offset === shipped,
+    `${newest.name} p${newest.physics}+${newest.lc26Offset}`
+  );
+  check(
+    'versions: named in order, each a number of its own',
+    PHYSICS_VERSIONS.every((v, i) => v.name === `V${i + 1}` && (i === 0 || v.physics > PHYSICS_VERSIONS[i - 1].physics))
+  );
+  check(
+    'versions: the board of the version driven now is the one laps go on, for every car',
+    VEHICLE_MODEL_IDS.every((v) => boardPhysicsVersion(PHYSICS_VERSION, v) === lapPhysicsVersion(v, TRACK) && revisionOnBoard(currentBoardBase(TRACK), v) === lapPhysicsVersion(v, TRACK))
+  );
+  const v1 = PHYSICS_VERSIONS[0];
+  check(
+    'versions: Physics V1 is revision 7, the LC26\'s 527',
+    v1.physics === 7 && boardPhysicsVersion(v1.physics, 'lc26') === 527 && boardPhysicsVersion(v1.physics, 'amg-gt3') === 7 && PHYSICS_VERSION === 8 && shipped === 528,
+    `p${boardPhysicsVersion(v1.physics, 'lc26')}`
+  );
+  const classicV1 = (() => {
+    g.window = { location: { search: '' } };
+    g.localStorage = { getItem: (k: string) => (k === 'librecorsa.lc26Engine' ? 'classic' : null), setItem: () => {} };
+    const out = boardPhysicsVersion(v1.physics, 'lc26');
+    delete g.window;
+    delete g.localStorage;
+    return out;
+  })();
+  check('versions: the LC26 on its older engine reads its V1 laps on revision 7', classicV1 === 7, `p${classicV1}`);
+  check('versions: named "Physics V2 (New)" and "Physics V1"', physicsVersionLabel(PHYSICS_VERSION) === 'Physics V2 (New)' && physicsVersionLabel(7) === 'Physics V1' && physicsVersionLabel(PHYSICS_VERSION, { short: true }) === 'Physics V2');
+  check(
+    'versions: a lap\'s revision finds its board, on either LC26 engine',
+    boardChoiceOfLap(TRACK, 'lc26', 527) === '7' && boardChoiceOfLap(TRACK, 'lc26', 7) === '7' && boardChoiceOfLap(TRACK, 'lc26', 528) === '8' && boardChoiceOfLap(TRACK, 'amg-gt3', 8) === '8' &&
+      boardChoiceOfLap(TRACK, 'amg-gt3', 527) === null && boardChoiceOfLap(TRACK, 'amg-gt3', 6) === null
+  );
+  check(
+    'versions: only the version driven now takes laps, the LC26\'s on either engine',
+    isCurrentLapPhysics('lc26', 528, TRACK) && isCurrentLapPhysics('lc26', 8, TRACK) && isCurrentLapPhysics('liana', 8, TRACK) &&
+      !isCurrentLapPhysics('lc26', 527, TRACK) && !isCurrentLapPhysics('liana', 7, TRACK) && !isCurrentLapPhysics('liana', 528, TRACK)
+  );
+  check(
+    'versions: a version and the LC26\'s offset stay under a circuit\'s step',
+    PHYSICS_VERSIONS.every((v) => v.physics + v.lc26Offset < CIRCUIT_REVISION_STEP)
+  );
+  const plain = boardChoices(TRACK);
+  check(
+    'versions: a circuit that never started again has one board per version, the two the picker shows',
+    plain.map((c) => `${c.id}:${c.base}:${c.label}`).join() === '8:8:Physics V2 (New),7:7:Physics V1' && plain[0].current && !plain[1].current
+  );
+
+  // A circuit's own restart (src/lib/circuit-board-resets.ts): every circuit is at 0 for the Physics V2 reset, so one is
+  // put in for these checks and taken out again
+  check(
+    'circuits: none started again before Physics V2, each restart well formed',
+    Object.values(CIRCUIT_BOARD_RESETS).every((list) => list.every((r) => r.physics >= 8 && PHYSICS_VERSIONS.some((v) => v.physics === r.physics) && r.oldBoard.trim().length > 0 && r.oldBoard.length <= 24))
+  );
+  RESETS[TRACK] = [{ physics: PHYSICS_VERSION, oldBoard: 'Old kerbs', why: 'a check' }];
+  try {
+    check(
+      'circuits: a restart folds into every car\'s revision there, the LC26\'s offset kept',
+      circuitRevision(TRACK) === 1 && lapPhysicsVersion('amg-gt3', TRACK) === 1008 && lapPhysicsVersion('lc26', TRACK) === 1528 && currentBoardBase(TRACK) === 1008,
+      `p${lapPhysicsVersion('amg-gt3', TRACK)} / p${lapPhysicsVersion('lc26', TRACK)}`
+    );
+    check('circuits: on the LC26\'s older engine too', older.restarted === 1008 && fresh.restarted === 1528, `p${older.restarted} / p${fresh.restarted}`);
+    check('circuits: the other circuits keep their boards', lapPhysicsVersion('amg-gt3', 'spielberg') === 8 && lapPhysicsVersion('lc26', 'spielberg') === 528 && circuitRevision('spielberg') === 0);
+    const choices = boardChoices(TRACK);
+    check(
+      'circuits: the board from before the restart stays in the picker, under its version',
+      choices.map((c) => `${c.id}:${c.base}:${c.label}`).join() === '8:1008:Physics V2 (New),8-0:8:Physics V2 · Old kerbs,7:7:Physics V1',
+      choices.map((c) => c.id).join()
+    );
+    check(
+      'circuits: a pick is found again on each circuit, or falls back to its version',
+      boardChoiceOf(TRACK, '8-0').base === 8 && boardChoiceOf('spielberg', '8-0').id === '8' && boardChoiceOf(TRACK, null).current && boardChoiceOf(TRACK, 'junk').id === '8'
+    );
+    check(
+      'circuits: a lap finds its board, before and after the restart',
+      revisionOnBoard(8, 'lc26') === 528 && revisionOnBoard(1008, 'lc26') === 1528 && boardChoiceOfLap(TRACK, 'lc26', 528) === '8-0' && boardChoiceOfLap(TRACK, 'lc26', 1528) === '8' &&
+        boardChoiceOfLap(TRACK, 'amg-gt3', 1008) === '8' && boardChoiceOfLap(TRACK, 'amg-gt3', 7) === '7' && boardChoiceOfLap(TRACK, 'amg-gt3', 1007) === null
+    );
+    check(
+      'circuits: only the restarted board takes laps there',
+      isCurrentLapPhysics('lc26', 1528, TRACK) && isCurrentLapPhysics('lc26', 1008, TRACK) && !isCurrentLapPhysics('lc26', 528, TRACK) && !isCurrentLapPhysics('amg-gt3', 8, TRACK) &&
+        isCurrentLapPhysics('amg-gt3', 8, 'spielberg') && parseLapConditions({ ...real.conditions, physicsVersion: 1528 }) !== null
+    );
+    const recorder = new LapRecorder({ trackLengthM: 1000, turns: [], trackId: TRACK, vehicle: 'amg-gt3', driverName: 'Rec', driverCode: 'REC' });
+    const recorded = () => (recorder as unknown as { physicsVersion: number }).physicsVersion;
+    const gt3 = recorded();
+    recorder.setContext({ vehicle: 'lc26' });
+    check('circuits: the lap recorder ranks laps on the restarted board, for a car set later too', gt3 === 1008 && recorded() === 1528, `p${gt3} / p${recorded()}`);
+    const now = lapConditionsNow({ assists: 'pro', compound: 'soft', lineWaterMm: 0, realism: 'full', vehicle: 'lc26', trackId: TRACK });
+    check(
+      'circuits: the personal best and the online board are kept per restart',
+      lapBoardClass(now) === 'p1528-pro-full-dry' && boardKeyOf({ trackId: TRACK, vehicle: 'lc26', conditions: now }) === `${TRACK}|lc26|p1528-pro-full-dry`
+    );
+  } finally {
+    delete RESETS[TRACK];
+  }
 }
 {
   // A lap posts itself when it beats this browser's lap on its online board, not its local personal best: a best set
@@ -134,7 +273,7 @@ check('board class', real.conditions !== undefined && lapBoardClass(real.conditi
   delete g.localStorage;
   check(
     'a board with no lap from this browser takes the next one; each board keeps its own best, never a slower one',
-    key === `rwanda_official_short|vf26|${lapBoardClass(real.conditions!)}` && boardKeyOf({ ...real, conditions: undefined }) === null && before === null && after === 90_000 && elsewhere === null && faster === 88_000,
+    key === `rwanda_official_short|lc26|${lapBoardClass(real.conditions!)}` && boardKeyOf({ ...real, conditions: undefined }) === null && before === null && after === 90_000 && elsewhere === null && faster === 88_000,
     `${before} → ${after} → ${faster}`
   );
 }
@@ -143,6 +282,32 @@ check(
   'an autopilot lap is shown but never ranks',
   autopilotLap !== null && autopilotLap.summary.autopilot && !autopilotLap.summary.isPersonalBest && autopilotLap.recording.conditions?.realism === 'full',
   autopilotLap ? `valid ${autopilotLap.summary.valid}, PB ${autopilotLap.summary.isPersonalBest}` : 'no third lap'
+);
+check('a lap keeps the input that drove most of it', real.conditions?.input === 'wheel', real.conditions?.input);
+{
+  const idle = { throttle: 0, brake: 0, steer: 0 };
+  const frame = (f: Partial<Parameters<typeof drivingInputOf>[0]>) =>
+    drivingInputOf({ touch: null, source: null, mouseSteer: false, keys: false, pad: idle, setting: 'keyboard', ...f });
+  const cases: [string, ReturnType<typeof drivingInputOf>, ReturnType<typeof drivingInputOf>][] = [
+    ['phone, throttle on the screen', frame({ touch: { throttle: 1, brake: 0, steer: 0 } }), 'touch'],
+    ['phone, coasting with nothing touched', frame({ touch: idle }), null],
+    ['keys held with the on-screen controls showing', frame({ touch: idle, keys: true }), 'keyboard'],
+    ['keys held with an idle pad plugged in', frame({ source: 'controller', keys: true }), 'keyboard'],
+    ['an idle pad and nothing held', frame({ source: 'controller' }), null],
+    ['a pad being used', frame({ source: 'controller', pad: { throttle: 0.8, brake: 0, steer: 0.2 } }), 'controller'],
+    ['a bound wheel, pedals up', frame({ source: 'wheel', setting: 'wheel' }), 'wheel'],
+    ['an unbound non-standard pad with the wheel setting', frame({ source: 'legacy', setting: 'wheel', pad: { throttle: 1, brake: 0, steer: 0 } }), 'wheel'],
+    ['a non-standard pad with the controller setting', frame({ source: 'legacy', setting: 'controller', pad: { throttle: 1, brake: 0, steer: 0 } }), 'controller'],
+    ['mouse steering', frame({ mouseSteer: true }), 'keyboard'],
+  ];
+  const wrong = cases.filter(([, got, want]) => got !== want).map(([name, got]) => `${name}: ${got}`);
+  check('input: each frame is put down to what is being used', wrong.length === 0, wrong.join('; '));
+}
+check('validation keeps the input', validateLapRecording(JSON.parse(JSON.stringify(real)))?.conditions?.input === 'wheel');
+check(
+  'an unknown or missing input drops the icon, not the lap',
+  validateLapRecording({ ...real, conditions: { ...real.conditions, input: 'joystick' } })?.conditions?.input === undefined &&
+    validateLapRecording({ ...real, conditions: { ...real.conditions, input: undefined } }) !== null,
 );
 check('validation keeps the conditions', validateLapRecording(JSON.parse(JSON.stringify(real)))?.conditions?.assists === 'assisted');
 check('malformed conditions are refused', validateLapRecording({ ...real, conditions: { ...real.conditions, surface: 'snow' } }) === null);
@@ -171,11 +336,11 @@ const open = { ...real, data: real.data.slice(0, Math.floor(n * 0.9) * S) };
 check('a lap that stops short of the line is refused', lapPlausibilityProblem(open.data) !== null, String(lapPlausibilityProblem(open.data)));
 
 // 3. The board API -----------------------------------------------------------------------------------------------------
-const schema = readFileSync(join(__dirname, '../cloudflare/migrations/0001_lap_boards.sql'), 'utf8');
+const schema = ['0001_lap_boards.sql', '0007_lap_input.sql'].map((f) => readFileSync(join(__dirname, '../cloudflare/migrations', f), 'utf8')).join('\n');
 const ghosts = fakeR2();
 // A Wednesday noon in a week whose challenge is the test lap's circuit and car (RISE Motordrome's short lap, the 2026 prototype)
 let nowMs = Date.UTC(2026, 10, 11, 12);
-while (challengeAt(nowMs).trackId !== 'rwanda_official_short' || challengeAt(nowMs).vehicle !== 'vf26') nowMs += 7 * 86_400_000;
+while (challengeAt(nowMs).trackId !== 'rwanda_official_short' || challengeAt(nowMs).vehicle !== 'lc26') nowMs += 7 * 86_400_000;
 const week = challengeAt(nowMs);
 const deps: BoardDeps = { db: fakeD1(schema), ghosts, eventRule: challengeProblem, now: () => nowMs };
 const KEY_A = 'a'.repeat(43);
@@ -194,10 +359,10 @@ const post = async (rec: unknown, driverKey: string | null = KEY_A, extra: Recor
   );
   return { status: res.status, body: res.body as PostAnswer };
 };
-type Row = { id: string; name: string; lapTimeMs: number; conditions: { assists: string; realism: string; surface: string; physicsVersion: number } };
+type Row = { id: string; name: string; lapTimeMs: number; conditions: { assists: string; realism: string; surface: string; physicsVersion: number; input?: string } };
 type ListAnswer = { laps: Row[]; total: number; physics: number[]; me: { rank: number; lap: Row; aboveMs: number | null } | null };
 const list = async (query = '', physics = CURRENT) => {
-  const res = await listLaps(deps, new URL(`https://librecorsa.test/api/laps?track=rwanda_official_short&vehicle=vf26&physics=${physics}${query}`));
+  const res = await listLaps(deps, new URL(`https://librecorsa.test/api/laps?track=rwanda_official_short&vehicle=lc26&physics=${physics}${query}`));
   return { status: res.status, body: res.body as ListAnswer };
 };
 /** The real lap driven by someone else, a little slower or faster, under other conditions */
@@ -259,7 +424,7 @@ async function main(): Promise<void> {
     check('board: their place says the time of the place above', body.me?.aboveMs === body.laps[0].lapTimeMs, String(body.me?.aboveMs));
     const top = (await list('&name=Quick%20Rival')).body;
     check('board: at the top there is no place above', top.me?.rank === 1 && top.me.aboveMs === null);
-    const parse = (me: unknown) => parseRemoteBoard({ ...body, me }, 'rwanda_official_short', 'vf26', CURRENT, {});
+    const parse = (me: unknown) => parseRemoteBoard({ ...body, me }, 'rwanda_official_short', 'lc26', CURRENT, {});
     check(
       'board: the game reads the place above, and only a time faster than the player\'s own',
       parse(body.me)?.me?.aboveMs === body.laps[0].lapTimeMs &&
@@ -274,7 +439,7 @@ async function main(): Promise<void> {
       second.bestMs === body.me!.lap.lapTimeMs && second.leaderMs === body.laps[0].lapTimeMs && challengePlaceLabel(second) === `P2 · ${gap} to P1`,
       challengePlaceLabel(second)
     );
-    const first = challengeTarget(parseRemoteBoard(top, 'rwanda_official_short', 'vf26', CURRENT, {})!);
+    const first = challengeTarget(parseRemoteBoard(top, 'rwanda_official_short', 'lc26', CURRENT, {})!);
     const none = challengeTarget({ ...parse(null)!, me: null });
     check(
       'time trial: at the top it says so, and before a lap only the fastest shows',
@@ -294,6 +459,12 @@ async function main(): Promise<void> {
     const monday = Date.UTC(2026, 10, 9);
     check('challenge: one challenge from Monday 00:00 to Sunday 23:59', challengeAt(monday).id === '2026-W46' && challengeAt(monday + 7 * 86_400_000 - 1).id === '2026-W46' && challengeAt(monday - 1).id === '2026-W45' && challengeAt(monday).endsMs - challengeAt(monday).startsMs === 7 * 86_400_000);
     {
+      // The weeks the home page's board lists: this week first, back to the first week, never one before it
+      const soFar = challengesSoFar(Date.UTC(2026, 10, 25, 12));
+      check('challenge: the weeks so far run newest first back to 2026-W46', soFar.map((w) => w.id).join(',') === '2026-W48,2026-W47,2026-W46' && soFar[2].trackId === 'dunsfold', soFar.map((w) => w.id).join(','));
+      check('challenge: before the first week there are none, and the list is capped', challengesSoFar(monday - 1).length === 0 && challengesSoFar(Date.UTC(2030, 0, 1), 5).length === 5);
+    }
+    {
       // Which circuits a week may be on, and how circuits and cars are paired
       type Listed = { id: string; quality: string };
       const listed = JSON.parse(readFileSync(join(__dirname, '../public/tracks/index.json'), 'utf8')) as Listed[];
@@ -304,14 +475,36 @@ async function main(): Promise<void> {
       check('challenge: no week is on a circuit converted from a Sketchfab model', offTrial.length === 0, offTrial.map((c) => c.trackId).join(', '));
       check('challenge: no week\'s races are on such a circuit, or at Dunsfold', offRace.length === 0, offRace.map((c) => c.race.trackId).join(', '));
       const first = challengeAt(monday);
-      check('challenge: the rotation starts the week of 9 November 2026 with the Liana at Dunsfold, a time trial only', first.trackId === 'dunsfold' && first.vehicle === 'liana' && first.race.trackId === 'rwanda_official' && first.race.vehicle === 'vf26' && challengeAt(monday - 1).trackId === CHALLENGE_ROTATION[CHALLENGE_ROTATION.length - 1].trackId);
+      check('challenge: the rotation starts the week of 9 November 2026 with the Liana at Dunsfold, a time trial only', first.trackId === 'dunsfold' && first.vehicle === 'liana' && first.race.trackId === 'rwanda_official' && first.race.vehicle === 'lc26' && challengeAt(monday - 1).trackId === CHALLENGE_ROTATION[CHALLENGE_ROTATION.length - 1].trackId);
       const elsewhere = CHALLENGE_ROTATION.filter((c) => c.race.trackId !== c.trackId || c.race.vehicle !== c.vehicle);
       check('challenge: only the Dunsfold weeks race on another circuit and car', elsewhere.length > 0 && elsewhere.every((c) => c.trackId === 'dunsfold'));
-      const raced = CHALLENGE_ROTATION.filter((c) => c.trackId !== 'dunsfold');
-      const circuits = new Set(raced.map((c) => c.trackId));
-      const cars = new Set(raced.map((c) => c.vehicle));
-      const pairs = new Set(raced.map((c) => `${c.trackId} ${c.vehicle}`));
-      check('challenge: over the rotation every circuit is driven in every car, once', pairs.size === circuits.size * cars.size && pairs.size === raced.length, `${pairs.size} pairs, ${circuits.size} circuits, ${cars.size} cars, ${raced.length} weeks`);
+      type Kind = { id: string; type?: string };
+      const climbs = CHALLENGE_ROTATION.filter((c) => (listed as Kind[]).find((x) => x.id === c.race.trackId)?.type === 'hillclimb');
+      check('challenge: no week is on a hill climb', climbs.length === 0, climbs.map((c) => c.trackId).join(', '));
+      // The weeks asked for by date
+      const on = (y: number, m: number, d: number) => challengeAt(Date.UTC(y, m - 1, d));
+      const is = (c: { trackId: string; vehicle: string }, trackId: string, vehicle: string) => c.trackId === trackId && c.vehicle === vehicle;
+      check(
+        'challenge: 16 Nov the LMDh at Le Mans, 23 Nov the GT3 at the Red Bull Ring, 30 Nov the 496R at Chang (no assists), 7 Dec the Liana at Monaco, 14 Dec the GT3 at RISE',
+        is(on(2026, 11, 16), 'le_mans_82', 'lc-lmdh') && is(on(2026, 11, 23), 'spielberg', 'amg-gt3') && is(on(2026, 11, 30), 'chang', 'mtr-496r') && on(2026, 11, 30).assists === 'pro' && is(on(2026, 12, 7), 'monaco', 'liana') && is(on(2026, 12, 14), 'rwanda_official', 'amg-gt3')
+      );
+      check(
+        'challenge: the weeks of the 2027 races at Monaco, Le Mans, the Red Bull Ring and Istanbul are on those circuits',
+        is(on(2027, 6, 4), 'monaco', 'lc26') && is(on(2027, 6, 12), 'le_mans_82', 'lc-lmdh') && is(on(2027, 7, 9), 'spielberg', 'lc26') && is(on(2027, 10, 1), 'istanbul_park', 'lc26')
+      );
+      check('challenge: every fourth week has no assists, also when the list starts again', CHALLENGE_ROTATION.length % 4 === 0 && CHALLENGE_ROTATION.every((c, i) => (c.assists === 'pro') === (i % 4 === 3)), String(CHALLENGE_ROTATION.length));
+      // A venue's layouts share the start of their id ("okayama", "okayama_piper")
+      const venue = (id: string) => id.split('_')[0];
+      const twice = CHALLENGE_ROTATION.filter((c, i) => venue(c.trackId) === venue(CHALLENGE_ROTATION[(i + 1) % CHALLENGE_ROTATION.length].trackId));
+      check('challenge: no venue two weeks running', twice.length === 0, twice.map((c) => c.trackId).join(', '));
+      // A week may name one car of its vehicle (the GT3 has two); its races are in the same one
+      const named = CHALLENGE_ROTATION.filter((c) => c.car !== undefined);
+      const wrongCar = named.filter((c) => carById(c.car as CarId).id !== c.car || carById(c.car as CarId).physics !== c.vehicle || c.race.car !== c.car);
+      check('challenge: a week that names its car names one of its vehicle, 14 Dec the BMW', wrongCar.length === 0 && on(2026, 12, 14).car === 'bmw-m4-gt3' && on(2026, 11, 23).car === undefined, wrongCar.map((c) => c.car).join(', '));
+      const dunsfold = CHALLENGE_ROTATION.filter((c) => c.trackId === 'dunsfold');
+      check('challenge: a Dunsfold week\'s races name no car', dunsfold.every((c) => c.race.car === undefined));
+      const cars = new Set(CHALLENGE_ROTATION.map((c) => c.vehicle));
+      check('challenge: every car but the F1 team cars has its weeks', ['lc26', 'lc-lmdh', 'amg-gt3', 'mtr-496r', 'liana', 'nissan-r33-jgtc', 'nissan-r32-jtcc'].every((v) => cars.has(v as never)) && cars.size === 7, [...cars].join(', '));
       check('challenge: a week\'s races are 3 to 14 laps (ten minutes or so on the shortest and the longest lap)', CHALLENGE_ROTATION.every((c) => c.race.laps >= 3 && c.race.laps <= 14), CHALLENGE_ROTATION.map((c) => c.race.laps).join(' '));
     }
     check('challenge: the next week is the next entry of the rotation', challengeAt(monday + 7 * 86_400_000).trackId === CHALLENGE_ROTATION[1].trackId && challengeAt(monday + 14 * 86_400_000).trackId === CHALLENGE_ROTATION[2].trackId);
@@ -339,12 +532,76 @@ async function main(): Promise<void> {
     check('challenge: nothing to store and a bad event: refused with the reason', junk.status === 409 && junk.body.error === 'Unknown event', junk.body.error);
   }
   {
-    // A lap from an older physics revision goes on that revision's board
-    const res = await post(variant(0.98, 'Old Timer', { physicsVersion: 1 }), 'c'.repeat(43));
-    check('board: an older-physics lap is ranked on its own board', res.body.ok === true && res.body.rank === 1 && res.body.total === 1);
+    // A lap of an older physics version (a tab left open from before the update) is refused: those boards are read only
+    const V1 = boardPhysicsVersion(PHYSICS_VERSIONS[0].physics, 'lc26');
+    const stale = variant(0.98, 'Old Timer', { physicsVersion: V1 });
+    const res = await post(stale, 'c'.repeat(43));
+    check('board: a lap of an older physics version is refused, its board read only', res.status === 409 && res.body.error === OLDER_PHYSICS, res.body.error);
+    const claimed = await deps.db.prepare('SELECT COUNT(*) AS n FROM drivers WHERE name_key = ?').bind('old timer').first<{ n: number }>();
+    check('board: and nothing of it is kept, not even a claim on the name', claimed?.n === 0 && (await list('', V1)).body.total === 0);
+
+    // A V1 lap stored before the update stays on its board, read as it was
+    const id = '00000000-0000-4000-8000-000000000001';
+    await ghosts.put(`laps/${id}.json`, JSON.stringify(stale));
+    await deps.db
+      .prepare(
+        'INSERT INTO laps (id, track_id, vehicle, physics, event, assists, realism, surface, compound, input, name_key, driver_name, driver_code, lap_time_ms, s1_ms, s2_ms, s3_ms, recorded_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+      .bind(id, stale.trackId, stale.vehicle, V1, '', 'pro', 'full', 'dry', 'medium', null, 'old timer', 'Old Timer', 'OLD', stale.lapTimeMs, ...stale.sectorTimesMs, stale.recordedAt, nowMs)
+      .run();
     const now = (await list()).body;
-    check('board: and not on the current one, which lists both revisions', now.total === 3 && now.physics.join() === `${CURRENT},1`, now.physics.join());
-    check('board: the older board has it', (await list('', 1)).body.laps[0]?.name === 'Old Timer');
+    check('board: the current one leaves it off, and lists both revisions', now.total === 3 && now.physics.join() === `${CURRENT},${V1}`, now.physics.join());
+    check('board: the older board has it', (await list('', V1)).body.laps[0]?.name === 'Old Timer');
+  }
+  {
+    // A circuit's boards start again on their own (src/lib/circuit-board-resets.ts): on a board of its own, so the counts
+    // above stay as they are. Put in for these checks and taken out again
+    const own: BoardDeps = { db: fakeD1(schema), ghosts: fakeR2(), eventRule: challengeProblem, now: () => nowMs };
+    const send = async (rec: LapRecording, key: string, extra: Record<string, unknown> = {}) => {
+      const res = await submitLap(
+        own,
+        new Request('https://librecorsa.test/api/laps', { method: 'POST', body: JSON.stringify({ rec, driverKey: key, ...extra }), headers: { 'CF-Connecting-IP': `10.7.0.${ipCounter++ % 250}` } })
+      );
+      return { status: res.status, body: res.body as PostAnswer };
+    };
+    const read = async (query: string) => {
+      const res = await listLaps(own, new URL(`https://librecorsa.test/api/laps?track=${TRACK}${query}`));
+      return { status: res.status, body: res.body as ListAnswer & { current?: Record<string, number> } };
+    };
+    // Before the restart: a lap on the board as it was
+    const before = await send(variant(0.99, 'Before Fix', { physicsVersion: CURRENT }), 'e'.repeat(43));
+    RESETS[TRACK] = [{ physics: PHYSICS_VERSION, oldBoard: 'Old kerbs', why: 'a check' }];
+    try {
+      const NEW = lapPhysicsVersion('lc26', TRACK);
+      const stale = await send(variant(0.98, 'Before Fix', { physicsVersion: CURRENT }), 'e'.repeat(43));
+      check('circuit restart: a lap from before it is refused, its board read only', before.body.ok === true && stale.status === 409 && stale.body.error === OLDER_PHYSICS, stale.body.error);
+      const rules = { assists: week.assists, realism: week.realism, compound: challengeCompound(week.vehicle), surface: 'dry' as const };
+      const after = await send(variant(1.0, 'After Fix', { ...rules, physicsVersion: NEW }), 'f'.repeat(43), { event: week.id });
+      check('circuit restart: a lap on the restarted board goes up, to the week\'s board too', after.body.ok === true && after.body.rank === 1 && after.body.total === 1 && after.body.eventRank === 1, after.body.error ?? after.body.eventError);
+      check(
+        'circuit restart: the week\'s rules go by the restarted board',
+        challengeProblem(variant(1.0, 'x', { ...rules, physicsVersion: NEW }), week.id, nowMs) === null && challengeProblem(variant(1.0, 'x', { ...rules, physicsVersion: CURRENT }), week.id, nowMs) !== null
+      );
+      const newBoard = (await read(`&vehicle=lc26&physics=${NEW}`)).body;
+      const oldBoard = (await read(`&vehicle=lc26&physics=${CURRENT}`)).body;
+      check(
+        'circuit restart: one car\'s boards, before and after, each with its own laps',
+        newBoard.laps.map((r) => r.name).join() === 'After Fix' && oldBoard.laps.map((r) => r.name).join() === 'Before Fix' && newBoard.physics.join() === `${NEW},${CURRENT}`,
+        newBoard.physics.join()
+      );
+      const all = (await read('&vehicle=all')).body;
+      const allOld = (await read('&vehicle=all&version=8')).body;
+      check(
+        'circuit restart: every car\'s board is the restarted one, and version=8 the one before it',
+        all.laps.map((r) => r.name).join() === 'After Fix' && all.current?.lc26 === NEW && allOld.laps.map((r) => r.name).join() === 'Before Fix' && allOld.current?.lc26 === CURRENT
+      );
+      const asked = await Promise.all(['1008', '7', '1007', '2008'].map(async (v) => (await read(`&vehicle=all&version=${v}`)).status));
+      check('circuit restart: a board the circuit never had is refused', asked.join() === '200,200,400,400', asked.join());
+      const elsewhere = (await listLaps(own, new URL('https://librecorsa.test/api/laps?track=spielberg&vehicle=all&version=1008'))).status;
+      check('circuit restart: and another circuit has no restarted board', elsewhere === 400);
+    } finally {
+      delete RESETS[TRACK];
+    }
   }
   {
     let last = { status: 0, body: {} as PostAnswer };
@@ -362,19 +619,20 @@ async function main(): Promise<void> {
     check('board: every row has its ghost and every ghost its row', ghosts.objects.size === stored, `${ghosts.objects.size} ghosts, ${stored} rows`);
   }
   {
-    // Through the API: switched on and off, never cached
+    // Through the API: switched on and off; a page that says where a driver stands is never cached (a page anyone
+    // may read is kept half a minute: verify-board-stats.ts)
     const env = { ONLINE_BOARD: 'on', BOARD_DB: deps.db, GHOSTS: ghosts } as unknown as Env;
     const api = (path: string, e: Env) => {
       const url = new URL(`https://librecorsa.org${path}`);
       return handleApi(new Request(url), e, url);
     };
-    const listed = await api(`/api/laps?track=rwanda_official_short&vehicle=vf26&physics=${CURRENT}`, env);
+    const listed = await api(`/api/laps?track=rwanda_official_short&vehicle=lc26&physics=${CURRENT}&name=Test%20Driver`, env);
     const rows = ((await listed.json()) as ListAnswer).laps;
-    check('api: GET /api/laps lists the board, never cached', listed.status === 200 && rows.length === 3 && listed.headers.get('Cache-Control') === 'no-store');
+    check('api: GET /api/laps lists the board, never cached with a name', listed.status === 200 && rows.length === 3 && listed.headers.get('Cache-Control') === 'no-store');
     const ghost = await api(`/api/laps/${rows[0].id}`, env);
     check('api: GET /api/laps/<id> returns the ghost', ghost.status === 200 && validateLapRecording(await ghost.json()) !== null);
     check('api: an unknown lap is 404', (await api('/api/laps/00000000-0000-4000-8000-000000000000', env)).status === 404);
-    check('api: the board switched off answers 404', (await api('/api/laps?track=rwanda_official_short&vehicle=vf26&physics=2', { ...env, ONLINE_BOARD: 'off' })).status === 404);
+    check('api: the board switched off answers 404', (await api('/api/laps?track=rwanda_official_short&vehicle=lc26&physics=2', { ...env, ONLINE_BOARD: 'off' })).status === 404);
     check('api: no database bound: off', boardDeps({} as Env, () => null) === null);
   }
 
@@ -408,7 +666,7 @@ async function main(): Promise<void> {
     const mira = await db.prepare("SELECT key_hash FROM drivers WHERE name_key = 'mira tanaka'").first<{ key_hash: string }>();
     check('migration: a name keeps the hash of its key', mira?.key_hash === hash('a'));
     const migrated: BoardDeps = { db, ghosts: fakeR2(), eventRule: challengeProblem, now: () => nowMs };
-    const listed = (await listLaps(migrated, new URL(`https://librecorsa.test/api/laps?track=rwanda_official_short&vehicle=vf26&physics=${CURRENT}&name=Mira%20Tanaka`))).body as ListAnswer;
+    const listed = (await listLaps(migrated, new URL(`https://librecorsa.test/api/laps?track=rwanda_official_short&vehicle=lc26&physics=${CURRENT}&name=Mira%20Tanaka`))).body as ListAnswer;
     check('migration: the carried-over laps show on the new board', listed.total === 2 && listed.laps[0].name === 'Mira Tanaka' && listed.me?.rank === 1);
 
     // Later: the driver went faster on the old board from a browser still on the old game; someone else took a name here
@@ -443,7 +701,7 @@ async function main(): Promise<void> {
     const rows = async () =>
       (await r.db.prepare('SELECT driver_name AS name, driver_code AS code, name_key AS k, lap_time_ms AS t, event, assists FROM laps ORDER BY event, lap_time_ms').all<{ name: string; code: string; k: string; t: number; event: string; assists: string }>()).results;
     // A lap of this week's challenge: it goes on the open board and the week's
-    const fit = (k: number, name: string) => variant(k, name, { assists: week.assists, realism: week.realism, compound: challengeCompound('vf26'), surface: 'dry' });
+    const fit = (k: number, name: string) => variant(k, name, { assists: week.assists, realism: week.realism, compound: challengeCompound('lc26'), surface: 'dry' });
 
     const bad = await upload(fit(1, 'Big Dick 9'));
     check('names: a lap under a name the filter refuses is turned down', bad.status === 400 && bad.body.error === 'Pick another name' && (await rows()).length === 0, bad.body.error);
@@ -463,7 +721,7 @@ async function main(): Promise<void> {
       moved.body.ok === true && moved.body.moved === 3 && after.every((l) => l.name === 'Mira Tanaka' && l.k === 'mira tanaka' && l.code === 'MIR') && race?.name === 'Mira Tanaka' && race.code === 'MIR' && race.name_key === 'mira tanaka' && oldClaim === null,
       `${moved.body.error ?? `${moved.body.moved} moved`}: ${after.map((l) => l.name).join(', ')}`
     );
-    const list = (await listLaps(r, new URL(`https://librecorsa.test/api/laps?track=rwanda_official_short&vehicle=vf26&physics=${CURRENT}&name=Mira%20Tanaka`))).body as ListAnswer;
+    const list = (await listLaps(r, new URL(`https://librecorsa.test/api/laps?track=rwanda_official_short&vehicle=lc26&physics=${CURRENT}&name=Mira%20Tanaka`))).body as ListAnswer;
     check('names: the board lists the driver once, under the new name', list.total === 1 && list.laps[0].name === 'Mira Tanaka' && list.me?.rank === 1);
 
     const freed = await upload(fit(1.04, 'Apex Falcon 27'), KEY_B);
@@ -503,6 +761,27 @@ async function main(): Promise<void> {
     const rudeNames = ['F.u.u.c.k', 'a$$', 'Big Dicks', 'Orospu Çocuğu', 'AMK', 'amına koyayım', 'LibreCorsa', 'Libre Corsa', 'Admin'];
     const missed = rudeNames.filter((n) => nameProblem(n) === null);
     check('names: spelled with symbols, spaces, repeats or Turkish letters, refused names are still caught', missed.length === 0, missed.join(', '));
+  }
+
+  {
+    // What drove the lap, on a board of its own: kept with the row, never part of its class
+    const own: BoardDeps = { db: fakeD1(schema), ghosts: fakeR2(), eventRule: challengeProblem, now: () => nowMs };
+    const send = async (rec: LapRecording, key: string) =>
+      (await submitLap(own, new Request('https://librecorsa.test/api/laps', { method: 'POST', body: JSON.stringify({ rec, driverKey: key }), headers: { 'CF-Connecting-IP': `10.9.0.${ipCounter++ % 250}` } }))).body as PostAnswer;
+    const rows = async () =>
+      ((await listLaps(own, new URL(`https://librecorsa.test/api/laps?track=rwanda_official_short&vehicle=lc26&physics=${CURRENT}`))).body as ListAnswer).laps;
+    const wheel = await send(variant(1.02, 'Wheel Driver', { input: 'wheel' }), KEY_A);
+    const bare = await send(variant(1.03, 'Old Build', { input: undefined }), KEY_B);
+    let laps = await rows();
+    check('input: stored and listed with the lap', wheel.ok && laps.find((l) => l.name === 'Wheel Driver')?.conditions.input === 'wheel');
+    check('input: a lap without one is taken, listed without one', bare.ok && laps.some((l) => l.name === 'Old Build' && !('input' in l.conditions)));
+    const pad = await send(variant(1.01, 'Wheel Driver', { input: 'controller' }), KEY_A);
+    laps = await rows();
+    const mine = laps.filter((l) => l.name === 'Wheel Driver');
+    check('input: another device in the same class replaces the row, not a second one', pad.ok && mine.length === 1 && mine[0].conditions.input === 'controller', `${mine.length} rows`);
+    const slower = await send(variant(1.03, 'Wheel Driver', { input: 'touch' }), KEY_A);
+    laps = await rows();
+    check('input: a slower lap on another device is refused as not faster', slower.notFaster === true && laps.find((l) => l.name === 'Wheel Driver')?.conditions.input === 'controller');
   }
 
   if (failures.length > 0) {

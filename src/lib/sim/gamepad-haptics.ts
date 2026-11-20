@@ -72,6 +72,29 @@ const EFFECT_DURATION_MS = 90;
 /** Magnitude change that counts as a new effect while the previous one is still running */
 const MAGNITUDE_EPS = 0.03;
 const KERB_PULSE_HZ = 12;
+/** A pad's motors follow pulses up to about this rate (Hz): faster kerb hits pulse at it */
+const KERB_PULSE_MAX_HZ = 15;
+/** The kerb pulse's rate: `hitHz`, the rate the tyres are being hit (`kerbHitHz`), up to KERB_PULSE_MAX_HZ, or KERB_PULSE_HZ without it */
+const kerbPulseHz = (hitHz: number) => (hitHz > 0 ? Math.min(KERB_PULSE_MAX_HZ, hitHz) : KERB_PULSE_HZ);
+/**
+ * Whether the kerb pulse is in its on half at `timeS`, for a call with no state carried between frames. A frame loop
+ * reads `RumbleMixState.kerbPhase` instead: the rate follows the car's speed, and `timeS · hz` would jump at every
+ * change of it
+ */
+export const kerbPulseOn = (timeS: number, hitHz = 0) => (timeS * kerbPulseHz(hitHz)) % 1 < 0.5;
+
+/**
+ * How hard a kerb hits the car's left and right tyres, 0..1: from the physics (`wheelKerbHit`, each tyre's load hits),
+ * or, from telemetry without it, 1 on a kerb by the surface flags
+ */
+export function kerbSides(t: CarTelemetry): [number, number] {
+  const h = t.wheelKerbHit;
+  if (h) return [Math.max(h[0], h[2]), Math.max(h[1], h[3])];
+  return [t.onKerbLeft ? 1 : 0, t.onKerbRight ? 1 : 0];
+}
+
+/** The rate the tyres are being hit (Hz, the busier side), 0 without it */
+export const kerbHitRateHz = (t: CarTelemetry): number => (t.kerbHitHz ? Math.max(t.kerbHitHz[0], t.kerbHitHz[1]) : 0);
 const ABS_PULSE_HZ = 20;
 const TC_PULSE_HZ = 25;
 
@@ -134,10 +157,12 @@ export interface RumbleMixState {
   weightN: number;
   /** The last car-to-car contact felt (`CarTelemetry.carContact.seq`) */
   contactSeq: number;
+  /** Where the kerb pulse is in its cycle, 0..1 (on in the first half), moved on each frame at the pulse's rate */
+  kerbPhase: number;
 }
 
 export function createRumbleMixState(): RumbleMixState {
-  return { lastTimeS: NaN, roughHold: [0, 0, 0, 0], impactEnvelope: 0, weightN: 0, contactSeq: 0 };
+  return { lastTimeS: NaN, roughHold: [0, 0, 0, 0], impactEnvelope: 0, weightN: 0, contactSeq: 0, kerbPhase: 0 };
 }
 
 /** Back to a fresh state (pause, toggle off, unmount) */
@@ -146,6 +171,7 @@ export function resetRumbleMixState(state: RumbleMixState): void {
   state.roughHold.fill(0);
   state.impactEnvelope = 0;
   state.weightN = 0;
+  state.kerbPhase = 0;
 }
 
 const finiteOr = (v: number | undefined, fallback: number) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
@@ -155,7 +181,7 @@ const finiteOr = (v: number | undefined, fallback: number) => (typeof v === "num
  * gated by its load and averaged across the four wheels. `hold` (with `decay`, the hold's per-frame factor) keeps the
  * per-wheel peaks; without it each frame stands alone.
  */
-function surfaceRoughness(t: CarTelemetry, hold: number[] | undefined, decay: number): number {
+function surfaceRoughness(t: CarTelemetry, hold: number[] | undefined, decay: number, perWheel?: number[]): number {
   const texSpeed = smoothstep(10, 90, t.speedKmh);
   let sum = 0;
   for (let i = 0; i < 4; i++) {
@@ -169,7 +195,9 @@ function surfaceRoughness(t: CarTelemetry, hold: number[] | undefined, decay: nu
     const surface = t.wheelSurfaces?.[i];
     const vibration = surface === "grass" || surface === "runoff" ? DEFAULT_SURFACE_TABLE[surface].vibration : 0;
     const gate = smoothstep(ROUGH_LOAD_GATE_LOW_N, ROUGH_LOAD_GATE_HIGH_N, finiteOr(t.wheelLoadsN?.[i], 0));
-    sum += gate * layerRumble(rough, OFFTRACK_TEXTURE_GAIN * vibration * texSpeed);
+    const wheel = gate * layerRumble(rough, OFFTRACK_TEXTURE_GAIN * vibration * texSpeed);
+    if (perWheel) perWheel[i] = wheel;
+    sum += wheel;
   }
   return sum / 4;
 }
@@ -243,18 +271,19 @@ export function layerRumble(acc: number, effect: number): number {
 
 /**
  * Which pulses are running and in which half of their cycle (a bitmask that changes on every pulse edge), and the
- * shortest running half-period (s; 0 with no pulse)
+ * shortest running half-period (s; 0 with no pulse). The kerb pulse is where `kerbPhase` has it, at the rate the motors
+ * play it
  */
-function pulseState(t: CarTelemetry, timeS: number, triggers: boolean): { key: number; halfS: number } {
+function pulseState(t: CarTelemetry, timeS: number, triggers: boolean, kerbPhase: number): { key: number; halfS: number } {
   let key = 0;
   let halfS = 0;
-  const add = (bit: number, hz: number) => {
+  const add = (bit: number, hz: number, phase = (timeS * hz) % 1) => {
     key |= 1 << (2 * bit);
-    if ((timeS * hz) % 1 < 0.5) key |= 1 << (2 * bit + 1);
+    if (phase < 0.5) key |= 1 << (2 * bit + 1);
     const h = 0.5 / hz;
     halfS = halfS === 0 ? h : Math.min(halfS, h);
   };
-  if (t.onKerbLeft || t.onKerbRight) add(0, KERB_PULSE_HZ);
+  if (t.onKerbLeft || t.onKerbRight) add(0, kerbPulseHz(kerbHitRateHz(t)), kerbPhase);
   if (triggers) {
     const minSlip = Math.min(...t.wheelSlipRatios);
     if (t.brake > 0.05 && (t.f12026?.absActive === true || (t.speedKmh > 30 && minSlip < -0.12))) add(1, ABS_PULSE_HZ);
@@ -263,11 +292,44 @@ function pulseState(t: CarTelemetry, timeS: number, triggers: boolean): { key: n
   return { key, halfS };
 }
 
+/** The cues behind the two motor levels, for a pad that plays them apart (the DualSense's haptics) */
+export interface RumbleCues {
+  /** Kerb level under the car while on one (unpulsed), 0..1 */
+  kerb: number;
+  scrub: number;
+  texture: number;
+  impact: number;
+  lockUp: number;
+  wheelspin: number;
+  rearSlide: number;
+  rackLoad: number;
+  /** Rough ground per wheel (FL, FR, RL, RR), 0..1 */
+  roughWheels: [number, number, number, number];
+}
+
+export const createRumbleCues = (): RumbleCues => ({
+  kerb: 0,
+  scrub: 0,
+  texture: 0,
+  impact: 0,
+  lockUp: 0,
+  wheelspin: 0,
+  rearSlide: 0,
+  rackLoad: 0,
+  roughWheels: [0, 0, 0, 0],
+});
+
 /**
  * Motor magnitudes (0..1) for the current car state; `timeS` drives the kerb pulse. `mix` carries the held envelopes
- * from frame to frame (one per pad driver); without it each call stands alone.
+ * from frame to frame (one per pad driver); without it each call stands alone. `cues`, when given, receives the
+ * separate cues the two levels are layered from.
  */
-export function hapticMagnitudes(t: CarTelemetry, timeS: number, mix?: RumbleMixState): { weak: number; strong: number } {
+export function hapticMagnitudes(
+  t: CarTelemetry,
+  timeS: number,
+  mix?: RumbleMixState,
+  cues?: RumbleCues
+): { weak: number; strong: number } {
   let decayDt = 0;
   if (mix) {
     const dt = timeS - mix.lastTimeS;
@@ -282,10 +344,20 @@ export function hapticMagnitudes(t: CarTelemetry, timeS: number, mix?: RumbleMix
 
   const speedFactor = clamp01(t.speedKmh / 300);
 
-  // Weak motor: kerb strikes pulse on and off, front-tyre scrub near the limit, faint road texture
-  const onKerb = t.onKerbLeft || t.onKerbRight;
-  const kerbPulseOn = (timeS * KERB_PULSE_HZ) % 1 < 0.5;
-  const kerb = onKerb && kerbPulseOn ? 0.55 + 0.35 * speedFactor : 0;
+  // Weak motor: kerb strikes, as hard as the kerb hits the tyres and pulsing at the rate it does; front-tyre scrub near
+  // the limit, faint road texture
+  const [kerbL, kerbR] = kerbSides(t);
+  const kerbHit = Math.max(kerbL, kerbR);
+  const kerbLevel = kerbHit > 0 ? (0.55 + 0.35 * speedFactor) * kerbHit : 0;
+  // The pulse's phase moves on at its rate, so a change of rate (the car speeding up over the kerb) does not jump it
+  let kerbOn: boolean;
+  if (mix) {
+    mix.kerbPhase = (mix.kerbPhase + kerbPulseHz(kerbHitRateHz(t)) * decayDt) % 1;
+    kerbOn = mix.kerbPhase < 0.5;
+  } else {
+    kerbOn = kerbPulseOn(timeS, kerbHitRateHz(t));
+  }
+  const kerb = kerbOn ? kerbLevel : 0;
   const scrub = 0.4 * pastPeak(Math.max(t.tireSlipRatio[0], t.tireSlipRatio[1]));
   const texture = 0.04 * speedFactor;
   let weak = layerRumble(0, kerb);
@@ -305,7 +377,22 @@ export function hapticMagnitudes(t: CarTelemetry, timeS: number, mix?: RumbleMix
   // minimum force does
   const rolling = clamp01((t.speedKmh - 1) * 0.2);
   const rackLoad = 0.25 * rolling * Math.pow(clamp01(Math.abs(t.ffbTorqueNorm ?? 0)), 1.5);
-  const roughSurface = surfaceRoughness(t, mix?.roughHold, decayDt > 0 ? Math.exp(-decayDt / ROUGH_HOLD_S) : 0);
+  const roughSurface = surfaceRoughness(
+    t,
+    mix?.roughHold,
+    decayDt > 0 ? Math.exp(-decayDt / ROUGH_HOLD_S) : 0,
+    cues?.roughWheels
+  );
+  if (cues) {
+    cues.kerb = kerbLevel;
+    cues.scrub = scrub;
+    cues.texture = texture;
+    cues.impact = impact;
+    cues.lockUp = lockUp;
+    cues.wheelspin = wheelspin;
+    cues.rearSlide = rearSlide;
+    cues.rackLoad = rackLoad;
+  }
   let strong = layerRumble(0, impact);
   strong = layerRumble(strong, lockUp);
   strong = layerRumble(strong, Math.max(wheelspin, rearSlide));
@@ -325,6 +412,62 @@ function limitBuzz(ndSlip: number): number {
 
 const _triggerSlip = createAxleSlipSample();
 
+/** What the triggers have to say, before any pulsing: shared by the Xbox impulse triggers and the DualSense's */
+export interface TriggerCues {
+  /** A locked or ABS-releasing front axle under braking, and how far (0..1) */
+  locking: boolean;
+  absActive: boolean;
+  lockScale: number;
+  /** Spinning rear wheels under throttle (or traction control cutting), and how far (0..1) */
+  spinning: boolean;
+  tcActive: boolean;
+  spinScale: number;
+  /**
+   * Grip-limit buzz (0..0.4) as the tyres approach their peak with ABS / traction control off (or always, with
+   * `triggerSlipAlwaysOn`); 0 when there is nothing to feel
+   */
+  brakeLimit: number;
+  throttleLimit: number;
+}
+
+/**
+ * The trigger cues for the car. The brake cue reads only the braking part of the tyres' slip, so cornering at the
+ * limit does not buzz it, and only one of the two limit cues is live at a time (wheelspin picks the throttle's).
+ */
+export function triggerCues(t: CarTelemetry, options?: { triggerSlipAlwaysOn?: boolean }): TriggerCues {
+  const minSlip = Math.min(...t.wheelSlipRatios);
+  const absActive = t.f12026?.absActive === true;
+  const locking = t.brake > 0.05 && (absActive || (t.speedKmh > 30 && minSlip < -0.12));
+  const rearSlip = Math.max(t.wheelSlipRatios[2], t.wheelSlipRatios[3]);
+  const tcActive = t.f12026?.tcActive === true;
+  const spinning = t.throttle > 0.1 && (tcActive || rearSlip > 0.12);
+  let brakeLimit = 0;
+  let throttleLimit = 0;
+  const aids = t.liveTuner;
+  const alwaysOn = options?.triggerSlipAlwaysOn === true;
+  if ((alwaysOn || (aids && (aids.absLevel === 0 || aids.tcLevel === 0))) && t.speedKmh > 2) {
+    const slip = axleSlipFromTelemetry(t, _triggerSlip);
+    const wheelspin = rearSlip > 0.02;
+    if ((alwaysOn || aids?.absLevel === 0) && t.brake > 0.2 && !wheelspin) {
+      // Braking slip only: a car cornering at its limit while braking lightly is not about to lock a wheel
+      brakeLimit = limitBuzz(slip.brakeNdSlip + brakeSlipMargin());
+    }
+    if ((alwaysOn || aids?.tcLevel === 0) && t.throttle > 0.2 && wheelspin) {
+      throttleLimit = limitBuzz(slip.rearNdSlip - throttleSlipAllowance(t.speedKmh));
+    }
+  }
+  return {
+    locking,
+    absActive,
+    lockScale: clamp01(-minSlip / 0.45),
+    spinning,
+    tcActive,
+    spinScale: clamp01(rearSlip / 0.5),
+    brakeLimit: magnitude01(brakeLimit),
+    throttleLimit: magnitude01(throttleLimit),
+  };
+}
+
 /**
  * Impulse-trigger magnitudes (0..1) for the car: the left trigger (brake) feels ABS / lock-up as a 20 Hz pulse,
  * the right trigger (throttle) feels wheelspin, and traction control as a 25 Hz pulse. With ABS (traction control)
@@ -338,55 +481,33 @@ export function triggerMagnitudes(
   timeS: number,
   options?: { triggerSlipAlwaysOn?: boolean }
 ): { left: number; right: number } {
+  const cues = triggerCues(t, options);
   // Left trigger: a locked or ABS-releasing front axle pushes back through the brake
   let left = 0;
-  if (t.brake > 0.05) {
-    const minSlip = Math.min(...t.wheelSlipRatios);
-    const locking = t.f12026?.absActive === true || (t.speedKmh > 30 && minSlip < -0.12);
-    if (locking) {
-      const lockScale = clamp01(-minSlip / 0.45);
-      const pulseOn = (timeS * ABS_PULSE_HZ) % 1 < 0.5;
-      left = pulseOn ? 0.35 + 0.45 * lockScale : 0;
-    }
+  if (cues.locking) {
+    const pulseOn = (timeS * ABS_PULSE_HZ) % 1 < 0.5;
+    left = pulseOn ? 0.35 + 0.45 * cues.lockScale : 0;
   }
-
   // Right trigger: spinning rear wheels push back through the throttle; TC cuts the throttle in pulses
   let right = 0;
-  if (t.throttle > 0.1) {
-    const rearSlip = Math.max(t.wheelSlipRatios[2], t.wheelSlipRatios[3]);
-    const spinning = t.f12026?.tcActive === true || rearSlip > 0.12;
-    if (spinning) {
-      const spinScale = clamp01(rearSlip / 0.5);
-      const pulseOn = t.f12026?.tcActive === true ? (timeS * TC_PULSE_HZ) % 1 < 0.5 : true;
-      right = pulseOn ? 0.25 + 0.45 * spinScale : 0;
-    }
+  if (cues.spinning) {
+    const pulseOn = cues.tcActive ? (timeS * TC_PULSE_HZ) % 1 < 0.5 : true;
+    right = pulseOn ? 0.25 + 0.45 * cues.spinScale : 0;
   }
-
-  // Approaching the grip limit (with the aid off, or always when `triggerSlipAlwaysOn` is enabled)
-  const aids = t.liveTuner;
-  const alwaysOn = options?.triggerSlipAlwaysOn === true;
-  if ((alwaysOn || (aids && (aids.absLevel === 0 || aids.tcLevel === 0))) && t.speedKmh > 2) {
-    const slip = axleSlipFromTelemetry(t, _triggerSlip);
-    const wheelspin = Math.max(t.wheelSlipRatios[2], t.wheelSlipRatios[3]) > 0.02;
-    if (left === 0 && (alwaysOn || aids?.absLevel === 0) && t.brake > 0.2 && !wheelspin) {
-      // Braking slip only: a car cornering at its limit while braking lightly is not about to lock a wheel
-      left = limitBuzz(slip.brakeNdSlip + brakeSlipMargin());
-    }
-    if (right === 0 && (alwaysOn || aids?.tcLevel === 0) && t.throttle > 0.2 && wheelspin) {
-      right = limitBuzz(slip.rearNdSlip - throttleSlipAllowance(t.speedKmh));
-    }
-  }
-
+  // Approaching the grip limit, between the pulses or with nothing else on that trigger
+  if (left === 0) left = cues.brakeLimit;
+  if (right === 0) right = cues.throttleLimit;
   return { left: magnitude01(left), right: magnitude01(right) };
 }
 
-/** Every connected pad that exposes a vibration actuator */
-function connectedPads(): ConnectedPad[] {
+/** Every connected pad that exposes a vibration actuator, less those `skip` names (driven another way) */
+function connectedPads(skip?: (padId: string) => boolean): ConnectedPad[] {
   if (typeof navigator === "undefined" || typeof navigator.getGamepads !== "function") return [];
   const pads: ConnectedPad[] = [];
   navigator.getGamepads().forEach((pad, index) => {
-    const actuator = (pad as { vibrationActuator?: VibrationActuatorLike | null } | null)?.vibrationActuator;
-    if (actuator && typeof actuator.playEffect === "function") pads.push({ key: `${index}|${pad?.id ?? ""}`, actuator });
+    if (!pad || skip?.(pad.id)) return;
+    const actuator = (pad as { vibrationActuator?: VibrationActuatorLike | null }).vibrationActuator;
+    if (actuator && typeof actuator.playEffect === "function") pads.push({ key: `${index}|${pad.id}`, actuator });
   });
   return pads;
 }
@@ -446,12 +567,13 @@ export class GamepadHaptics {
   /**
    * Call once per frame after the physics step; `enabled` is false while paused or when the toggle is off.
    * `options.triggerRumble` also drives the Xbox impulse triggers on pads that support them (default off).
+   * `options.skipPad` leaves out pads another driver writes to (a DualSense over WebHID).
    */
   update(
     t: CarTelemetry,
     dtSeconds: number,
     enabled: boolean,
-    options?: { triggerRumble?: boolean; triggerSlipAlwaysOn?: boolean }
+    options?: { triggerRumble?: boolean; triggerSlipAlwaysOn?: boolean; skipPad?: (padId: string) => boolean }
   ): void {
     this.timeS += dtSeconds;
     if (!enabled) {
@@ -463,7 +585,7 @@ export class GamepadHaptics {
     const { weak, strong } = hapticMagnitudes(t, this.timeS, this.mix);
     const wantTriggers = options?.triggerRumble === true;
     const trig = wantTriggers ? triggerMagnitudes(t, this.timeS, options) : { left: 0, right: 0 };
-    const pads = connectedPads();
+    const pads = connectedPads(options?.skipPad);
     for (const { key, actuator } of pads) {
       const out = this.outputs.get(key) ?? {
         lastSentS: -Infinity,
@@ -478,7 +600,7 @@ export class GamepadHaptics {
       this.outputs.set(key, out);
 
       const useTriggers = wantTriggers && supportsTriggerRumble(actuator);
-      const pulse = pulseState(t, this.timeS, useTriggers);
+      const pulse = pulseState(t, this.timeS, useTriggers, this.mix.kerbPhase);
       // A pulse edge or a hit goes out when it happens: the gate below would otherwise alias 12-25 Hz pulses and
       // hold a hit back by up to a send interval
       const impact = this.mix.impactEnvelope;

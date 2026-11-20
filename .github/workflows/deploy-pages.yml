@@ -90,6 +90,11 @@ jobs:
             rm "$f"
           done
 
+      # GLBs are sent brotli-encoded with no Content-Length: each one the asset store serves gets its full size in an
+      # X-File-Size header, for the loading screen's progress (cloudflare/worker.js does the same for the R2 files)
+      - name: Add the GLB sizes to _headers
+        run: node scripts/glb-size-headers.mjs out
+
       - name: Deploy to Cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

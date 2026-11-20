@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
 import { withBasePath } from "@/lib/base-path";
+import { buildIdFromEnv } from "@/lib/build-id";
 import { EVENT_BRAND } from "@/lib/kiosk/event-brand";
 import { REPO_URL, SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
 
@@ -15,7 +16,8 @@ const EVENT_TITLE = EVENT_BRAND.challengeNeutral;
  * `/l/font?kit=…&skey=…` file URLs, so a build depended on what Google happened to return that day.
  */
 // Racing Line type (docs/DESIGN.md §3): Geist for UI text, Geist Mono for labels and data,
-// Chakra Petch (bold italic) for display, Orbitron only in the wordmark.
+// Chakra Petch (bold italic) for display. The wordmark is drawn as outlines (LibreCorsaLogo); Orbitron loads only for
+// the event kiosk's trackside screens (below).
 // Variable fonts: one file serves every weight
 const geist = localFont({
   src: "./fonts/geist-variable.woff2",
@@ -42,12 +44,15 @@ const chakraPetch = localFont({
   display: "swap",
 });
 
+// Event branch: the trackside screens of the kiosk paint their headings in Orbitron (src/lib/kiosk/event-scene-branding.ts)
 const orbitron = localFont({
   src: "./fonts/orbitron-variable.woff2",
   weight: "700 900",
   variable: "--font-orbitron",
   display: "swap",
 });
+
+const BUILD_ID = buildIdFromEnv();
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -81,10 +86,11 @@ export const metadata: Metadata = {
     locale: "en_US",
   },
   twitter: { card: "summary_large_image", title: EVENT_TITLE, description: SITE_DESCRIPTION },
-  // The deployed build's commit (NEXT_PUBLIC_BUILD), read by the usage counter from the page rather than built into
-  // the game's script, so a deploy doesn't change the game's cached files
-  ...(process.env.NEXT_PUBLIC_BUILD ? { other: { "lc-build": process.env.NEXT_PUBLIC_BUILD.slice(0, 7) } } : {}),
+  // The deployed build's commit (src/lib/build-id.ts), read from the page by the usage counter and the update check
+  // rather than built into the game's script, so a deploy doesn't change the game's cached files
+  ...(BUILD_ID ? { other: { "lc-build": BUILD_ID } } : {}),
   // Metadata URLs don't get a base path on their own
+  // The SVG emblem draws its small version under 32 px; the PNG and ICO frames are for browsers without SVG icons
   icons: {
     icon: [{ url: withBasePath("/kiosk/event-mark.svg"), type: "image/svg+xml" }],
     apple: [{ url: withBasePath("/branding/apple-touch-icon.png"), sizes: "180x180" }],
@@ -92,6 +98,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
+  // ui-allow: hex-in-style the browser chrome's colour is metadata, which cannot read a CSS token (lc-void)
   themeColor: "#08090D",
   colorScheme: "dark",
   // Draw under the notch, Dynamic Island and home indicator: the scene runs edge to edge and the UI keeps
@@ -114,7 +121,7 @@ const jsonLd = {
   playMode: ["SinglePlayer", "MultiPlayer"],
   isAccessibleForFree: true,
   offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
-  license: "https://opensource.org/licenses/MIT",
+  license: "https://www.gnu.org/licenses/agpl-3.0.html",
   codeRepository: REPO_URL,
   sameAs: [REPO_URL],
   author: { "@type": "Person", name: "KhazP", url: "https://github.com/KhazP" },
@@ -130,7 +137,7 @@ export default function RootLayout({
       lang="it"
       className={`dark ${geist.variable} ${geistMono.variable} ${chakraPetch.variable} ${orbitron.variable}`}
     >
-      <body className="antialiased bg-[#08090D] text-[#F5F7FA] selection:bg-[#CCFF00] selection:text-[#08090D]">
+      <body className="bg-lc-void text-lc-chalk antialiased">
         {/* Event branch: no forward from "/" to /play (forward-to-game.ts): "/" is the kiosk, framed or installed too */}
         <script
           type="application/ld+json"

@@ -1,105 +1,210 @@
 "use client";
 
-import React, { useEffect, useId, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ModelSource } from "@/lib/model-source";
+import { SupportButton } from "@/components/SupportButton";
 import { TAKEDOWN_URL } from "@/lib/site";
+import { IconButton } from "@/components/ui/Button";
+import { Icon } from "@/components/ui/icons";
+import { uiZoomOf } from "@/components/ui/styles";
 
-const linkClass = "text-[#F5F7FA] underline decoration-[#4A5268] underline-offset-2 hover:decoration-[#F5F7FA]";
+const linkClass = "text-lc-chalk underline decoration-lc-keyline underline-offset-2 hover:decoration-lc-chalk";
+
+/** Space between the button and its panel, and between the panel and the window's edge */
+const GAP = 8;
+const MARGIN = 12;
+
+interface Place {
+  left: number;
+  top: number;
+  maxHeight: number;
+}
 
 /**
- * A small "Source" button that opens where a car's or circuit's 3D model comes from: the model, its author, its
- * licence or permission, and a link to report a problem with it. It sits beside a card's own button, never inside it,
- * so pressing it doesn't pick the car or circuit.
+ * A small round "Source" button (the kit's secondary `IconButton`) that opens where a car's or circuit's 3D model comes
+ * from, the modder first: their support page (Patreon, PayPal…) where they have one, then their circuit or car and its
+ * licence or permission, then the rest (the model's own origin when it is someone else's, notes) and a link to report
+ * a problem with it. It sits beside a card's own button, never inside it,
+ * so pressing it doesn't pick the car or circuit. The menu cursor passes over it.
+ *
+ * The panel is a portal placed against the window, so no card or scrolling list clips it: above the button where it
+ * fits, below it otherwise, and never past the window's edge.
  */
 export const SourceChip: React.FC<{
   source: ModelSource;
-  /** The chip's box, which the panel is placed in (absent: inline, the panel opening above it to the left) */
+  /** The chip's box */
   className?: string;
-  /** Where the panel sits in that box and how wide it is */
-  panelClassName?: string;
-}> = ({ source, className = "relative inline-flex", panelClassName = "right-0 bottom-full mb-2 w-[min(264px,calc(100vw-32px))]" }) => {
+}> = ({ source, className = "inline-flex" }) => {
   const [open, setOpen] = useState(false);
+  const [place, setPlace] = useState<Place | null>(null);
+  // Whether the button sits in a zoomed screen (TV distance, the UI scale setting): the panel then takes the same zoom
+  const [zoomed, setZoomed] = useState(false);
   const rootRef = useRef<HTMLSpanElement | null>(null);
-  const chipRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLSpanElement | null>(null);
   const panelId = useId();
 
-  // Closes on a press elsewhere or on Escape (which hands the focus back to the chip)
+  const button = () => rootRef.current?.querySelector<HTMLButtonElement>("button") ?? null;
+
+  const measure = useCallback(() => {
+    const root = rootRef.current;
+    const panel = panelRef.current;
+    if (!root || !panel) return;
+    const zoom = uiZoomOf(root);
+    const r = root.getBoundingClientRect();
+    const p = panel.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const above = r.top - MARGIN - GAP;
+    const below = vh - r.bottom - MARGIN - GAP;
+    const up = p.height <= above || above >= below;
+    const top = up ? r.top - GAP - p.height : r.bottom + GAP;
+    setPlace({
+      left: Math.max(MARGIN, Math.min(r.right - p.width, vw - p.width - MARGIN)) / zoom,
+      top: Math.max(MARGIN, Math.min(top, vh - p.height - MARGIN)) / zoom,
+      maxHeight: (vh - 2 * MARGIN) / zoom,
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (open) measure();
+  }, [open, measure]);
+
+  // Closes on a press elsewhere or on Escape (which hands the focus back to the chip); follows the button when the
+  // page scrolls or the window changes size
   useEffect(() => {
     if (!open) return;
     const onPointer = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (!rootRef.current?.contains(t) && !panelRef.current?.contains(t)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.stopPropagation();
       setOpen(false);
-      chipRef.current?.focus();
+      button()?.focus();
     };
     document.addEventListener("pointerdown", onPointer);
     document.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
     return () => {
       document.removeEventListener("pointerdown", onPointer);
       document.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
     };
-  }, [open]);
+  }, [open, measure]);
+
+  // The panel is not next to the button in the page, so Tab is carried by hand: from the button into the panel's
+  // links, and off either end of them back to the button
+  const links = () => Array.from(panelRef.current?.querySelectorAll<HTMLAnchorElement>("a") ?? []);
+  const onButtonKey = (e: React.KeyboardEvent) => {
+    // React carries the panel's key events up to this span through the portal: only the button's own Tab is handled here
+    if (panelRef.current?.contains(e.target as Node)) return;
+    if (e.key !== "Tab" || e.shiftKey || !open) return;
+    const first = links()[0];
+    if (!first) return;
+    e.preventDefault();
+    first.focus();
+  };
+  const onPanelKey = (e: React.KeyboardEvent) => {
+    if (e.key !== "Tab") return;
+    const all = links();
+    const edge = e.shiftKey ? all[0] : all[all.length - 1];
+    if (document.activeElement !== edge) return;
+    e.preventDefault();
+    if (!e.shiftKey) setOpen(false);
+    button()?.focus();
+  };
 
   return (
-    <span ref={rootRef} className={className}>
-      <button
-        ref={chipRef}
-        type="button"
+    // Skipped by the arrow keys and the D-pad (a card's neighbour is the next card, not its chip); Tab, a click and a
+    // tap still reach it
+    <span ref={rootRef} className={className} data-nav-skip="" onKeyDown={onButtonKey}>
+      <IconButton
+        size="sm"
+        variant="secondary"
+        icon={<Icon name="source" />}
+        aria-label={`Source of ${source.title}`}
+        title="Source"
         aria-expanded={open}
-        aria-controls={panelId}
-        onClick={() => setOpen((o) => !o)}
-        className={`pointer-events-auto h-7 cursor-pointer rounded-full border px-2.5 text-[11px] font-semibold transition-colors duration-150 ease-out ${
-          open
-            ? "border-[#4A5268] bg-[#262B3D] text-[#F5F7FA]"
-            : "border-[#262B3D] bg-[#08090D]/80 text-[#C5CBD8] hover:border-[#4A5268] hover:text-[#F5F7FA]"
-        }`}
-      >
-        Source
-      </button>
-      {open ? (
-        <span
-          id={panelId}
-          role="group"
-          aria-label={`Source of ${source.title}`}
-          className={`pointer-events-auto absolute z-30 flex flex-col gap-1.5 rounded-[14px] border border-[#262B3D] bg-[#11131A] p-3 text-left text-[12px] leading-snug font-normal text-[#C5CBD8] shadow-[0_12px_32px_rgba(0,0,0,0.55)] ${panelClassName}`}
-        >
-          <span>
-            &ldquo;
-            <a href={source.url} target="_blank" rel="noreferrer" className={linkClass}>
-              {source.title}
-            </a>
-            &rdquo; by{" "}
-            {source.authorUrl ? (
-              <a href={source.authorUrl} target="_blank" rel="noreferrer" className={linkClass}>
-                {source.author}
+        aria-controls={open ? panelId : undefined}
+        onClick={() => {
+          setZoomed(!!rootRef.current?.closest(".lc-ui-zoom"));
+          setOpen((o) => !o);
+        }}
+        className="pointer-events-auto"
+      />
+      {open && typeof document !== "undefined"
+        ? createPortal(
+            <span
+              ref={panelRef}
+              id={panelId}
+              role="group"
+              aria-label={`Source of ${source.title}`}
+              onKeyDown={onPanelKey}
+              className={`pointer-events-auto fixed z-(--z-lc-notice) flex w-[min(264px,calc(100vw-32px))] flex-col gap-1.5 overflow-y-auto overscroll-contain rounded-lc-tile border border-white/7 bg-lc-carbon p-3.5 text-left text-[13px] leading-snug font-normal text-lc-fog shadow-lc-pop ${zoomed ? "lc-ui-zoom" : ""}`}
+              // Laid out unseen at the corner first, measured, then put by the button
+              style={
+                place
+                  ? { left: place.left, top: place.top, maxHeight: place.maxHeight }
+                  : { left: 0, top: 0, visibility: "hidden" }
+              }
+            >
+              <SupportButton support={source.support} maker={source.author} className="mb-1 self-start" />
+              <span>
+                &ldquo;
+                <a href={source.url} target="_blank" rel="noreferrer" className={linkClass}>
+                  {source.title}
+                </a>
+                &rdquo; by{" "}
+                {source.authorUrl ? (
+                  <a href={source.authorUrl} target="_blank" rel="noreferrer" className={linkClass}>
+                    {source.author}
+                  </a>
+                ) : (
+                  <span className="text-lc-chalk">{source.author}</span>
+                )}
+              </span>
+              <span>
+                {source.licenseUrl ? (
+                  <a href={source.licenseUrl} target="_blank" rel="noreferrer" className={linkClass}>
+                    {source.license}
+                  </a>
+                ) : (
+                  source.license
+                )}
+              </span>
+              {source.model ? (
+                <span className="text-lc-slate">
+                  Model: &ldquo;
+                  <a href={source.model.url} target="_blank" rel="noreferrer" className={linkClass}>
+                    {source.model.title}
+                  </a>
+                  &rdquo; by {source.model.author} ·{" "}
+                  {source.model.licenseUrl ? (
+                    <a href={source.model.licenseUrl} target="_blank" rel="noreferrer" className={linkClass}>
+                      {source.model.license}
+                    </a>
+                  ) : (
+                    source.model.license
+                  )}
+                </span>
+              ) : null}
+              {source.note ? <span className="text-lc-slate">{source.note}</span> : null}
+              <a
+                href={TAKEDOWN_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="self-start text-lc-slate underline decoration-lc-keyline underline-offset-2 hover:text-lc-chalk"
+              >
+                Report a problem with it
               </a>
-            ) : (
-              <span className="text-[#F5F7FA]">{source.author}</span>
-            )}
-          </span>
-          <span>
-            {source.licenseUrl ? (
-              <a href={source.licenseUrl} target="_blank" rel="noreferrer" className={linkClass}>
-                {source.license}
-              </a>
-            ) : (
-              source.license
-            )}
-          </span>
-          {source.note ? <span className="text-[#8E96AA]">{source.note}</span> : null}
-          <a
-            href={TAKEDOWN_URL}
-            target="_blank"
-            rel="noreferrer"
-            className="self-start text-[#8E96AA] underline decoration-[#4A5268] underline-offset-2 hover:text-[#F5F7FA]"
-          >
-            Report a problem with it
-          </a>
-        </span>
-      ) : null}
+            </span>,
+            document.body,
+          )
+        : null}
     </span>
   );
 };

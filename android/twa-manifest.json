@@ -1,0 +1,50 @@
+{
+  "packageId": "org.librecorsa.app",
+  "host": "librecorsa.org",
+  "name": "LibreCorsa",
+  "launcherName": "LibreCorsa",
+  "display": "fullscreen",
+  "themeColor": "#08090D",
+  "themeColorDark": "#08090D",
+  "navigationColor": "#08090D",
+  "navigationColorDark": "#08090D",
+  "navigationDividerColor": "#08090D",
+  "navigationDividerColorDark": "#08090D",
+  "backgroundColor": "#08090D",
+  "enableNotifications": false,
+  "startUrl": "/play",
+  "iconUrl": "https://librecorsa.org/branding/icon-512.png",
+  "maskableIconUrl": "https://librecorsa.org/branding/icon-maskable-512.png",
+  "monochromeIconUrl": "https://librecorsa.org/branding/icon-monochrome-512.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "../../_android-signing/librecorsa-upload.jks",
+    "alias": "upload"
+  },
+  "appVersionName": "1",
+  "appVersionCode": 1,
+  "shortcuts": [],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://librecorsa.org/manifest.webmanifest",
+  "fallbackType": "customtabs",
+  "features": {},
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "fullScopeUrl": "https://librecorsa.org/",
+  "minSdkVersion": 24,
+  "orientation": "landscape",
+  "fingerprints": [
+    {
+      "name": "upload",
+      "value": "E0:C1:29:35:79:69:C0:83:B6:C6:19:EF:28:F7:11:1B:B6:3E:6B:91:05:FA:91:31:89:57:37:57:58:6C:FE:29"
+    }
+  ],
+  "additionalTrustedOrigins": [],
+  "retainedBundles": [],
+  "displayOverride": [],
+  "appVersion": "1"
+}

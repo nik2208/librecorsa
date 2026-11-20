@@ -6,13 +6,14 @@
  * Straight line, braking, cornering on flat ground, ABS / TC through the simulator adapter, then autopilot laps
  * on the real Rwanda colliders. The ranges are what a GT3 car does, not tuned to these numbers (see `AmgGt3Config`).
  */
+import { SIM_REALISM_FLAGS } from '../src/lib/sim/sim-realism';
 import * as THREE from 'three';
 import { getActiveTrackData } from '../src/lib/track-data';
 import { FlatGroundQuery } from '../src/lib/sim/f12026-car/TrackColliderQuery';
 import { VehiclePhysics, type VehicleInputs } from '../src/lib/sim/f12026-car/VehiclePhysics';
 import { AMG_GT3_CONFIG } from '../src/lib/sim/gt3/AmgGt3Config';
 import { AMG_GT3_PROFILE_CAR, createAmgGt3Sim } from '../src/lib/sim/gt3/AmgGt3Sim';
-import { brakingGuideFor, computeSpeedProfile, createVf26ProfileCarModel } from '../src/lib/sim/speed-profile';
+import { brakingGuideFor, computeSpeedProfile, createLc26ProfileCarModel } from '../src/lib/sim/speed-profile';
 import { F12026CarSim } from '../src/lib/sim/f12026-car/F12026CarSim';
 import { loadGlbGeometry } from './lib/glb-geometry';
 import { createFlatTestTrack } from './lib/flat-track';
@@ -47,7 +48,8 @@ console.log('\n== AMG GT3 config');
   const c = AMG_GT3_CONFIG;
   check('No hybrid, no brake-by-wire', c.ers.ERS_MAX_DEPLOY === 0 && c.ers.maxHarvestW === 0 && c.brakes.brakeByWire === false, '');
   // Reference GT3 Evo telemetry peaks at 7899 rpm
-  check('6 gears, 7900 rpm limiter', c.gearbox.ratios.length === 6 && c.gearbox.gears.redline_rpm === 7900, '');
+  // The endurance balance of performance's 7450 rpm limiter (the reference logs, on a sprint trim, peak at 7899)
+  check('6 gears, 7450 rpm limiter, two gear sets', c.gearbox.ratios.length === 6 && c.gearbox.gears.redline_rpm === 7450 && c.gearSets?.length === 2, '');
 }
 
 console.log('\n== Straight line (flat ground, ρ 1.06)');
@@ -92,7 +94,7 @@ console.log('\n== Straight line (flat ground, ρ 1.06)');
     dist = c.position.z - z0;
     return c.telemetry.speedKmh <= 80;
   });
-  // Up to 175 m: the 71 % front share (4750 Nm) leaves each rear at 1380 Nm; on reference GT3 grip a threshold stop averages
+  // Up to 175 m: the 64 % front share of 4850 Nm leaves each rear 1750 Nm; on reference GT3 grip a threshold stop averages
   // ≈1.85 g (≈119 m)
   check('Braking 250→80 km/h 105–175 m', dist > 105 && dist < 175, `${fmt(dist, 1)} m, peak ${fmt(peakG, 2)} g`);
   check('Peak deceleration 1.6–2.5 g', peakG > 1.6 && peakG < 2.5, `${fmt(peakG, 2)} g`);
@@ -117,7 +119,7 @@ console.log('\n== Cornering (flat, steer ramp at constant speed)');
 // The largest single sample of the ramp, not a held figure: `verify-gt3-telemetry.ts` holds the sustained g to the
 // reference laps (1.79 g at 99 km/h, where this peak is 1.90)
 for (const [kmh, lo, hi] of [
-  [100, 1.3, 1.95],
+  [100, 1.3, 2.0],
   [220, 1.7, 2.5],
 ] as const) {
   const car = makeCar();
@@ -182,7 +184,9 @@ console.log('\n== Driver aids through the adapter (semi_pro vs pro)');
   check('Presets: TC/TC2/ABS 0/5/0, 10/6/9, 12/9/11', pos.join(', ') === '0/5/0, 10/6/9, 12/9/11', pos.join(', '));
 
   // A constant 0.036 kg/s flat out, from the profile
+  // The fuel-flow model, burning (the game's sprints run on a fixed load, `SimRealismFlags.fuelUse`)
   const fuel = createAmgGt3Sim(wide);
+  fuel.setSimRealism({ ...SIM_REALISM_FLAGS.full, fuelUse: true });
   fuel.teleportToDistance(1000, 0);
   const f0 = fuel.telemetry.fuelKg;
   for (let t = 0; t < 30; t += DT) fuel.step(DT, { throttle: 1 });
@@ -192,11 +196,11 @@ console.log('\n== Driver aids through the adapter (semi_pro vs pro)');
 
 console.log("\n== The GT3's own handling, not the F1's");
 {
-  // No brake-by-wire: the balance bar's 71 % holds at full pedal (the F1 default migrated it to 72.5 %)
+  // No brake-by-wire: the balance bar's 64 % holds at full pedal (the F1 default would migrate it)
   const car = makeCar();
   car.reset(0, 0, 0, 40);
   run(car, 0.25, () => ({ throttle: 0, brake: 1, steer: 0 }));
-  check('Brake bias stays at 71 % at full pedal', Math.abs(car.dynamicBrakeBias - 0.71) < 1e-6, `${fmt(car.dynamicBrakeBias * 100, 1)} %`);
+  check('Brake bias stays at 64 % at full pedal', Math.abs(car.dynamicBrakeBias - 0.64) < 1e-6, `${fmt(car.dynamicBrakeBias * 100, 1)} %`);
 
   // A sliding GT3 sheds rear downforce: the wing sits in the cabin's wake, the splitter in clean air
   const aeroAtYaw = (deg: number) => {
@@ -250,7 +254,8 @@ console.log("\n== The GT3's own handling, not the F1's");
   // driveline's wind-up, so the TC's instant cut catches the slide at ≈ 3.5°. Still a visible step-out it then holds
   // Without TC it still spins, past 50° in the 1.5 s (35° asked). With 3 % more lateral grip against the same drive
   // grip the TC now holds the step-out at 3.0° (2.5° asked)
-  check('TC lets a power-on exit slide but catches it', withTc > 2.5 && withTc < 25 && noTc > 35, `peak body slip ${fmt(withTc, 1)}° with TC, ${fmt(noTc, 1)}° without`);
+  // The semi-pro preset's slip-angle dial at 10, the endurance dry baseline, holds it a little tighter: ≈ 2.4°
+  check('TC lets a power-on exit slide but catches it', withTc > 2 && withTc < 25 && noTc > 35, `peak body slip ${fmt(withTc, 1)}° with TC, ${fmt(noTc, 1)}° without`);
 
   // Light trail braking into a 160 km/h corner tightens the line (weight on the nose, rear still braking 29 %)
   const curvature = (brake: number, steer: number) => {
@@ -290,11 +295,11 @@ console.log('\n== Autopilot on the Rwanda colliders');
     }
     return { done: sim.telemetry.lapCount === lap0 + 2, lapS: (sim.telemetry.lastLapTimeMs ?? 0) / 1000, beyond, maxSlip, top: sim.telemetry.allTimeTopSpeedKmh };
   };
-  // The GT3's braking line: longer braking zones and slower corners than the VF26 on the same (GT3) line, both
+  // The GT3's braking line: longer braking zones and slower corners than the LC26 on the same (GT3) line, both
   // graded against their own braking capability. Each car's lap-time line differs, so across lines either can
   // have the slower hairpin.
   const guide = brakingGuideFor(track.samples, 'amg-gt3', AMG_GT3_PROFILE_CAR, 'gt3');
-  const vf26Guide = brakingGuideFor(track.samples, 'vf26', createVf26ProfileCarModel('balanced'), 'gt3');
+  const lc26Guide = brakingGuideFor(track.samples, 'lc26', createLc26ProfileCarModel('balanced'), 'gt3');
   const n = track.samples.length;
   // Its own racing line (`roGt3`): the lap-time line for the GT3's grip, faster for it than the F1 line
   const modelLap = (line: 'f1' | 'gt3') => {
@@ -309,11 +314,11 @@ console.log('\n== Autopilot on the Rwanda colliders');
     `planning-model lap ${fmt(lapOwn, 2)} s on its line vs ${fmt(lapF1, 2)} s on the F1 line, lines up to ${fmt(lineGap, 1)} m apart`);
   const red = (zone: (i: number) => number) => Array.from({ length: n }, (_, i) => zone(i)).filter((z) => z >= 1).length * (track.totalLengthM / n);
   const redGt3 = red((i) => guide.brakingZone[i]);
-  const redVf26 = red((i) => vf26Guide.brakingZone[i]);
+  const redLc26 = red((i) => lc26Guide.brakingZone[i]);
   const minGt3 = Math.min(...guide.speedMs) * 3.6;
-  const minVf26 = Math.min(...vf26Guide.speedMs) * 3.6;
-  check('GT3 braking line: longer braking, slower apexes than the VF26', redGt3 > redVf26 && minGt3 < minVf26,
-    `${fmt(redGt3, 0)} m vs ${fmt(redVf26, 0)} m of red, slowest corner ${fmt(minGt3, 0)} vs ${fmt(minVf26, 0)} km/h`);
+  const minLc26 = Math.min(...lc26Guide.speedMs) * 3.6;
+  check('GT3 braking line: longer braking, slower apexes than the LC26', redGt3 > redLc26 && minGt3 < minLc26,
+    `${fmt(redGt3, 0)} m vs ${fmt(redLc26, 0)} m of red, slowest corner ${fmt(minGt3, 0)} vs ${fmt(minLc26, 0)} km/h`);
 
   const gt3 = lap(createAmgGt3Sim(track, root), 1);
   const f1 = lap(new F12026CarSim(track, root), 1);

@@ -26,20 +26,36 @@ const limitsOf = (r: TyreSetupRanges): TyreSetupLimits => ({
 
 /** Slider ranges for the tyre setup per vehicle model, also used to check a saved setup */
 export const TYRE_SETUP_LIMITS: Record<VehicleModelId, TyreSetupLimits> = {
-  vf26: limitsOf(VEHICLE_MODELS.vf26.tyreSetupRanges),
+  lc26: limitsOf(VEHICLE_MODELS.lc26.tyreSetupRanges),
   "f12026-car": limitsOf(VEHICLE_MODELS["f12026-car"].tyreSetupRanges),
   "amg-gt3": limitsOf(VEHICLE_MODELS["amg-gt3"].tyreSetupRanges),
   liana: limitsOf(VEHICLE_MODELS.liana.tyreSetupRanges),
   "mtr-496r": limitsOf(VEHICLE_MODELS["mtr-496r"].tyreSetupRanges),
+  "lc-lmdh": limitsOf(VEHICLE_MODELS["lc-lmdh"].tyreSetupRanges),
+  "nissan-r33-jgtc": limitsOf(VEHICLE_MODELS["nissan-r33-jgtc"].tyreSetupRanges),
+  "nissan-r32-jtcc": limitsOf(VEHICLE_MODELS["nissan-r32-jtcc"].tyreSetupRanges),
+  "bmw-m1-procar": limitsOf(VEHICLE_MODELS["bmw-m1-procar"].tyreSetupRanges),
+  "vw-scirocco-gtx": limitsOf(VEHICLE_MODELS["vw-scirocco-gtx"].tyreSetupRanges),
+  "chaparral-2d": limitsOf(VEHICLE_MODELS["chaparral-2d"].tyreSetupRanges),
+  "chaparral-2d-67": limitsOf(VEHICLE_MODELS["chaparral-2d-67"].tyreSetupRanges),
+  "porsche-934-rsr": limitsOf(VEHICLE_MODELS["porsche-934-rsr"].tyreSetupRanges),
 };
 
-/** Tyre setups are saved per vehicle model (the VF26 keeps the original key) */
+/** Tyre setups are saved per vehicle model (the LC26 keeps the original key) */
 const STORAGE_KEYS: Record<VehicleModelId, string> = {
-  vf26: "bugesera.tyreSetup",
+  lc26: "bugesera.tyreSetup",
   "f12026-car": "bugesera.tyreSetup.f12026-car",
   "amg-gt3": "bugesera.tyreSetup.amg-gt3",
   liana: "bugesera.tyreSetup.liana",
   "mtr-496r": "bugesera.tyreSetup.mtr-496r",
+  "lc-lmdh": "bugesera.tyreSetup.lc-lmdh",
+  "nissan-r33-jgtc": "bugesera.tyreSetup.nissan-r33-jgtc",
+  "nissan-r32-jtcc": "bugesera.tyreSetup.nissan-r32-jtcc",
+  "bmw-m1-procar": "bugesera.tyreSetup.bmw-m1-procar",
+  "vw-scirocco-gtx": "bugesera.tyreSetup.vw-scirocco-gtx",
+  "chaparral-2d": "bugesera.tyreSetup.chaparral-2d",
+  "chaparral-2d-67": "bugesera.tyreSetup.chaparral-2d-67",
+  "porsche-934-rsr": "bugesera.tyreSetup.porsche-934-rsr",
 };
 
 const clampTo = (x: number, range: { min: number; max: number }) => Math.min(range.max, Math.max(range.min, x));

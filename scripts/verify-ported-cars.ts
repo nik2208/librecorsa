@@ -9,7 +9,7 @@
  */
 import { CAR_CLASSES, carById, CARS, carsByYear, carsInClass, carThumbUrl, resolveCarId } from "../src/lib/cars/car-registry";
 import { carPhysics, carTakesPhysicsSwitch } from "../src/lib/cars/f1-mod-physics";
-import { EXTRA_CONTENT_IDS } from "../src/lib/hosted-content";
+import { carListed, EXTRA_CONTENT_IDS } from "../src/lib/hosted-content";
 
 let passed = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -22,10 +22,15 @@ function check(name: string, cond: boolean, detail = ""): void {
 }
 
 console.log("Registry checks");
-for (const native of ["vf26", "amg-gt3", "bmw-m4-gt3", "mtr-496r"] as const) {
+for (const native of ["lc26", "amg-gt3", "bmw-m4-gt3", "mtr-496r", "lc-lmdh", "nissan-r33-jgtc", "nissan-r32-jtcc", "bmw-m1-procar", "vw-scirocco-gtx", "chaparral-2d", "chaparral-2d-67", "porsche-934-rsr"] as const) {
+  // A hosted car is only listed where hosted content is on; elsewhere carById falls back to another car
+  if (!carListed(native)) {
+    console.log(`  SKIP  ${native}: hosted on librecorsa.org only, not listed in this copy`);
+    continue;
+  }
   check(
     `${native}: physics switch leaves it on its own model`,
-    !carTakesPhysicsSwitch(native) && carPhysics(native, "vf26") === carById(native).physics && carPhysics(native, "f12026-car") === carById(native).physics
+    !carTakesPhysicsSwitch(native) && carPhysics(native, "lc26") === carById(native).physics && carPhysics(native, "f12026-car") === carById(native).physics
   );
 }
 // Event branch: the SF-26 is the one ported F1 car, an extra restored by hand (scripts/kiosk/restore-extra-content.mjs),
@@ -40,12 +45,13 @@ check(
 
 // The Mercedes-AMG GT3 took the GT3 Evo's body: the Evo's old id opens it, and its picture is the Evo's
 check("A saved or linked amg-gt3-evo opens the amg-gt3", resolveCarId("amg-gt3-evo") === "amg-gt3" && resolveCarId("amg-gt3") === "amg-gt3" && resolveCarId("nope") === null);
+check("A saved or linked vf26 opens the lc26", resolveCarId("vf26") === "lc26" && resolveCarId("lc26") === "lc26"); // keep-old-id
 check("The amg-gt3's picture is beside its model", carThumbUrl("amg-gt3") === "/cars/amg-gt3-evo/thumb.webp", carThumbUrl("amg-gt3"));
 
 const f1Cars = carsInClass("f1").map((c) => c.id);
 check(
   "F1 class has the 2026 Prototype, and the event's extras only",
-  f1Cars[0] === "vf26" && f1Cars.slice(1).every((id) => EVENT_EXTRA_F1_CARS.includes(id)),
+  f1Cars[0] === "lc26" && f1Cars.slice(1).every((id) => EVENT_EXTRA_F1_CARS.includes(id)),
   f1Cars.join(", ")
 );
 

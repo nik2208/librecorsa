@@ -21,7 +21,7 @@ export const EXTRA_CONTENT_IDS: ReadonlySet<string> = new Set(
 );
 
 /** The cars in the repository: both drive the 2026 prototype's body and sound */
-export const REPO_CAR_IDS: ReadonlySet<string> = new Set(["vf26"]);
+export const REPO_CAR_IDS: ReadonlySet<string> = new Set(["lc26"]);
 
 /** The circuits in the repository */
 export const REPO_TRACK_IDS: ReadonlySet<string> = new Set(["rwanda_official_short", "rwanda_official"]);

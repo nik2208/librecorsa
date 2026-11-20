@@ -1,24 +1,31 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { DEFAULT_TRACK_ID, getActiveTrackData, LIVERIES } from "@/lib/track-data";
+import { DEFAULT_TRACK_ID, getActivePointToPoint, getActiveTrackData, LIVERIES } from "@/lib/track-data";
 import { FfbPairPrompt } from "@/components/hud/FfbPairPrompt";
+import { DualSensePairPrompt } from "@/components/hud/DualSensePairPrompt";
 import { isVehicleModelId, vehicleModelsFor } from "@/lib/cars/vehicle-models";
 import { CARS, carById, carForVehicle, type CarId } from "@/lib/cars/car-registry";
 import { alignGhostToTrack } from "@/lib/sim/ghost-align";
 import { carPhysics, carTakesPhysicsSwitch, subscribeF1ModPhysics } from "@/lib/cars/f1-mod-physics";
 import { type ChassisSetup, saveChassisSetup } from "@/lib/sim/car-setup";
 import { TrackEnvironment } from "@/lib/sim/track-environment";
+import { installErrorLog } from "@/lib/diagnostics/error-log";
+import { collectReportFacts } from "@/lib/diagnostics/report-facts";
+import type { ReportFacts } from "@/lib/diagnostics/report-details";
+import { carMaker, circuitMaker } from "@/lib/modders";
+import { isStoreBuild } from "@/lib/store-mode";
+import { markShown, markThanked, promptFor, readPromptState, writePromptState, type PromptItem } from "@/lib/support-prompt";
 import { getMultiplayerManager, type LobbySettings, type LobbyState, type PeerNetStats, type RaceStartInfo, type ScheduledRaceStatus } from "@/lib/sim/multiplayer-sync";
-import { getOnlineConfig } from "@/lib/net/online-config";
+import { boardStateOf, watchOnlineConfig, type BoardState } from "@/lib/net/online-config";
 import { DEFAULT_RACE_SLOT_S } from "@/lib/net/race-schedule";
 import { MultiplayerRace } from "@/lib/sim/race-session";
 import { GhostPlayer } from "@/lib/sim/lap-recorder";
-import { lapBoardClass, lapConditionsNow, type LapConditions, type LapRecording, type LapSummaryData, type LeaderboardEntry } from "@/lib/sim/lap-types";
+import { currentBoardBase, lapBoardClass, lapConditionsNow, type LapConditions, type LapRecording, type LapSummaryData, type LeaderboardEntry } from "@/lib/sim/lap-types";
 import { exportLapFile, importLapFile, listBestLaps, loadBestLap, saveBestLapIfFaster } from "@/lib/sim/ghost-store";
 import {
   boardKeyOf,
-  boardOnline,
+  boardStatusOf,
   fetchRemoteBoard,
   fetchRemoteGhost,
   lapToEntry,
@@ -26,36 +33,46 @@ import {
   loadChallengeBest,
   localLeaderboard,
   renameOnBoard,
-  saveBoardBest,
-  saveChallengeBest,
-  submitLap,
-  type BoardFilter,
+  saveBoardMiss,
   type SubmitResult,
 } from "@/lib/net/leaderboard";
+import { challengeOf, flushQueuedLaps, postLap } from "@/lib/net/board-queue";
 import { exportDriverKeyFile, importDriverKeyFile } from "@/lib/net/driver-key";
-import { challengeAt, fitsChallenge } from "@/lib/net/weekly-challenge";
-import { useUsageCounter } from "@/lib/net/use-usage-counter"; // polish:E
+import { challengeAt } from "@/lib/net/weekly-challenge";
+import { countUsageLap, useUsageCounter } from "@/lib/net/use-usage-counter"; // polish:E
 import { timeTrialRules } from "@/lib/sim/time-trial";
 import { challengeTarget, type ChallengeTarget } from "@/lib/net/challenge-target";
 import { isTouchDevice, resetTouchInput } from "@/lib/input/touch-input";
 import { isFatalHidStatus } from "@/lib/input/webhid-ffb";
 import { SIM_REALISM_FLAGS, type SimRealism } from "@/lib/sim/sim-realism";
 import type { SessionConditions } from "@/lib/sim/weather";
-import { getTrackInfo, TRACKS } from "@/lib/track-registry";
+import { getTrackInfo, LISTED_TRACKS, TRACKS } from "@/lib/track-registry";
 import { F1TelemetryHud } from "@/components/F1TelemetryHud";
 import { roomFromUrl } from "@/lib/net/invite-room";
 import { CAMERA_MODES, nextCameraMode } from "@/lib/render/camera-modes";
 import { saveTyreSetup } from "@/lib/sim/tyre-setup";
 import { LoadingScreen } from "@/components/menu/LoadingScreen";
 import { TitleMenu } from "@/components/menu/TitleMenu";
+import { useUpdateAutoReload } from "@/components/menu/UpdateReady";
+import { carBoardTag } from "@/components/menu/menu-content-ui";
 import { FirstRunWizard, type WizardMode, type WizardStepId } from "@/components/menu/FirstRunWizard";
-import { keyLabel, padButtonLabel } from "@/lib/input/bindings";
+import { SettingsScreen, type SettingsCategory } from "@/components/settings/SettingsScreen";
+import type { SettingsEnv } from "@/components/settings/env";
+import { applyInterfaceSettings } from "@/lib/settings/ui-prefs";
+import { keyLabel, padButtonLabel, pressPedalText } from "@/lib/input/bindings";
+import { useKeyLayout } from "@/lib/input/use-key-layout";
 import { autoConfigureWheel, connectedPads } from "@/lib/input/device-input";
+import { dualSenseHid } from "@/lib/input/webhid-dualsense";
+import { dualShock4Hid } from "@/lib/input/webhid-dualshock4";
 import { webHidFfb, wheelFfb } from "@/lib/input/wheel-ffb";
 import { nameProblem } from "@/lib/net/name-filter";
-import { clampFov, codeFromName, DEFAULT_PLAYER_SETTINGS, loadCarChoice, loadOnboarded, loadPlayerSettings, loadRumble, pushLibraryRecent, saveCarChoice, saveOnboarded, toggleLibraryFavorite, type LibraryKind, sanitizeDriverName, savePlayerSettings, saveRumble, type PlayerSettings } from "@/lib/settings/player-settings";
+import { clampFov, codeFromName, DEFAULT_PLAYER_SETTINGS, loadCarChoice, loadOnboarded, loadPlayerSettings, loadRumble, pushLibraryRecent, saveCarChoice, saveOnboarded, toggleLibraryFavorite, type LibraryKind, sanitizeDriverName, savePlayerSettings, saveRumble, type BoardWidgetMode, type PlayerSettings } from "@/lib/settings/player-settings";
+import { signalBoardLap } from "@/components/hud/BoardWidget";
 import type { AeroSetupPreset, AssistPreset, CameraMode, LiveTunerPatch, LiveryConfig, TireCompound, TyreSetup, VehicleModelId } from "@/types/f1";
-import { aiFieldOf, autoCompoundFor, DEFAULT_AERO_PRESET, DriveSession, idleDriveSnapshot, mpRaceOf, type AppPhase, type RunResetReason, type SessionRace } from "@/lib/drive-session";
+import { aiFieldOf, autoCompoundFor, DEFAULT_AERO_PRESET, DriveSession, idleDriveSnapshot, mpRaceOf, WebGLUnavailableError, type AppPhase, type SessionRace } from "@/lib/drive-session";
+import { GpuLostNotice } from "@/components/menu/GpuLostNotice";
+import { NowPlayingToast } from "@/components/hud/NowPlayingToast";
+import { browserStore, lostRecently, probeRenderer, settleLoss } from "@/lib/render/gpu-health";
 import { startAiRace, type RaceSetup } from "@/lib/sim/race-setup";
 import type { PodiumUi } from "@/lib/render/podium-shot";
 import { useRaceHistory } from "@/components/hud/useRaceHistory";
@@ -68,31 +85,22 @@ import type { KioskMode, KioskSimApi } from "@/lib/kiosk/kiosk-bridge";
 const DEFAULT_ASSIST_PRESET: AssistPreset = DEFAULT_PLAYER_SETTINGS.assistPreset;
 /** A lap record's car: records are per vehicle model, named after its first car */
 // The rigid-body model's board holds the laps of every ported F1 car on it, and the model has no car of its own
-const vehicleLabel = (id: string) => (id === "f12026-car" ? "F1 team cars" : isVehicleModelId(id) ? carForVehicle(id).title : id);
+const vehicleLabel = (id: string) => (id === "f12026-car" ? "Formula team cars" : isVehicleModelId(id) ? carForVehicle(id).title : id);
 /** Every personal best in this browser (Lap times switches circuit and car without reloading the scene) */
 const loadAllLocalLaps = () => listBestLaps().then((laps) => laps.map((lap) => lapToEntry(lap, "local")));
 /** The place an upload's answer gives the lap on its board (and on the week's challenge); null when it failed or said none */
 const placeOf = (res: SubmitResult): { rank: number; total: number | null; challengeRank: number | null } | null =>
   res.ok && res.rank !== undefined ? { rank: res.rank, total: res.total ?? null, challengeRank: res.eventRank ?? null } : null;
-/** The weekly challenge a lap was driven to (its id), if it fits this week's */
-const challengeOf = (rec: LapRecording): string | undefined => {
-  const week = challengeAt(Date.now());
-  return fitsChallenge(rec, week) ? week.id : undefined;
+/** The car a week's challenge or its races are driven in: the one it names when this copy lists it, else the vehicle's */
+const weekCar = (rules: { vehicle: VehicleModelId; car?: string }) => CARS.find((c) => c.id === rules.car && c.physics === rules.vehicle) ?? carForVehicle(rules.vehicle);
+/** The car to take for a race in `vehicle`: the week's in a scheduled race, the vehicle's in any other */
+const raceCarFor = (vehicle: VehicleModelId, scheduled: boolean) => {
+  const race = challengeAt(Date.now()).race;
+  return scheduled && race.vehicle === vehicle ? weekCar(race) : carForVehicle(vehicle);
 };
-/**
- * Uploads a lap, to this week's challenge board too when it fits; remembers the lap each board took (or refused for a
- * faster one of the driver's), so only a faster one is sent next time
- */
-const uploadLap = async (rec: LapRecording, driver: { name: string; code: string }): Promise<SubmitResult> => {
-  // Under the name the driver has now: a lap recorded before a rename must not claim the old name back
-  const named: LapRecording = { ...rec, driverName: driver.name, driverCode: driver.code };
-  const event = challengeOf(named);
-  const res = await submitLap(named, { event }).catch((): SubmitResult => ({ ok: false }));
-  if (res.ok && event && res.eventRank !== undefined) saveChallengeBest(event, rec.lapTimeMs);
-  const board = boardKeyOf(named);
-  if (board && (res.ok || res.notFaster)) saveBoardBest(board, rec.lapTimeMs);
-  return res;
-};
+/** The lap card's upload state for a board answer: sent, nothing to show, waiting for the board, or turned down */
+const cardStateOf = (res: SubmitResult, quietNotFaster: boolean): "idle" | "sent" | "error" | "waiting" =>
+  res.ok ? "sent" : res.notFaster && quietNotFaster ? "idle" : res.unreachable ? "waiting" : "error";
 // A lap on a circuit this build no longer lists keeps its id as its name (getTrackInfo would name it after another)
 const trackNameOf = (id: string) => TRACKS.find((t) => t.id === id)?.name ?? id;
 /** A circuit's name for the weekly challenge and its races, with the layout when the venue has more than one */
@@ -100,10 +108,15 @@ const challengeTrackName = (id: string) => {
   const t = getTrackInfo(id);
   return TRACKS.some((o) => o.id !== t.id && o.name === t.name) ? `${t.name} · ${t.layout}` : t.name;
 };
+/** Every listed circuit for the online board's picker, by name (the panel puts the loaded one first) */
+const BOARD_CIRCUITS = LISTED_TRACKS.map((t) => ({ id: t.id, label: challengeTrackName(t.id) })).sort((a, b) => a.label.localeCompare(b.label));
 /** The snapshot store before the session exists: nothing to subscribe to */
 const noSubscribe = () => () => {};
 /** Kiosk mode's map: its corners move nothing */
 const ignoreTurn = () => {};
+
+// The bug report's error log starts with the game's page, before anything on it can fail
+installErrorLog();
 // polish:B the podium shot's view before the drive exists
 const IDLE_PODIUM: PodiumUi = { stage: "idle", rows: [] };
 const idlePodium = () => IDLE_PODIUM;
@@ -126,6 +139,8 @@ export interface LibreCorsaSimulatorProps {
   /** Title menu circuit picker */
   /** Switches circuit: settles once the load lands (the scene remounts) or fails (the old circuit stays) */
   onSelectTrack?: (id: string) => void | Promise<void>;
+  /** Mounts the circuit again from scratch (a new canvas and WebGL context), after the GPU context was lost */
+  onRestart?: () => void;
   /**
    * Kiosk mode (event branch): no title menu, setup or pause menu; the kiosk's own screens drive the game through
    * `KioskSimApi`, and the settings it lays over the player's are never saved (src/lib/kiosk/kiosk-bridge.ts)
@@ -133,12 +148,14 @@ export interface LibreCorsaSimulatorProps {
   kiosk?: KioskMode;
 }
 
-export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackId = DEFAULT_TRACK_ID, onSelectTrack, kiosk }) => {
+export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackId = DEFAULT_TRACK_ID, onSelectTrack, onRestart, kiosk }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const kioskOn = kiosk !== undefined;
   const kioskSettings = kiosk?.settings;
   /** The drive on the mounted circuit: the scene, the car and the frame loop (created once the container exists) */
   const [session, setSession] = useState<DriveSession | null>(null);
+  /** The browser gave this page no WebGL context: only a page reload (or a browser restart) can bring it back */
+  const [webglRefused, setWebglRefused] = useState(false);
 
   const track = useMemo(() => getActiveTrackData(1200), []);
   /** The chosen car, and the vehicle model it drives on */
@@ -178,6 +195,10 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     defaultTyreSetup,
     chassisSetup,
     timeTrial,
+    autoQualityLowered,
+    qualityNotice,
+    gpuLost,
+    nowPlaying,
   } = useSyncExternalStore(session?.subscribe ?? noSubscribe, session?.getSnapshot ?? (() => idleSnapshot), () => idleSnapshot);
 
   const [aeroPreset, setAeroPreset] =
@@ -204,6 +225,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   /** The loading screen stays mounted while it fades out over the title menu */
   const [loadingVisible, setLoadingVisible] = useState(true);
   const [settings, setSettings] = useState<PlayerSettings>(DEFAULT_PLAYER_SETTINGS);
+  // Key names in hints follow the keyboard layout (AZERTY's KeyW is "Z"): re-render once it is read
+  useKeyLayout();
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   // The preferences the game applies to the car and the camera: `settings` is their only copy
@@ -241,16 +264,28 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
 
   // ---- Laps, ghosts, leaderboards
   const [lapSummary, setLapSummary] = useState<{ summary: LapSummaryData; recording: LapRecording } | null>(null);
-  const [submitState, setSubmitState] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [submitState, setSubmitState] = useState<"idle" | "sending" | "sent" | "error" | "waiting">("idle");
   /** Place of the uploaded lap on its board, and how many drivers that board has */
   const [submitRank, setSubmitRank] = useState<ReturnType<typeof placeOf>>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   /** A name the board turned down (taken by another driver): laps under it are not sent again until it changes */
   const refusedNameRef = useRef<{ name: string; error: string } | null>(null);
-  /** The upload on its way, which a rename waits for (so its lap moves with the rest) */
+  /** The uploads on their way, which a rename waits for (so their laps move with the rest) */
   const uploadingRef = useRef<Promise<unknown> | null>(null);
+  /** Adds an upload or a flush to what a rename waits for, without dropping one still in flight */
+  const trackUpload = (p: Promise<unknown>) => {
+    const prev = uploadingRef.current;
+    const all: Promise<unknown> = prev ? Promise.allSettled([prev, p]) : p;
+    uploadingRef.current = all;
+    const clear = () => {
+      if (uploadingRef.current === all) uploadingRef.current = null;
+    };
+    all.then(clear, clear);
+  };
   /** Bumped by every new or closed lap card and every upload: only the upload of the card still shown may land on it */
   const submitReqRef = useRef(0);
+  /** The card's lap while it waits for the board (and the card's request then): sent later, its answer lands there */
+  const waitingCardRef = useRef<{ req: number; recordedAt: number } | null>(null);
   const [driverKeyNotice, setDriverKeyNotice] = useState<string | null>(null);
   const ghostSourceRef = useRef<"pb" | "other">("pb");
   /** Bumped by every ghost choice, so a slower PB load cannot replace a ghost picked after it started */
@@ -261,26 +296,31 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   const [localLaps, setLocalLaps] = useState<LeaderboardEntry[]>([]);
   /** Bumped when the online board may have changed (a lap went up), so the panel reads it again */
   const [boardVersion, setBoardVersion] = useState(0);
-  /** This site has an online lap board switched on (asked once at start) */
-  const [boardOn, setBoardOn] = useState(false);
-  const boardOnRef = useRef(false);
+  /**
+   * The online lap board: on, turned off, or not reached yet (null before the first answer). Followed, not asked once:
+   * a read that failed at start used to keep lap posting off for the whole session (issue #122)
+   */
+  const [boardState, setBoardState] = useState<BoardState | null>(null);
+  const boardStateRef = useRef<BoardState | null>(null);
+  const boardOn = boardState === "on";
   /** Scheduled races run on this site, and how often (seconds) */
   const [races, setRaces] = useState<{ on: boolean; slotS: number }>({ on: false, slotS: DEFAULT_RACE_SLOT_S });
   /** This player's entry in the next scheduled race */
   const [raceEntry, setRaceEntry] = useState<ScheduledRaceStatus>({ state: "idle", startsMs: null, text: "" });
-  useEffect(() => {
-    let live = true;
-    void boardOnline().then((on) => {
-      boardOnRef.current = on;
-      if (live) setBoardOn(on);
-    });
-    void getOnlineConfig().then((config) => {
-      if (live) setRaces({ on: config.races, slotS: config.raceSlotS });
-    });
-    return () => {
-      live = false;
-    };
-  }, []);
+  /** Sends the laps that couldn't reach the board (set below, once what it needs is there) */
+  const flushQueuedRef = useRef<() => void>(() => {});
+  useEffect(
+    () =>
+      watchOnlineConfig((online) => {
+        const board = boardStateOf(online);
+        boardStateRef.current = board;
+        setBoardState(board);
+        setRaces({ on: online.config.races, slotS: online.config.raceSlotS });
+        // The board answers, at start or after it was out of reach: the laps waiting for it go up
+        if (online.reach === "ok" && board === "on") flushQueuedRef.current();
+      }),
+    []
+  );
 
   // ---- VR, FFB meter
   const [vrSupported, setVrSupported] = useState(false);
@@ -291,9 +331,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   const cycleCamera = useCallback(() => setSettings((prev) => ({ ...prev, camera: nextCameraMode(prev.camera ?? "chase") })), []);
 
   // ---- Session and run: the one place that starts, restarts and leaves what is on track (the session resets the run)
-  /** A new run re-opens the race results card (a flashback keeps it as it was) */
-  const onRunReset = useCallback((reason: RunResetReason) => {
-    if (reason !== "flashback") setResultsClosed(false);
+  /** A new run re-opens the race results card */
+  const onRunReset = useCallback(() => {
+    setResultsClosed(false);
   }, []);
 
   /** What belongs to a whole session: the lap card and its upload, the pause and its notice, the boost latch, the hint */
@@ -437,6 +477,11 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   }, []);
 
   const handleToggleMute = useCallback(() => session?.toggleMute(), [session]);
+  // The music alone: a press also unlocks the audio, so the first press on a silent menu starts the music
+  const handleToggleMusicMute = useCallback(() => {
+    session?.unlockAudio();
+    setSettings((prev) => ({ ...prev, audio: { ...prev.audio, musicMuted: !prev.audio.musicMuted } }));
+  }, [session]);
 
   const handleToggleAiAutopilot = useCallback(() => {
     session?.unlockAudio();
@@ -471,7 +516,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       // In a multiplayer race only the host can restart it (for everyone); others keep their place
       const race = session.race;
       if (race.kind === "mp") {
-        if (isMpHostRef.current && !flyingStart) getMultiplayerManager().startRace();
+        if (isMpHostRef.current && !flyingStart && !getActivePointToPoint()) getMultiplayerManager().startRace();
         return;
       }
       // polish:A — a flying restart outside a race puts the time trial's conditions on first
@@ -479,7 +524,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       const physics = session.car;
       session.resetRun("restart");
       // A restart from the menu uses the race's own start; the flying-lap key always gives a rolling one
-      if (race.kind === "ai") startAiRace(race.field, settingsRef.current.race, flyingStart ? false : undefined);
+      if (race.kind === "ai") startAiRace(race.field, settingsRef.current.race, settingsRef.current.profile, flyingStart ? false : undefined);
       else physics.resetToStartGrid(flyingStart);
     },
     [session]
@@ -487,8 +532,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
 
   const handleToggleAiOpponents = useCallback(() => {
     session?.unlockAudio();
-    // Not in a multiplayer race: the AI field would run alongside it
-    if (!session || session.race.kind === "mp") return;
+    // Not in a multiplayer race: the AI field would run alongside it. Not on a hill climb: one car at a time
+    if (!session || session.race.kind === "mp" || getActivePointToPoint()) return;
     session.resetRun("race");
     if (session.race.kind === "ai") {
       session.setRace({ kind: "practice" });
@@ -496,7 +541,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     }
     const field = session.takeAiField();
     session.setRace({ kind: "ai", field });
-    startAiRace(field, settingsRef.current.race);
+    startAiRace(field, settingsRef.current.race, settingsRef.current.profile);
   }, [session]);
 
   const handleSelectTurn = useCallback(
@@ -528,6 +573,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   const handleSetLobbySettings = useCallback((patch: Partial<LobbySettings>) => getMultiplayerManager().setLobbySettings(patch), []);
   const handleSetReady = useCallback((ready: boolean) => getMultiplayerManager().setReady(ready), []);
   const handleStartMpRace = useCallback(() => {
+    // A hill climb has no races: one car at a time, start to finish
+    if (getActivePointToPoint()) return;
     getMultiplayerManager().startRace();
   }, []);
   const handleAbortMpRace = useCallback(() => getMultiplayerManager().abortRace(), []);
@@ -587,6 +634,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     getTrackEnv().setSimRealism(SIM_REALISM_FLAGS[settings.realism]);
   }, [settings.realism, getTrackEnv]);
 
+  const handleOffTrackGlow = useCallback((on: boolean) => session?.setOffTrackGlow(on), [session]);
+
   /** null returns to the car's own FOV */
   const handleCockpitFovChange = useCallback((fovDeg: number | null) => {
     setSettings((prev) => ({ ...prev, cockpitFovDeg: fovDeg === null ? null : Math.round(clampFov(fovDeg)) }));
@@ -605,20 +654,26 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   /** Leaves the menus for the car: a practice run from the grid, or a race against the AI field */
   const startDriving = useCallback(
     (race: boolean) => {
+      // A hill climb has no races: one car at a time, start to finish
+      if (getActivePointToPoint()) race = false;
       const field = race && session ? (aiFieldOf(session.race) ?? session.takeAiField()) : null;
-      startSession(field ? { kind: "ai", field } : { kind: "practice" });
-      if (field) startAiRace(field, settingsRef.current.race);
+      // Qualifying first when the race setup asks for it: the player alone on a flying lap, the field waiting
+      const qualifyingMin = settingsRef.current.race.qualifying;
+      startSession(field && !qualifyingMin ? { kind: "ai", field } : { kind: "practice" });
+      if (field && qualifyingMin) session?.startQualifying(field, qualifyingMin);
+      else if (field) startAiRace(field, settingsRef.current.race, settingsRef.current.profile);
       else session?.car.resetToStartGrid(false);
       setLaunchHint(true);
     },
     [session, startSession]
   );
 
-  // In the menus (after loading, after a race): have the next race's AI field ready (a car swap asks for its own)
+  // In the menus (after loading, after a race): have the next race's AI field ready (a car swap asks for its own).
+  // Not before the loading screen has gone: the press that leaves it shows the menus first
   useEffect(() => {
-    if (phase === "loading" || phase === "driving" || !assetsReady) return;
+    if (phase === "loading" || phase === "driving" || !assetsReady || loadingVisible) return;
     session?.prepareAiField();
-  }, [session, phase, assetsReady]);
+  }, [session, phase, assetsReady, loadingVisible]);
 
   /** The week's challenge rules: its assists and realism, a dry track (its car and circuit are the caller's to set) */
   const applyWeekRules = useCallback(() => {
@@ -647,12 +702,12 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       // The class may rule out the current car, or the race names one car for everyone (a scheduled race): take it,
       // or the first allowed one (after the session reset, so the swap finds no replay or AI field to carry over)
       const allowed = start.vehicle ? [start.vehicle] : vehicleModelsFor(start.carClass);
-      if (!allowed.includes(vehicleModelRef.current)) changeCar(carForVehicle(allowed[0]).id);
+      if (!allowed.includes(vehicleModelRef.current)) changeCar(raceCarFor(allowed[0], mp.inScheduledRace).id);
       // A scheduled race is driven to the week's rules: its assists and realism, a dry track
       if (mp.inScheduledRace) applyWeekRules();
       const physics = session?.car;
       if (physics) {
-        physics.resetToStartGrid(false, race.gridSlot);
+        physics.resetToStartGrid(false, race.gridSlot, undefined, true);
         race.lapClock.reset(physics.sMeters);
       }
     },
@@ -690,8 +745,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
         lineWaterMm: getTrackEnv().weather.lineWaterMm,
         realism: settingsRef.current.realism,
         vehicle: vehicleModelRef.current,
+        trackId,
       }),
-    [session, getTrackEnv]
+    [session, getTrackEnv, trackId]
   );
   const refreshLeaderboard = useCallback(async () => {
     // Several refreshes can overlap (car change, a saved lap): only the latest may land
@@ -701,12 +757,6 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     setLocalLaps(local);
     setBoardVersion((v) => v + 1);
   }, [trackId]);
-  /** One online board for the Lap Times panel, with this player's place on it */
-  const loadRemoteBoard = useCallback(
-    (track: string, vehicle: VehicleModelId, filter: BoardFilter, physics: number) =>
-      fetchRemoteBoard(track, vehicle, { filter, physics, name: settingsRef.current.profile.name }).catch(() => null),
-    []
-  );
 
   /** Races the personal best of this car as the ghost, replacing whichever lap was chosen */
   const loadPbGhost = useCallback(async () => {
@@ -731,7 +781,11 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
         setSubmitRank(null);
         setSubmitError(null);
       }
+      // Every lap the player drove counts towards the circuit's laps driven, a cut one too
+      if (!summary.autopilot) countUsageLap();
       if (!summary.valid || summary.autopilot) return;
+      // The lap board opens at a lap's end (its setting allowing) and shows the new place once the upload answers
+      signalBoardLap({ kind: "lap" });
       // A ghost chosen (or another car's best requested) while this saves wins over it
       const ghostReq = ghostReqRef.current;
       // The upload this lap's card may show the result of (a later card, or a manual upload, takes over)
@@ -750,7 +804,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
           // this week's challenge (which an older, faster lap of the same kind doesn't stand in for), under the
           // player's name, the one the game picked included, unless they turned this off. Measured against the board,
           // not the local personal best: a best set before the board began never went up, and a returning driver's
-          // slower laps still belong on it. A failure offers a retry on the lap card
+          // slower laps still belong on it. A failure offers a retry on the lap card; a board out of reach is asked
+          // again now, and if it still doesn't answer the lap waits and goes up once it does
           const week = challengeOf(recording);
           const weekBest = week ? loadChallengeBest(week) : null;
           const board = boardKeyOf(recording);
@@ -758,7 +813,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
           const beatsBoard = board !== null && (boardBest === null || recording.lapTimeMs < boardBest);
           if (!beatsBoard && !(week && (weekBest === null || recording.lapTimeMs < weekBest))) return;
           const profile = settingsRef.current.profile;
-          if (!boardOnRef.current || !profile.autoUpload) return;
+          // Only a board that said it is off keeps a lap here; one that hasn't answered yet is tried
+          if (boardStateRef.current === "off" || !profile.autoUpload) return;
           const shown = () => submitReq === submitReqRef.current;
           // A name the board won't take is not sent again lap after lap: the card says why and offers another
           const refused = nameProblem(profile.name) ?? (refusedNameRef.current?.name === profile.name ? refusedNameRef.current.error : null);
@@ -770,16 +826,18 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
             return;
           }
           if (shown()) setSubmitState("sending");
-          const upload = uploadLap(recording, profile);
-          uploadingRef.current = upload;
+          const upload = postLap(recording, profile, "auto");
+          trackUpload(upload);
           return upload.then((res) => {
             if (res.ok) setBoardVersion((v) => v + 1);
+            if (res.ok && res.rank !== undefined) signalBoardLap({ kind: "result", rank: res.rank, total: res.total ?? null });
             if (res.taken) refusedNameRef.current = { name: profile.name, error: res.error ?? "This name is taken" };
             if (!shown()) return;
             // The board holding a faster lap of this driver's (from another device) is no failure: nothing to show
-            setSubmitState(res.ok ? "sent" : res.notFaster ? "idle" : "error");
+            setSubmitState(cardStateOf(res, true));
             setSubmitRank(placeOf(res));
             setSubmitError(res.ok || res.notFaster ? null : (res.error ?? null));
+            waitingCardRef.current = res.unreachable ? { req: submitReq, recordedAt: recording.recordedAt } : null;
           });
         })
         .catch(() => {});
@@ -804,17 +862,66 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       return;
     }
     setSubmitState("sending");
-    const upload = uploadLap(rec, as);
-    uploadingRef.current = upload;
+    const upload = postLap(rec, as, "hand");
+    trackUpload(upload);
     const res = await upload;
     if (res.ok) setBoardVersion((v) => v + 1);
+    if (res.ok && res.rank !== undefined) signalBoardLap({ kind: "result", rank: res.rank, total: res.total ?? null });
     if (res.taken) refusedNameRef.current = { name: as.name, error: res.error ?? "This name is taken" };
     // The card was closed or replaced by another lap meanwhile: this answer is not about the one shown
     if (req !== submitReqRef.current) return;
-    setSubmitState(res.ok ? "sent" : "error");
+    setSubmitState(cardStateOf(res, false));
     setSubmitRank(placeOf(res));
     setSubmitError(res.ok ? null : (res.error ?? null));
+    waitingCardRef.current = res.unreachable ? { req, recordedAt: rec.recordedAt } : null;
   }, [lapSummary]);
+  /**
+   * Posts a saved best that isn't on its online board (Your best laps): one whose upload failed, set while posting was
+   * off, or set before the board began. Resolves with the board's answer; a refusal is remembered with its reason
+   */
+  const handlePostBest = useCallback(async (entry: LeaderboardEntry): Promise<SubmitResult> => {
+    const rec = entry.conditions ? await loadBestLap(entry.trackId, entry.vehicle, lapBoardClass(entry.conditions)).catch(() => null) : null;
+    // A faster lap saved meanwhile replaced this one: the list reloads with it
+    if (!rec || rec.lapTimeMs !== entry.lapTimeMs || rec.recordedAt !== entry.recordedAt) return { ok: false, error: "This lap is no longer saved here" };
+    const as = settingsRef.current.profile;
+    const refused = nameProblem(as.name) ?? (refusedNameRef.current?.name === as.name ? refusedNameRef.current.error : null);
+    if (refused) {
+      saveBoardMiss(rec, refused);
+      return { ok: false, error: refused };
+    }
+    const res = await postLap(rec, as, "hand");
+    if (res.ok) setBoardVersion((v) => v + 1);
+    if (res.taken) refusedNameRef.current = { name: as.name, error: res.error ?? "This name is taken" };
+    return res;
+  }, []);
+  /**
+   * Sends the laps that couldn't reach the board (board-queue.ts), when it answers again or the name changes. A lap the
+   * card still shows gets the board's answer there. `as`: a name just taken (the settings don't show it until the next
+   * render)
+   */
+  const flushQueued = useCallback((as?: { name: string; code: string }) => {
+    const flush = flushQueuedLaps({
+      driver: () => {
+        const p = as ?? settingsRef.current.profile;
+        return nameProblem(p.name) || refusedNameRef.current?.name === p.name ? null : { name: p.name, code: p.code };
+      },
+      autoUpload: () => settingsRef.current.profile.autoUpload,
+      loadBest: (trackId, vehicle, board) => loadBestLap(trackId, vehicle, board),
+      onPosted: (rec, res) => {
+        if (res.ok) setBoardVersion((v) => v + 1);
+        if (res.taken) refusedNameRef.current = { name: settingsRef.current.profile.name, error: res.error ?? "This name is taken" };
+        const card = waitingCardRef.current;
+        if (!card || card.recordedAt !== rec.recordedAt || card.req !== submitReqRef.current) return;
+        if (!res.unreachable) waitingCardRef.current = null;
+        setSubmitState(cardStateOf(res, true));
+        setSubmitRank(placeOf(res));
+        setSubmitError(res.ok || res.notFaster ? null : (res.error ?? null));
+      },
+    });
+    // A rename waits for these too, so their laps move with the rest (and still for an upload already on its way)
+    trackUpload(flush);
+  }, []);
+  flushQueuedRef.current = flushQueued;
   /**
    * A new driver name, from the Display settings or the lap card: checked, then claimed on the online board, where the
    * laps and race results under the old name move with it. The name and code once it has taken, else why it didn't.
@@ -830,16 +937,19 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     const code = prev.generated ? codeFromName(name) : prev.code;
     // An upload still on its way goes up under the old name first, so its lap moves with the rest
     await uploadingRef.current?.catch(() => {});
-    if (boardOnRef.current) {
+    // A board that hasn't answered is asked now: the name doesn't change while it is out of reach (renameOnBoard)
+    if (boardStateRef.current !== "off") {
       const res = await renameOnBoard(prev.name, name, code);
       if (!res.ok) return { error: res.error ?? "The name could not be changed" };
     }
     setSettings((s) => ({ ...s, profile: { ...s.profile, name, code, generated: false } }));
     refusedNameRef.current = null;
-    // The boards (the challenge box among them) are read again under the new name
+    // The boards (the challenge box among them) are read again under the new name, and laps held back by the old one go
+    // up (under the new name: the settings don't show it until the next render)
     setBoardVersion((v) => v + 1);
+    if (boardStateRef.current === "on") flushQueued({ name, code });
     return { name, code };
-  }, []);
+  }, [flushQueued]);
   const renameFromSettings = useCallback(async (raw: string) => {
     const res = await renameDriver(raw);
     return "error" in res ? res.error : null;
@@ -924,14 +1034,34 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     leaveSession();
   }, [leaveSession]);
 
-  const openControls = useCallback(
-    (from: "title" | "pause") => {
-      wizardReturnRef.current = from;
-      setWizardMode("controls");
-      setPhase("wizard");
+  /** The Settings screen, over the title menu or the pause menu, and where it opens */
+  const [settingsOpen, setSettingsOpen] = useState<{ from: "title" | "pause"; category?: SettingsCategory; tab?: string } | null>(null);
+  const openSettings = useCallback(
+    (from: "title" | "pause", category?: SettingsCategory, tab?: string) => {
+      // Opened from the car (the HUD's "pedals not set up"): the session pauses under it, as from the pause menu
+      if (from === "pause" && !session?.getSnapshot().paused) session?.togglePause();
+      setSettingsOpen({ from, category, tab });
     },
-    [setPhase]
+    [session]
   );
+  const closeSettings = useCallback(() => setSettingsOpen(null), []);
+  // Every way out of the pause (the touch pause button, a wheel's pause button, a race restart) closes it too
+  const wasPausedRef = useRef(paused);
+  useEffect(() => {
+    const resumed = wasPausedRef.current && !paused;
+    wasPausedRef.current = paused;
+    if (settingsOpen?.from === "pause" && (resumed || phase !== "driving")) setSettingsOpen(null);
+    if (settingsOpen?.from === "title" && phase !== "title") setSettingsOpen(null);
+  }, [settingsOpen, paused, phase]);
+
+  /** First-run setup again, from Settings > Controls > Device: back where Settings was opened from when done */
+  const runSetupAgain = useCallback(() => {
+    const from = settingsOpen?.from ?? "title";
+    setSettingsOpen(null);
+    wizardReturnRef.current = from;
+    setWizardMode("again");
+    setPhase("wizard");
+  }, [settingsOpen, setPhase]);
 
   /** Title "Drive" / "Race AI": the first time through, the setup comes first */
   const handleTitleStart = useCallback(
@@ -949,7 +1079,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   );
 
   const leaveWizard = useCallback(() => {
-    // The controls setup opened from the pause menu goes back to it (still paused)
+    // Setup run again from pause goes back to it (still paused)
     setPhase(wizardReturnRef.current === "pause" ? "driving" : "title");
   }, [setPhase]);
 
@@ -1076,20 +1206,71 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     if (silence) session?.silenceFeedback();
   }, [session, paused, phase]);
 
+  // The GPU context is gone: an online race goes on without this car, as when the player leaves it (a guest drops out,
+  // a host ends it for everyone rather than leave them waiting on a car that no longer moves)
+  useEffect(() => {
+    if (gpuLost) endMpRace(true);
+  }, [gpuLost, endMpRace]);
+  /**
+   * The way back from a lost context: the circuit mounts again on a new canvas, with Low saved first when asked. A
+   * browser that refuses WebGL to the page after a reset would only fail again: then the notice asks for a page reload.
+   */
+  const restartAfterGpuLoss = useCallback(
+    (lower: boolean) => {
+      if (probeRenderer() === null) {
+        setWebglRefused(true);
+        return;
+      }
+      // The player chose: the next start does not switch the preset by itself
+      settleLoss(browserStore(), Date.now());
+      // The circuit loads again on the title menu: as when leaving the car for it, the player's own assists, realism
+      // and weather come back if a challenge or a scheduled race had the week's in their place
+      let s = settingsRef.current;
+      if (ownRules) {
+        s = { ...s, ...ownRules };
+        ownRules = null;
+      }
+      savePlayerSettings(lower ? { ...s, graphics: { ...s.graphics, quality: "low" } } : s);
+      if (onRestart) onRestart();
+      else window.location.reload();
+    },
+    [onRestart]
+  );
+  const gpuNoticeKind = webglRefused
+    ? lostRecently()
+      ? "blocked"
+      : "unavailable"
+    : gpuLost
+      ? gpuLost.hidden
+        ? "background"
+        : "lost"
+      : null;
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    const session = new DriveSession(container, {
-      car: carIdRef.current,
-      cycleCamera,
-      getTrackEnv,
-      handleToggleRacingLine,
-      setSettings,
-      setRaceKind,
-      onRunReset,
-      track,
-      trackId,
-    });
+    let session: DriveSession;
+    try {
+      session = new DriveSession(container, {
+        car: carIdRef.current,
+        cycleCamera,
+        getTrackEnv,
+        handleToggleRacingLine,
+        setSettings,
+        setRaceKind,
+        onRunReset,
+        track,
+        trackId,
+        // The save itself, read here as well as below: the state still holds the prerendered defaults at this point
+        settings: loadPlayerSettings(),
+      });
+    } catch (err) {
+      // No WebGL for this page (switched off, or refused after a GPU reset): say so rather than the error screen
+      if (!(err instanceof WebGLUnavailableError)) throw err;
+      console.warn("[gpu]", err.message);
+      setWebglRefused(true);
+      return;
+    }
     setSession(session);
     return () => {
       session.dispose();
@@ -1117,6 +1298,11 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     savePlayerSettings(settings);
   }, [settingsHydrated, settings, kioskOn]);
 
+  // Units, interface size and the colour-blind palette: once at start-up (the defaults, then the save) and on change
+  useEffect(() => {
+    applyInterfaceSettings(settings.ui);
+  }, [settings.ui]);
+
   // Recently driven / raced, for the browsers: the car and circuit in use once the save is read, then every change
   useEffect(() => {
     if (!settingsHydrated) return;
@@ -1143,7 +1329,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
         return;
       }
       const allowed = l.settings.vehicle ? [l.settings.vehicle] : vehicleModelsFor(l.settings.carClass);
-      if (allowed.length > 0 && !allowed.includes(vehicleModelRef.current)) changeCar(carForVehicle(allowed[0]).id);
+      if (allowed.length > 0 && !allowed.includes(vehicleModelRef.current)) changeCar(raceCarFor(allowed[0], mp.inScheduledRace).id);
     };
     mp.onLobbyChange = (l) => {
       setLobby(l ? { ...l, players: [...l.players] } : null);
@@ -1204,8 +1390,13 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   const challengeAvailable = TRACKS.some((t) => t.id === challenge.trackId) && CARS.some((c) => c.physics === challenge.vehicle);
   // The week's races can be on another circuit and car than its time trial
   const racesAvailable = TRACKS.some((t) => t.id === challenge.race.trackId) && CARS.some((c) => c.physics === challenge.race.vehicle);
+  /**
+   * The week's board: the one laps go on now (the time trial's target), or an older one the panel picked, by its base
+   * revision
+   */
   const loadChallengeBoard = useCallback(
-    () => fetchRemoteBoard(challenge.trackId, challenge.vehicle, { event: challenge.id, name: settingsRef.current.profile.name, limit: 20 }).catch(() => null),
+    (version: number = currentBoardBase(challenge.trackId)) =>
+      fetchRemoteBoard(challenge.trackId, challenge.vehicle, { event: challenge.id, name: settingsRef.current.profile.name, limit: 20, version }).catch(() => null),
     [challenge]
   );
   // polish:A — the time trial's target on the HUD: the week's board, read again after each upload. Not without a board
@@ -1231,14 +1422,16 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       applyWeekRules();
       startSession({ kind: "practice" });
       // After the session reset, so the swap finds no replay or AI field to carry over (as a multiplayer race's)
-      const vehicle = race ? week.race.vehicle : week.vehicle;
-      if (vehicleModelRef.current !== vehicle) changeCar(carForVehicle(vehicle).id);
+      // A week that names its car is driven in it (a no-op when already in it); any other in the car one is in, if it is the week's vehicle
+      const rules = race ? week.race : week;
+      if (vehicleModelRef.current !== rules.vehicle || rules.car !== undefined) changeCar(weekCar(rules).id);
       if (race && session) {
         // The field for the car now on track, over the week's race distance
         const field = session.takeAiField();
-        session.setRace({ kind: "ai", field });
+        // The same rules for everyone: the car class's, with track limits on
+        session.setRace({ kind: "ai", field, rules: { rulePreset: "auto", trackLimits: "auto" } });
         // No damage, as in an open race with other drivers (their cars take none)
-        startAiRace(field, { ...settingsRef.current.race, laps: week.race.laps, start: "standing", damage: "off" });
+        startAiRace(field, { ...settingsRef.current.race, laps: week.race.laps, startMode: "standing", damage: "off" }, settingsRef.current.profile);
       } else {
         // polish:A — the time trial: its fixed tyre, fuel and road, from a flying start
         session?.setTimeTrial(timeTrialRules(week.vehicle));
@@ -1349,6 +1542,12 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     }
     void webHidFfb.reconnect();
   }, [hidFfbWanted]);
+  // A DualSense paired on an earlier visit opens again without a prompt (adaptive triggers, rumble, lights), and so
+  // does a DualShock 4 connected for gyro steering
+  useEffect(() => {
+    void dualSenseHid.restore();
+    void dualShock4Hid.restore();
+  }, []);
   // A recognised wheel with no steering bound (the wizard's wheel step skipped, or plugged in later) is set up as a
   // wheel straight away; otherwise it drives as a gamepad, through the stick steering assist
   useEffect(() => {
@@ -1373,35 +1572,6 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     []
   );
 
-  /** The pause menu's controls list, from the player's bindings */
-  const controlsCheatSheet = useMemo(() => {
-    const keys = (codes: string[]) => codes.map(keyLabel).join(" · ") || "—";
-    const k = settings.keys;
-    const rows: [string, string][] = [
-      ["Throttle / brake", `${keys(k.throttle)} / ${keys(k.brake)}`],
-      ["Steer", `${keys(k.steerLeft)} / ${keys(k.steerRight)}`],
-      ["Boost (manual override)", `${keys(k.boostHold)} · ${keys(k.boostLatch)}`],
-      ["Active aero X / Z", keys(k.aero)],
-      ["Gear up / down", `${keys(k.shiftUp)} / ${keys(k.shiftDown)}`],
-      ["Camera", keys(k.camera)],
-      ["Seat & camera (cockpit, dash)", `Hold ${keys(k.camera)}`],
-      ["FOV, this car", "[ / ]"],
-      ["Nudge the view", "Alt + arrows · − = · [ ]"],
-      ["Racing line", keys(k.racingLine)],
-      ["Restart", keys(k.restart)],
-      ["Restart lap (flying start)", keys(k.flyingLap)],
-      ["Half throttle", keys(k.throttleHalf)],
-      ["Instant replay", keys(k.replay)],
-    ];
-    const pb = settings.padButtons;
-    rows.push([
-      "Pad",
-      `RT / LT · stick · ${padButtonLabel(pb.boost)} boost · ${padButtonLabel(pb.shiftUp)}/${padButtonLabel(pb.shiftDown)} gears`,
-    ]);
-    rows.push(["Seat & camera on a pad", `Hold ${padButtonLabel(pb.camera)}`]);
-    return rows;
-  }, [settings.keys, settings.padButtons]);
-
   const keyNames = useMemo(() => {
     const first = (codes: string[]) => (codes[0] ? keyLabel(codes[0]) : "—");
     const k = settings.keys;
@@ -1414,15 +1584,21 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       restart: first(k.restart),
       shiftUp: first(k.shiftUp),
       shiftDown: first(k.shiftDown),
+      board: first(k.board),
     };
   }, [settings.keys]);
+  /** The lap board's gear sets when it opens: the same HUD setting as in Settings */
+  const handleChangeBoardWidget = useCallback(
+    (mode: BoardWidgetMode) => handleChangeSettings((prev) => ({ ...prev, hud: { ...prev.hud, boardWidget: mode } })),
+    [handleChangeSettings]
+  );
 
   // With the touch pads up and no wheel or controller picked, the pads are what the player drives with
   const launchHintText =
     settings.device === "wheel"
       ? `Press the throttle to launch · ${seatHintOn ? "hold the camera button for your seat · " : ""}pause button or Esc for menu`
       : settings.device === "controller"
-        ? `Hold RT to launch · ${seatHintOn ? `hold ${padButtonLabel(settings.padButtons.camera)} for your seat · ` : ""}${padButtonLabel(settings.padButtons.pause)} for menu`
+        ? `${pressPedalText(settings.padTuning.pedalSources.throttle)} to launch · ${seatHintOn ? `hold ${padButtonLabel(settings.padButtons.camera)} for your seat · ` : ""}${padButtonLabel(settings.padButtons.pause)} for menu`
         : touchVisible && vrState !== "on"
           ? "Hold Throttle to launch"
           : `Hold ${keyLabel(settings.keys.throttle[0])} to launch · ${seatHintOn ? `hold ${keyLabel(settings.keys.camera[0])} for your seat · ` : ""}Esc for menu`;
@@ -1447,6 +1623,11 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     raceOver: telemetry.race?.phase === "finished",
     input: settings.device === "keyboard" && touchVisible ? "touch" : settings.device,
   });
+  // A newer build out while the game is open: the menus offer the reload (UpdateReady). It happens by itself only on
+  // the first loading screen, or on the title screen with nothing open while the tab is out of view (build-update.ts)
+  useUpdateAutoReload(
+    phase === "loading" ? "loading" : phase === "title" && !settingsOpen && lobby === null && !inScheduledRace ? "idle" : "busy"
+  );
 
   // polish:B after the flag: the podium shot, the race kept in this browser, the next open race
   const podiumUi = useSyncExternalStore(session?.podium.subscribe ?? noSubscribe, session?.podium.getSnapshot ?? idlePodium, idlePodium);
@@ -1463,6 +1644,85 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     handleBackToLobby();
     handleJoinRace();
   }, [handleBackToLobby, handleJoinRace]);
+
+  // The note after a drive (support-prompt.ts): how long this circuit and car were driven, and, back on the main
+  // menu after a real drive, who made them, for the makers who take donations
+  const [supportNote, setSupportNote] = useState<PromptItem[] | null>(null);
+  const driveTime = useRef<{ pair: string; ms: number; since: number | null }>({ pair: "", ms: 0, since: null });
+  const lastPhase = useRef(phase);
+  useEffect(() => {
+    const pair = `${trackId}|${carId}`;
+    const d = driveTime.current;
+    const now = performance.now();
+    if (d.since !== null) d.ms += now - d.since;
+    d.since = phase === "driving" && !paused ? now : null;
+    if (d.pair !== pair) {
+      d.pair = pair;
+      d.ms = 0;
+    }
+  }, [phase, paused, trackId, carId]);
+  useEffect(() => {
+    const was = lastPhase.current;
+    lastPhase.current = phase;
+    if (phase === "driving") setSupportNote(null);
+    if (phase !== "title" || was !== "driving" || isStoreBuild()) return;
+    // A room or a race entry takes the title's place: a note written as shown there would never have been seen
+    if (roomLobby !== null || inScheduledRace) return;
+    const items: PromptItem[] = [];
+    const circuit = circuitMaker(trackId);
+    const track = getTrackInfo(trackId);
+    if (circuit?.support) items.push({ key: `circuit:${track.name}`, kind: "circuit", title: track.name, maker: circuit.name, role: circuit.role, support: circuit.support });
+    const car = carMaker(carId);
+    if (car.support) items.push({ key: `car:${carId}`, kind: "car", title: carById(carId).title, maker: car.name, role: car.role, support: car.support });
+    let store: Storage | null = null;
+    try {
+      store = window.localStorage;
+    } catch {
+      store = null;
+    }
+    const state = readPromptState(store);
+    const now = Date.now();
+    const note = promptFor(items, driveTime.current.ms, state, now);
+    if (!note) return;
+    writePromptState(store, markShown(state, note, now));
+    setSupportNote(note);
+    // Read when the phase changes, with the circuit and car of that moment
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+  const closeSupportNote = useCallback(() => setSupportNote(null), []);
+  const supportThanked = useCallback((maker: string) => {
+    try {
+      writePromptState(window.localStorage, markThanked(readPromptState(window.localStorage), maker));
+    } catch {
+      // Storage blocked: the maker may be named again some week
+    }
+  }, []);
+
+  /** The bug report's facts, read when it opens; from the pause menu with where the car is (`fromDrive`) */
+  const reportFacts = (fromDrive: boolean): ReportFacts => {
+    const snap = session?.getSnapshot();
+    const onChallengeNow = timeTrial !== null && timeTrial.vehicle === challenge.vehicle && trackId === challenge.trackId;
+    const mode =
+      raceKind === "ai"
+        ? "Race against AI"
+        : raceKind === "mp"
+          ? inScheduledRace
+            ? "Open race"
+            : "Room race"
+          : onChallengeNow
+            ? "Weekly challenge"
+            : "Practice";
+    return collectReportFacts({
+      settings: settingsRef.current,
+      touchVisible,
+      lastLapInput: lapSummary?.recording.conditions?.input ?? null,
+      boardState: boardStateRef.current,
+      drive:
+        fromDrive && snap
+          ? { telemetry: snap.telemetry, mode, replay: snap.replay.active, waterMm: trackEnvRef.current?.weather.lineWaterMm ?? 0 }
+          : null,
+    });
+  };
 
   const menuProps = {
     telemetry,
@@ -1506,6 +1766,10 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     onChangeLivery: handleLiveryChange,
     onToggleRacingLine: handleToggleRacingLine,
     onToggleMute: handleToggleMute,
+    nowPlaying,
+    onSkipTrack: session ? session.nextTrack : undefined,
+    musicMuted: settings.audio.musicMuted,
+    onToggleMusicMute: handleToggleMusicMute,
     onToggleAiAutopilot: handleToggleAiAutopilot,
     onToggleMouseSteer: handleToggleMouseSteer,
     onResetCar: handleResetCar,
@@ -1518,7 +1782,14 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     onAcceptManualOffer: handleAcceptManualOffer,
     onAcceptManualAnswer: handleAcceptManualAnswer,
     onTogglePause: togglePause,
+    // `?perf=1`: the pause menu copies or saves the session's performance report
+    perfReport: session?.perfReport ?? null,
+    // The bug report: what the game knows when it opens, and a picture of the scene from the pause menu
+    reportFacts,
+    captureScreen: session ? session.captureFrame : undefined,
     keyNames,
+    // The lap board while driving, with an online board only
+    onChangeBoardWidget: boardOn ? handleChangeBoardWidget : undefined,
     lobby: roomLobby,
     localPeerId,
     isHost: isMpHost,
@@ -1529,6 +1800,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     vehicleLabel,
     vehiclesForClass: vehicleModelsFor,
     raceRunning: raceKind === "mp",
+    startBlocked: getActivePointToPoint() ? "No races on a hill climb" : undefined,
     onHostLocal: handleHostLocal,
     onSetLobbySettings: handleSetLobbySettings,
     onSetReady: handleSetReady,
@@ -1545,20 +1817,33 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       onEnterVr: () => session?.enterVr(),
       onOpenSeatPanel: phase === "driving" ? () => session?.openSeatPanel() : undefined,
     },
+    // Weather, time of day and the track's grip: the title's Conditions panel and the pause menu's Conditions tab
+    conditionsPanel: {
+      conditions: settings.conditions,
+      realism: settings.realism,
+      onChangeConditions: handleChangeConditions,
+      onChangeRealism: handleChangeRealism,
+      hostControlled: roomLobby !== null && !isMpHost,
+      readout: weatherHud,
+    },
     library,
     leaderboardPanel: {
       trackName: getTrackInfo(trackId).name,
       trackId,
       trackNameOf,
+      circuits: BOARD_CIRCUITS,
       loadAllLocal: loadAllLocalLaps,
       vehicleLabel,
+      carTag: carBoardTag,
       local: localLaps,
       remoteEnabled: boardOn,
-      loadRemote: loadRemoteBoard,
+      remoteStatus: boardState === null ? ("unknown" as const) : boardState === "unreachable" ? ("unreachable" as const) : ("off" as const),
       boardVersion,
       vehicle: vehicleModel,
       driverName: settings.profile.name,
       onRaceGhost: (entry: LeaderboardEntry) => void handleRaceGhostEntry(entry),
+      boardStatus: boardStatusOf,
+      onPostLap: handlePostBest,
       onImportGhost: (file: File) => void handleImportGhost(file),
       onExportBest: () => void handleExportBest(),
       onExportDriverKey: handleExportDriverKey,
@@ -1567,11 +1852,44 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     },
   };
 
+  /** What the Settings screen reads and changes (the same rows first-run setup draws) */
+  const settingsEnv: SettingsEnv = {
+    settings,
+    update: handleChangeSettings,
+    rumble: gamepadRumble,
+    onToggleRumble: handleToggleGamepadRumble,
+    steerLockDeg,
+    carId,
+    vehicleModel,
+    vehicleLabel,
+    carFovDeg: carCockpitFov,
+    vrSupported,
+    vrActive: vrState === "on",
+    onEnterVr: () => session?.enterVr(),
+    autoQualityLowered,
+    onRenameDriver: renameFromSettings,
+    onOpenSeatPanel:
+      phase === "driving"
+        ? () => {
+            setSettingsOpen(null);
+            session?.openSeatPanel();
+          }
+        : undefined,
+    onRunSetup: runSetupAgain,
+    driverKey: {
+      onExport: handleExportDriverKey,
+      onImport: (file: File) => void handleImportDriverKey(file),
+      notice: driverKeyNotice,
+    },
+  };
+
   return (
     <div
-      className="relative h-screen w-screen overflow-hidden bg-[#0B0B10] supports-[height:100dvh]:h-dvh"
+      className="relative h-screen w-screen overflow-hidden bg-lc-void supports-[height:100dvh]:h-dvh"
       onPointerDown={() => {
-        if (phaseRef.current !== "loading") session?.unlockAudio();
+        // Not for a press on the GPU notice: that session is about to go, and a sound bank loading then lands on its
+        // closed audio context
+        if (phaseRef.current !== "loading" && !gpuNoticeKind) session?.unlockAudio();
       }}
     >
       <div ref={containerRef} className="h-full w-full" />
@@ -1601,6 +1919,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
           track={track}
           weather={weatherHud}
           boostLatch={boostLatch}
+          qualityNotice={qualityNotice}
           showLaunchHint={launchHint}
           launchHintText={launchHintText}
           hudToggleButton={settings.padButtons.hud === null ? undefined : padButtonLabel(settings.padButtons.hud)}
@@ -1608,6 +1927,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
             settings.device === "wheel" && (!settings.wheel.throttle || !settings.wheel.brake)
           }
           onCycleCamera={cycleCamera}
+          onOffTrackGlow={handleOffTrackGlow}
           inviteRoom={inviteRoom}
           cockpitFovDeg={settings.cockpitFovDeg}
           cockpitFovDefaultDeg={carCockpitFov}
@@ -1618,9 +1938,15 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
           noMfd={kioskOn}
           // Kiosk mode: no pause menu (its settings and exits are for the staff); the kiosk draws its own pause screen
           paused={kioskOn ? false : paused}
-          onOpenControls={() => openControls("pause")}
+          pauseMenuCovered={settingsOpen?.from === "pause"}
+          onOpenControls={() =>
+            // A wheel whose pedals are not set up yet opens on its calibration (the HUD's "pedals not set up" too)
+            settings.device === "wheel" && (!settings.wheel.throttle || !settings.wheel.brake)
+              ? openSettings("pause", "controls", "wheel")
+              : openSettings("pause")
+          }
           onExitToTitle={leaveSession}
-          controlsCheatSheet={controlsCheatSheet}
+          onOpenSettings={(category?: SettingsCategory, tab?: string) => openSettings("pause", category, tab)}
           hud={settings.hud}
           virtualMirror={virtualMirrorOn}
           ffbMeter={
@@ -1640,12 +1966,13 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
                   summary: lapSummary.summary,
                   onClose: closeLapSummary,
                   onSaveGhost: () => exportLapFile(lapSummary.recording),
-                  // Laps post themselves: the button is there with that turned off, or to retry a failed upload
+                  // Laps post themselves: the button is there with that turned off, or to retry a failed upload (a board
+                  // that hasn't answered yet is asked again by the press)
                   onSubmit:
-                    boardOn &&
+                    (boardState === "on" || boardState === "unreachable") &&
                     lapSummary.summary.valid &&
                     !lapSummary.summary.autopilot &&
-                    (!settings.profile.autoUpload || submitState === "error")
+                    (!settings.profile.autoUpload || submitState === "error" || submitState === "waiting")
                       ? () => void handleSubmitLap()
                       : undefined,
                   submitState,
@@ -1691,7 +2018,6 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
                   onSpeed: (speed: number) => session?.replaySpeed(speed),
                   onCycleCamera: cycleCamera,
                   onExit: () => session?.exitReplay(),
-                  onFlashback: () => session?.flashbackReplay(),
                   exitKeyLabel: settings.keys.replay[0] ? keyLabel(settings.keys.replay[0]) : "T",
                 }
               : null
@@ -1701,6 +2027,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
               ? {
                   tiltSteer: settings.touch.tiltSteer,
                   tiltRangeDeg: settings.touch.tiltRangeDeg,
+                  autoGearbox,
                   onPause: togglePause,
                   onCycleCamera: cycleCamera,
                 }
@@ -1712,6 +2039,10 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       {phase === "title" && !kioskOn ? (
         <TitleMenu
           {...menuProps}
+          // The note after a drive: on the main menu only, never over a room or a race entry
+          supportNote={roomLobby === null && !inScheduledRace ? supportNote : null}
+          onCloseSupportNote={closeSupportNote}
+          onSupportThanked={supportThanked}
           onCycleCamera={cycleCamera}
           initialRoomCode={inviteRoom ?? ""}
           // Back where the player was when a race entry or a room moved the game to another circuit (the scene reloads)
@@ -1719,7 +2050,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
           firstRun={!onboarded}
           onDrive={() => handleTitleStart(false)}
           onRaceAi={() => handleTitleStart(true)}
-          onControls={() => openControls("title")}
+          onControls={() => openSettings("title")}
+          onOpenSettings={(category?: SettingsCategory) => openSettings("title", category)}
           trackId={trackId}
           onSelectTrack={onSelectTrack}
           challengePanel={
@@ -1727,7 +2059,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
               ? {
                   challenge,
                   trackName: challengeTrackName(challenge.trackId),
-                  carTitle: carForVehicle(challenge.vehicle).title,
+                  carTitle: weekCar(challenge).title,
                   available: challengeAvailable,
                   loadBoard: loadChallengeBoard,
                   boardVersion,
@@ -1741,7 +2073,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
             races.on && racesAvailable
               ? {
                   trackName: challengeTrackName(challenge.race.trackId),
-                  carTitle: carForVehicle(challenge.race.vehicle).title,
+                  carTitle: weekCar(challenge.race).title,
                   slotS: races.slotS,
                   laps: challenge.race.laps,
                   entry: raceEntry,
@@ -1752,14 +2084,6 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
                 }
               : undefined
           }
-          conditionsPanel={{
-            conditions: settings.conditions,
-            realism: settings.realism,
-            onChangeConditions: handleChangeConditions,
-            onChangeRealism: handleChangeRealism,
-            hostControlled: roomLobby !== null && !isMpHost,
-            readout: weatherHud,
-          }}
         />
       ) : null}
 
@@ -1795,13 +2119,44 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
         />
       ) : null}
 
+      {settingsOpen ? (
+        <SettingsScreen
+          env={settingsEnv}
+          initialCategory={settingsOpen.category}
+          initialTab={settingsOpen.tab}
+          onClose={closeSettings}
+        />
+      ) : null}
+
       {/* Wheel force feedback over WebHID waits for one pairing click: offered on the title and the pause menu (not over
-          the controls setup opened from it), never mid-lap */}
-      <FfbPairPrompt wanted={hidFfbWanted && settings.wheel.steer !== null && (phase === "title" || (phase === "driving" && paused))} />
+          Settings, which offers it itself), never mid-lap */}
+      <FfbPairPrompt wanted={hidFfbWanted && settings.wheel.steer !== null && !settingsOpen && (phase === "title" || (phase === "driving" && paused))} />
+      <DualSensePairPrompt wanted={phase === "title" && !settingsOpen && !(hidFfbWanted && settings.wheel.steer !== null)} />
 
       {/* Kiosk mode draws its own loading screen, in the event's colours (KioskOverlay) */}
       {loadingVisible && !kioskOn ? (
-        <LoadingScreen track={track} ready={assetsReady} onStart={handleLoadingStart} onDone={handleLoadingDone} />
+        // Under the GPU notice it takes no press: the notice's own buttons would start it too
+        <LoadingScreen
+          track={track}
+          carId={carId}
+          ready={assetsReady && !gpuNoticeKind}
+          cameraKey={settings.keys.camera[0]}
+          lineKey={settings.keys.racingLine[0]}
+          onStart={handleLoadingStart}
+          onDone={handleLoadingDone}
+        />
+      ) : null}
+
+      <NowPlayingToast nowPlaying={nowPlaying} />
+
+      {gpuNoticeKind ? (
+        <GpuLostNotice
+          kind={gpuNoticeKind}
+          canLower={settings.graphics.quality !== "low"}
+          onLower={() => restartAfterGpuLoss(true)}
+          onRetry={() => restartAfterGpuLoss(false)}
+          onReloadPage={() => window.location.reload()}
+        />
       ) : null}
 
       {kiosk

@@ -1,0 +1,40 @@
+/*
+ * The irDashies layout's own colours (https://github.com/tariknz/irdashies, MIT): its overlays sit on Tailwind's
+ * slate scale, with the player's row in amber and lapped / lapping cars in blue / red. Set as variables on the
+ * layout's root (and on its picture in the pickers); states that mean gain, loss or best keep the game's tokens.
+ */
+.palette {
+  /* Panels: slate-800 at 90 % (the source runs 80 %; over a moving scene a little more reads better), the session
+     bars and the odd rows slate-900 */
+  --tp-panel: rgb(30 41 59 / 0.9);
+  --tp-bar: rgb(15 23 42 / 0.88);
+  --tp-row-a: rgb(30 41 59 / 0.7);
+  --tp-row-b: rgb(15 23 42 / 0.7);
+  --tp-cell: rgb(15 23 42 / 0.78);
+  /* Text: white, slate-300 and slate-400 */
+  --tp-text: #ffffff;
+  --tp-text-soft: #cbd5e1;
+  --tp-text-dim: #94a3b8;
+  /* The player's row: yellow-500 at 20 % under amber-300 text */
+  --tp-player-bg: rgb(234 179 8 / 0.22);
+  --tp-player: #fcd34d;
+  /* A car a lap or more down (blue-400), a car a lap or more up (red-400) */
+  --tp-lapped: #60a5fa;
+  --tp-lapping: #f87171;
+  /* The clutch bar (blue-500), the shift lights' unlit rim (gray-600) */
+  --tp-clutch: #3b82f6;
+  --tp-led-off: rgb(51 65 85 / 0.9);
+  --tp-led-rim: #4b5563;
+  /* The steering wheel's top marker (amber-400) */
+  --tp-marker: #fbbf24;
+}
+
+/* The shared input trace draws its own glass: inside this layout's slate panel it goes flat (and loses its blur) */
+.trace > section {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  padding: 0;
+}

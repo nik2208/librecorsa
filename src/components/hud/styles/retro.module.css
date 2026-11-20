@@ -1,0 +1,108 @@
+/*
+ * Retro UI by toastbuilds (MIT): the layout's own colours, from its dark theme (warm graphite surfaces, cream
+ * instrument text, bronze rules, restrained cyan), as variables on its root. Recreated for LibreCorsa; see RetroHud.tsx.
+ */
+.palette {
+  --tp-void: #0b0907f5;
+  --tp-surface: #15110df5;
+  --tp-panel: #0d0b09ee;
+  --tp-raised: #1a130ef2;
+  --tp-metal: #545149;
+  --tp-metal-dim: #282723;
+  --tp-outline: #76542c;
+  --tp-outline-soft: #604523;
+  --tp-outline-dim: #332519;
+  --tp-primary: #f2dbae;
+  --tp-secondary: #987a4c;
+  --tp-amber: #ffc46b;
+  --tp-amber-dim: #5e4319;
+  --tp-row: #2c2112f0;
+  --tp-cyan: #68b7d6;
+  --tp-cyan-dim: #29565c;
+  --tp-shift-blue: #469bca;
+  --tp-green: #7ec86a;
+  --tp-red: #d84b3e;
+  --tp-red-dim: #521b18;
+  --tp-inactive: #2a2117;
+  color: var(--tp-primary);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * The instruments' cut-corner frame: the edge colour shows as a 1 px rule round the face, both clipped to the same
+ * octagon, so the rule follows the diagonals too. `.frame > .face`; size and colours from the modifier classes.
+ */
+.frame {
+  --cut: 9px;
+  --edge: var(--tp-outline);
+  --face: var(--tp-panel);
+  padding: 1px;
+  background: var(--edge);
+  clip-path: polygon(
+    var(--cut) 0,
+    calc(100% - var(--cut)) 0,
+    100% var(--cut),
+    100% calc(100% - var(--cut)),
+    calc(100% - var(--cut)) 100%,
+    var(--cut) 100%,
+    0 calc(100% - var(--cut)),
+    0 var(--cut)
+  );
+}
+
+.frame > .face {
+  --inner: calc(var(--cut) - 0.6px);
+  height: 100%;
+  background: var(--face);
+  clip-path: polygon(
+    var(--inner) 0,
+    calc(100% - var(--inner)) 0,
+    100% var(--inner),
+    100% calc(100% - var(--inner)),
+    calc(100% - var(--inner)) 100%,
+    var(--inner) 100%,
+    0 calc(100% - var(--inner)),
+    0 var(--inner)
+  );
+}
+
+.small {
+  --cut: 5px;
+}
+
+.large {
+  --cut: 12px;
+}
+
+.edgeSoft {
+  --edge: var(--tp-outline-soft);
+}
+
+.edgeDim {
+  --edge: var(--tp-outline-dim);
+}
+
+.edgeCream {
+  --edge: var(--tp-primary);
+}
+
+.edgeMetal {
+  --edge: var(--tp-metal);
+}
+
+.faceVoid {
+  --face: var(--tp-void);
+}
+
+.faceRaised {
+  --face: var(--tp-raised);
+}
+
+.faceSurface {
+  --face: var(--tp-surface);
+}
+
+.faceRow {
+  --face: var(--tp-row);
+}

@@ -2,7 +2,7 @@
 
 Two licences apply here:
 
-- **The scripts, as code**, are under the MIT License, like the rest of `scripts/` (`LICENSE` at the repository's
+- **The scripts, as code**, are under the GNU AGPL v3.0 or later, like the rest of `scripts/` (`LICENSE` at the repository's
   root): reuse the Blender and build code for any circuit of your own.
 - **The circuit they build** is under
   [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/): RISE Motordrome's design data in the scripts

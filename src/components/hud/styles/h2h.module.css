@@ -1,0 +1,37 @@
+/*
+ * Head to Head's own look (after emilioSp/h2h-iracing, MIT): near-black cards, the player's navy band, bold Courier
+ * numbers, a yellow gap, red ABS, blue TC. The colours are the source's theme tokens; states (gaining, losing, best)
+ * come from the game's semantic tokens in the component, so the colour-blind palettes still apply.
+ * Courier New is a system font: nothing is shipped, other systems fall back to their monospace.
+ */
+.palette {
+  --tp-bg: #0d0d0d;
+  --tp-card: #161616;
+  --tp-player: #1a1a2e;
+  --tp-border: #2a2a2a;
+  --tp-border-player: #3a3a6a;
+  --tp-dim: #888888;
+  --tp-white: #ffffff;
+  --tp-yellow: #facc15;
+  --tp-red: #ff1744;
+  --tp-blue: #448aff;
+  /* The cards sit over the driving view: the source's opaque panels, just short of solid */
+  --tp-bg-a: rgb(13 13 13 / 0.9);
+  --tp-card-a: rgb(22 22 22 / 0.9);
+  --tp-player-a: rgb(26 26 46 / 0.92);
+  font-family: "Courier New", Courier, monospace;
+}
+
+/* A telemetry cell lit while its aid acts (the source's active background and border) */
+.activeRed {
+  border-color: var(--tp-red);
+  background-color: rgb(255 23 68 / 0.2);
+}
+.activeBlue {
+  border-color: var(--tp-blue);
+  background-color: rgb(68 138 255 / 0.25);
+}
+.activeYellow {
+  border-color: var(--tp-yellow);
+  background-color: rgb(250 204 21 / 0.2);
+}

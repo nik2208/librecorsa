@@ -7,12 +7,24 @@ import {
   buildKeyLookup,
   clearKey,
   DEFAULT_KEY_BINDINGS,
+  BUMPER_SHIFT_BUTTONS,
   DEFAULT_PAD_BUTTONS,
+  DEFAULT_PAD_PEDAL_SOURCES,
+  freePedalButtons,
   matchPadLayout,
+  matchPedalSet,
   PAD_ACTIONS,
   PAD_LAYOUT_IDS,
   PAD_LAYOUTS,
+  PAD_PEDAL_SETS,
+  PAD_RIGHT_STICK_BUTTON,
+  pedalOnButton,
+  pedalsOnTriggers,
+  pedalStickClicks,
+  pressPedalText,
   rebindKey,
+  withPedalSet,
+  type PadPedalSources,
   rebindPadButton,
 } from '../src/lib/input/bindings';
 import {
@@ -22,6 +34,7 @@ import {
   DEFAULT_WHEEL_SETTINGS,
   DeviceInputReader,
   PAD_SENSITIVITY,
+  padPedals,
   pedalValue,
   snapshotAxes,
   strongestAxisChange,
@@ -53,6 +66,7 @@ import {
   DEFAULT_KEYBOARD_TUNING,
   DEFAULT_PAD_TUNING,
   DEFAULT_PLAYER_SETTINGS,
+  defaultGraphicsSettings,
   FFB_POLARITY_V2_KEY,
   KEYBOARD_FEEL_FIELDS,
   KEYBOARD_PEDAL_HELP_FIELDS,
@@ -81,6 +95,17 @@ import {
   sanitizeAssistTuning,
   steeringAssistSettings,
 } from '../src/lib/sim/steering-assist';
+import { resetAllSettings } from '../src/components/settings/storage';
+import { tiltSteer } from '../src/components/settings/defs';
+import type { SettingsEnv } from '../src/components/settings/env';
+import {
+  enterFullscreenOnTouch,
+  installedFrom,
+  installStore,
+  isAppleTouch,
+  isAppleTouchAgent,
+  isInstalledApp,
+} from '../src/lib/install-app';
 
 let passed = 0;
 function check(name: string, fn: () => void) {
@@ -123,38 +148,125 @@ check('Escape and Slash are reserved', () => {
 check('clearing a slot removes the key', () => {
   assert.deepEqual(clearKey(DEFAULT_KEY_BINDINGS, 'throttle', 1).throttle, ['KeyW']);
 });
-check('a pad button moves between actions', () => {
-  const next = rebindPadButton(DEFAULT_PAD_BUTTONS, 'racingLine', 0); // A was boost
-  assert.equal(next.racingLine, 0);
-  assert.equal(next.boost, null);
+check('Half brake sits on G beside Half throttle; a save that already uses G keeps it and leaves Half brake unbound', () => {
+  const lookup = buildKeyLookup(DEFAULT_KEY_BINDINGS);
+  assert.equal(lookup.get('KeyF'), 'throttleHalf');
+  assert.equal(lookup.get('KeyG'), 'brakeHalf');
+  const { brakeHalf: _unsaved, ...older } = { ...DEFAULT_KEY_BINDINGS, camera: ['KeyC', 'KeyG'] };
+  const keys = parsePlayerSettings({ keys: older }).keys;
+  assert.deepEqual(keys.camera, ['KeyC', 'KeyG']);
+  assert.deepEqual(keys.brakeHalf, []);
 });
-check('controller layouts: every action set, no shared button, triggers / D-pad / thumb-restart left alone', () => {
-  assert.equal(PAD_LAYOUTS.default.buttons, DEFAULT_PAD_BUTTONS);
+check('the Half brake amount defaults to 50 % and stays within 20-90 %', () => {
+  assert.equal(parsePlayerSettings({}).keyboardTuning.halfBrake, 0.5);
+  assert.equal(parsePlayerSettings({ keyboardTuning: { halfBrake: 0.35 } }).keyboardTuning.halfBrake, 0.35);
+  assert.equal(parsePlayerSettings({ keyboardTuning: { halfBrake: 2 } }).keyboardTuning.halfBrake, 0.9);
+  assert.equal(parsePlayerSettings({ keyboardTuning: { halfBrake: 0 } }).keyboardTuning.halfBrake, 0.2);
+  assert.ok((KEYBOARD_FEEL_FIELDS as readonly string[]).includes('halfBrake'), 'the keyboard feel card resets it');
+});
+check('a pad button moves between actions', () => {
+  const next = rebindPadButton(DEFAULT_PAD_BUTTONS, 'racingLine', 0); // A was gear up
+  assert.equal(next.racingLine, 0);
+  assert.equal(next.shiftUp, null);
+});
+check('a new player gets GT style; a saved map keeps its buttons, and an action it lacks takes Bumper shift\'s', () => {
+  assert.equal(DEFAULT_PAD_BUTTONS, PAD_LAYOUTS.gt.buttons);
+  assert.equal(DEFAULT_PLAYER_SETTINGS.padButtons, DEFAULT_PAD_BUTTONS);
+  assert.deepEqual(parsePlayerSettings({}).padButtons, PAD_LAYOUTS.gt.buttons);
+  // A save from before the switch: the whole Bumper shift map
+  const old = { ...PAD_LAYOUTS.bumper.buttons };
+  const reloaded = parsePlayerSettings(JSON.parse(JSON.stringify({ ...DEFAULT_PLAYER_SETTINGS, padButtons: old }))).padButtons;
+  assert.deepEqual(reloaded, old);
+  assert.equal(matchPadLayout(reloaded), 'bumper');
+  // An older save without the HUD action: Bumper shift's R3, not GT style's LB (gear down there)
+  const { hud: _hud, ...noHud } = old;
+  assert.equal(parsePlayerSettings({ padButtons: noHud }).padButtons.hud, PAD_LAYOUTS.bumper.buttons.hud);
+});
+check('controller layouts: every action set, no shared button, pedal buttons / D-pad / thumb-restart left alone', () => {
+  assert.equal(PAD_LAYOUTS.gt.buttons, DEFAULT_PAD_BUTTONS);
+  assert.equal(PAD_LAYOUTS.gt.pedals, 'triggers');
+  assert.deepEqual([PAD_LAYOUTS.bumper.buttons.shiftUp, PAD_LAYOUTS.bumper.buttons.shiftDown, PAD_LAYOUTS.bumper.buttons.boost], [5, 4, 0]);
   for (const id of PAD_LAYOUT_IDS) {
-    const b = PAD_LAYOUTS[id].buttons;
+    const { buttons: b, pedals } = PAD_LAYOUTS[id];
+    const sources = withPedalSet(DEFAULT_PAD_PEDAL_SOURCES, pedals);
     const used: number[] = [];
     for (const { id: action } of PAD_ACTIONS) {
       assert.notEqual(b[action], undefined, `${id}.${action} unset`);
       if (b[action] !== null) used.push(b[action] as number);
     }
     assert.equal(new Set(used).size, used.length, `${id}: a button does two things`);
-    for (const button of used) assert.ok(button <= 11 && button !== 6 && button !== 7, `${id}: button ${button} is fixed`);
+    for (const button of used) assert.ok(button <= 11, `${id}: button ${button} is the D-pad or Home`);
+    // Trigger pedals leave RT / LT alone; stick pedals leave R3 alone (the pedal thumb clicks it)
+    if (pedals === 'triggers') for (const button of used) assert.ok(button !== 6 && button !== 7, `${id}: button ${button} is a pedal`);
+    else assert.ok(!used.includes(PAD_RIGHT_STICK_BUTTON), `${id}: R3 under the pedal stick`);
+    assert.equal(freePedalButtons(b, sources), b, `${id}: binds its own pedal buttons`);
     assert.equal(b.pause, 9, `${id}: pause off Menu`);
     assert.equal(b.restart, 8, `${id}: restart off View`);
   }
   // What each layout takes from its game
   assert.deepEqual([PAD_LAYOUTS.gt.buttons.shiftUp, PAD_LAYOUTS.gt.buttons.shiftDown, PAD_LAYOUTS.gt.buttons.boost], [0, 2, 11]);
+  assert.equal(PAD_LAYOUTS.gtClassic.pedals, 'stick');
+  assert.deepEqual([PAD_LAYOUTS.gtClassic.buttons.shiftUp, PAD_LAYOUTS.gtClassic.buttons.shiftDown], [7, 6]);
+  // LB stays free in GT classic (and the left stick's up / down is no button): room for a clutch or a starter
+  assert.ok(!Object.values(PAD_LAYOUTS.gtClassic.buttons).includes(4), 'GT classic leaves LB free');
   assert.deepEqual([PAD_LAYOUTS.f1.buttons.boost, PAD_LAYOUTS.f1.buttons.aero, PAD_LAYOUTS.f1.buttons.camera], [1, 3, 5]);
   assert.deepEqual([PAD_LAYOUTS.forza.buttons.shiftUp, PAD_LAYOUTS.forza.buttons.shiftDown, PAD_LAYOUTS.forza.buttons.camera], [1, 2, 5]);
 });
-check('the picked layout is read back from the bindings, through a save, and lost on a rebind', () => {
+const STICK_SOURCES: PadPedalSources = withPedalSet(DEFAULT_PAD_PEDAL_SOURCES, 'stick');
+check('the picked layout is read back from the bindings and pedal sources, through a save, and lost on a rebind', () => {
   for (const id of PAD_LAYOUT_IDS) {
+    const pedalSources = withPedalSet(DEFAULT_PAD_PEDAL_SOURCES, PAD_LAYOUTS[id].pedals);
     const buttons = { ...PAD_LAYOUTS[id].buttons };
-    assert.equal(matchPadLayout(buttons), id);
-    const saved = parsePlayerSettings(JSON.parse(JSON.stringify({ ...DEFAULT_PLAYER_SETTINGS, padButtons: buttons })));
-    assert.equal(matchPadLayout(saved.padButtons), id, `${id} after a reload`);
-    assert.equal(matchPadLayout(rebindPadButton(buttons, 'racingLine', 4)), null, `${id} rebound`);
+    assert.equal(matchPadLayout(buttons, pedalSources), id);
+    const saved = parsePlayerSettings(
+      JSON.parse(JSON.stringify({ ...DEFAULT_PLAYER_SETTINGS, padButtons: buttons, padTuning: { ...DEFAULT_PAD_TUNING, pedalSources } })),
+    );
+    assert.deepEqual(saved.padTuning.pedalSources, pedalSources, `${id} pedal sources after a reload`);
+    assert.equal(matchPadLayout(saved.padButtons, saved.padTuning.pedalSources), id, `${id} after a reload`);
+    assert.equal(matchPadLayout(rebindPadButton(buttons, 'racingLine', 4), pedalSources), null, `${id} rebound`);
+    const other = withPedalSet(pedalSources, PAD_LAYOUTS[id].pedals === 'stick' ? 'triggers' : 'stick');
+    assert.equal(matchPadLayout(buttons, other), null, `${id} with the other pedals`);
   }
+});
+check('pedal sources: sets, the buttons they take, the stick clicks under them, triggers for trigger feedback', () => {
+  assert.equal(matchPedalSet(DEFAULT_PAD_PEDAL_SOURCES), 'triggers');
+  assert.equal(matchPedalSet(STICK_SOURCES), 'stick');
+  assert.equal(matchPedalSet({ ...STICK_SOURCES, brake: PAD_PEDAL_SETS.triggers.brake }), null, 'a mix is no set');
+  assert.equal(pedalOnButton(DEFAULT_PAD_PEDAL_SOURCES, 7), 'throttle');
+  assert.equal(pedalOnButton(STICK_SOURCES, 7), null);
+  assert.deepEqual(pedalStickClicks(DEFAULT_PAD_PEDAL_SOURCES), []);
+  assert.deepEqual(pedalStickClicks(STICK_SOURCES), [PAD_RIGHT_STICK_BUTTON]);
+  assert.ok(pedalsOnTriggers(DEFAULT_PAD_PEDAL_SOURCES));
+  assert.ok(!pedalsOnTriggers(STICK_SOURCES));
+  assert.ok(!pedalsOnTriggers({ throttle: { kind: 'button', button: 6 }, brake: { kind: 'button', button: 7 }, clutch: null }), 'swapped is not the usual');
+  assert.equal(pressPedalText(DEFAULT_PAD_PEDAL_SOURCES.throttle), 'Hold RT');
+  assert.equal(pressPedalText(STICK_SOURCES.throttle), 'Push the right stick up');
+});
+check('trigger pedals free RT / LT; stick pedals leave the bindings as they are', () => {
+  const classic = PAD_LAYOUTS.gtClassic.buttons;
+  const freed = freePedalButtons(classic, DEFAULT_PAD_PEDAL_SOURCES);
+  assert.equal(freed.shiftUp, null);
+  assert.equal(freed.shiftDown, null);
+  assert.equal(freed.boost, classic.boost);
+  assert.equal(freePedalButtons(BUMPER_SHIFT_BUTTONS, DEFAULT_PAD_PEDAL_SOURCES), BUMPER_SHIFT_BUTTONS, 'nothing on the triggers: the same object');
+  assert.equal(freePedalButtons(classic, STICK_SOURCES), classic);
+  // A pedal on another button (a clutch on LB, say) frees that button's action too
+  const lbPedal = { ...STICK_SOURCES, brake: { kind: 'button' as const, button: 4 } };
+  assert.equal(freePedalButtons(PAD_LAYOUTS.gt.buttons, lbPedal).hud, null);
+});
+check('pedal settings: old saves keep the triggers, bad sources fall back, the dead zone is clamped', () => {
+  const old = parsePlayerSettings({ padTuning: { throttleGamma: 1.5 } });
+  assert.deepEqual(old.padTuning.pedalSources, DEFAULT_PAD_PEDAL_SOURCES);
+  assert.equal(old.padTuning.stickPedalDeadzone, DEFAULT_PAD_TUNING.stickPedalDeadzone);
+  assert.equal(old.padTuning.throttleGamma, 1.5);
+  assert.deepEqual(parsePlayerSettings({ padSensitivity: 'sharp' }).padTuning.pedalSources, DEFAULT_PAD_PEDAL_SOURCES, 'a save from before padTuning');
+  const broken = parsePlayerSettings({
+    padTuning: { pedalSources: { throttle: { kind: 'axis', axis: 3, sign: 2 }, brake: null }, stickPedalDeadzone: 5 },
+  }).padTuning;
+  assert.deepEqual(broken.pedalSources, DEFAULT_PAD_PEDAL_SOURCES, 'a bad sign, and a throttle / brake saved off the pad');
+  assert.equal(broken.stickPedalDeadzone, 0.3);
+  const mixed = parsePlayerSettings({ padTuning: { pedalSources: { throttle: STICK_SOURCES.throttle } } }).padTuning.pedalSources;
+  assert.deepEqual(mixed, { throttle: STICK_SOURCES.throttle, brake: DEFAULT_PAD_PEDAL_SOURCES.brake, clutch: null }, 'each pedal on its own');
 });
 
 console.log('Wheel and pedals');
@@ -184,7 +296,7 @@ check('pedals: normal, inverted and combined-axis', () => {
 console.log('Device reader');
 check('standard controller: stick to the assist, triggers, A boost, edges', () => {
   const reader = new DeviceInputReader();
-  const settings = { wheel: DEFAULT_WHEEL_SETTINGS, padButtons: DEFAULT_PAD_BUTTONS };
+  const settings = { wheel: DEFAULT_WHEEL_SETTINGS, padButtons: BUMPER_SHIFT_BUTTONS };
   const f1 = reader.read([pad('Xbox', 'standard', [0.4, 0], [0, 5], { 7: 0.8, 6: 0.1 })], settings, 1 / 60);
   assert.equal(f1.source, 'controller');
   near(f1.padSteer!, 0.4);
@@ -194,9 +306,155 @@ check('standard controller: stick to the assist, triggers, A boost, edges', () =
   const f2 = reader.read([pad('Xbox', 'standard', [0, 0], [0, 5])], settings, 1 / 60);
   assert.ok(!f2.pressed.has('shiftUp'), 'a held button fires once');
 });
+check('a wheel not set up yet shifts on its paddles under the GT style default; a pad on A', () => {
+  const settings = { wheel: DEFAULT_WHEEL_SETTINGS, padButtons: DEFAULT_PLAYER_SETTINGS.padButtons };
+  const wheel = new DeviceInputReader().read([pad('G920 Driving Force Racing Wheel', 'standard', [0], [5])], settings, 1 / 60);
+  assert.ok(wheel.pressed.has('shiftUp'), 'right paddle');
+  assert.ok(!wheel.pressed.has('camera'));
+  const pad1 = new DeviceInputReader().read([pad('Xbox', 'standard', [0, 0], [0])], settings, 1 / 60);
+  assert.ok(pad1.pressed.has('shiftUp'), 'A');
+});
+check('stick pedals: right stick up throttle, down brake, dead zone at rest, full a little before the stop', () => {
+  const stick = { pedalSources: STICK_SOURCES, stickPedalDeadzone: 0.1 };
+  const at = (y: number) => padPedals(pad('Xbox', 'standard', [0, 0, 0, y], [], { 7: 0.9, 6: 0.9 }), stick);
+  assert.deepEqual(at(0.08), { throttle: 0, brake: 0, clutch: 0 }, 'resting drift');
+  assert.deepEqual(at(-0.08), { throttle: 0, brake: 0, clutch: 0 });
+  near(at(-1).throttle, 1);
+  near(at(-0.96).throttle, 1, 1e-9);
+  near(at(-0.525).throttle, 0.5);
+  assert.equal(at(-0.6).brake, 0, 'never both');
+  near(at(1).brake, 1);
+  assert.equal(at(1).throttle, 0);
+  assert.equal(padPedals(pad('Xbox', 'standard', [0, 0], [], { 7: 0.9 }), stick).throttle, 0, 'a pad without axis 3');
+  // Without stick pedals the triggers, whatever the stick does
+  const triggers = padPedals(pad('Xbox', 'standard', [0, 0, 0, -1], [], { 7: 0.4, 6: 0.2 }), undefined);
+  near(triggers.throttle, 0.4);
+  near(triggers.brake, 0.2);
+  // Each pedal reads its own source: the brake on the left stick's down half, the throttle still on RT
+  const mixed = { pedalSources: { ...DEFAULT_PAD_PEDAL_SOURCES, brake: { kind: 'axis' as const, axis: 1, sign: 1 as const } }, stickPedalDeadzone: 0.1 };
+  const m = padPedals(pad('Xbox', 'standard', [0, 1, 0, 0], [], { 7: 0.4, 6: 0.9 }), mixed);
+  near(m.throttle, 0.4);
+  near(m.brake, 1);
+});
+const LB_CLUTCH: PadPedalSources = { ...DEFAULT_PAD_PEDAL_SOURCES, clutch: { kind: 'button', button: 4 } };
+check('clutch on a controller: none by default, its own button when given one, kept by a layout, never on a pedal', () => {
+  assert.equal(DEFAULT_PAD_PEDAL_SOURCES.clutch, null);
+  assert.equal(padPedals(pad('Xbox', 'standard', [0, 0, 0, 0], [4], { 7: 0.5 }), undefined).clutch, 0, 'no source reads 0');
+  near(padPedals(pad('Xbox', 'standard', [0, 0, 0, 0], [4]), { pedalSources: LB_CLUTCH, stickPedalDeadzone: 0.1 }).clutch, 1);
+  assert.equal(pedalOnButton(LB_CLUTCH, 4), 'clutch');
+  const picked = withPedalSet(LB_CLUTCH, 'stick');
+  assert.deepEqual(picked.clutch, LB_CLUTCH.clutch, 'a pedal set leaves the clutch where it is');
+  assert.equal(matchPedalSet(picked), 'stick', 'the clutch is not part of a set');
+  assert.equal(freePedalButtons(BUMPER_SHIFT_BUTTONS, LB_CLUTCH).shiftDown, null, 'LB lets go of gear down');
+  // Saves: an old one has no clutch, one on the throttle's own trigger is dropped, one on a button of its own stays
+  assert.equal(parsePlayerSettings({ padTuning: {} }).padTuning.pedalSources.clutch, null);
+  const onRt = parsePlayerSettings({ padTuning: { pedalSources: { clutch: { kind: 'button', button: 7 } } } });
+  assert.equal(onRt.padTuning.pedalSources.clutch, null, 'on RT, the throttle');
+  const onLb = parsePlayerSettings({ padTuning: { pedalSources: { clutch: { kind: 'button', button: 4 } } } });
+  assert.deepEqual(onLb.padTuning.pedalSources.clutch, { kind: 'button', button: 4 });
+  // The keyboard's clutch has no key until the player gives it one
+  assert.deepEqual(DEFAULT_KEY_BINDINGS.clutch, []);
+  assert.equal(buildKeyLookup(rebindKey(DEFAULT_KEY_BINDINGS, 'clutch', 0, 'KeyZ')).get('KeyZ'), 'clutch');
+});
+check('neutral: N on the keyboard, no button of its own on a pad, gear up + gear down together on a pad and a wheel', () => {
+  assert.deepEqual(DEFAULT_KEY_BINDINGS.neutral, ['KeyN']);
+  assert.equal(buildKeyLookup(DEFAULT_KEY_BINDINGS).get('KeyN'), 'neutral');
+  assert.equal(BUMPER_SHIFT_BUTTONS.neutral, null);
+  for (const id of PAD_LAYOUT_IDS) assert.equal(PAD_LAYOUTS[id].buttons.neutral, null, `${id} leaves neutral to the paddles`);
+  // A save from before neutral still reads as its layout
+  const { neutral: _n, ...oldDefault } = BUMPER_SHIFT_BUTTONS;
+  const old = parsePlayerSettings({ padButtons: oldDefault });
+  assert.equal(old.padButtons.neutral, null);
+  assert.equal(matchPadLayout(old.padButtons, old.padTuning.pedalSources), 'bumper');
+  // LB then RB on a pad: gear down, then neutral as RB joins it, once
+  const settings = { wheel: DEFAULT_WHEEL_SETTINGS, padButtons: BUMPER_SHIFT_BUTTONS };
+  const r = new DeviceInputReader();
+  const f1 = r.read([pad('Xbox', 'standard', [0, 0], [4])], settings, 1 / 60);
+  assert.ok(f1.pressed.has('shiftDown') && !f1.pressed.has('neutral'));
+  const f2 = r.read([pad('Xbox', 'standard', [0, 0], [4, 5])], settings, 1 / 60);
+  assert.ok(f2.pressed.has('neutral'), 'the second paddle down');
+  const f3 = r.read([pad('Xbox', 'standard', [0, 0], [4, 5])], settings, 1 / 60);
+  assert.ok(!f3.pressed.has('neutral'), 'held, it fires once');
+  // Both in one frame: both shifts and neutral (the car lets neutral win)
+  const f4 = new DeviceInputReader().read([pad('Xbox', 'standard', [0, 0], [4, 5])], settings, 1 / 60);
+  assert.ok(f4.pressed.has('neutral') && f4.pressed.has('shiftUp') && f4.pressed.has('shiftDown'));
+  // A wheel's paddles, with its own neutral button too
+  const wheel = {
+    ...DEFAULT_WHEEL_SETTINGS,
+    steer: { padId: 'G29', axis: 0, center: 0, invert: false },
+    buttons: { ...DEFAULT_WHEEL_SETTINGS.buttons, shiftUp: { padId: 'G29', button: 4 }, shiftDown: { padId: 'G29', button: 5 }, neutral: { padId: 'G29', button: 9 } },
+  };
+  const w = new DeviceInputReader();
+  w.read([pad('G29', '', [0])], { wheel, padButtons: BUMPER_SHIFT_BUTTONS }, 1 / 60);
+  assert.ok(w.read([pad('G29', '', [0], [4, 5])], { wheel, padButtons: BUMPER_SHIFT_BUTTONS }, 1 / 60).pressed.has('neutral'), 'both paddles');
+  w.read([pad('G29', '', [0])], { wheel, padButtons: BUMPER_SHIFT_BUTTONS }, 1 / 60);
+  assert.ok(w.read([pad('G29', '', [0], [9])], { wheel, padButtons: BUMPER_SHIFT_BUTTONS }, 1 / 60).pressed.has('neutral'), 'its N button');
+});
+check('clutch in the device frame: the controller button, the calibrated clutch of a wheel pedal set, 0 with none', () => {
+  const padSettings = {
+    wheel: DEFAULT_WHEEL_SETTINGS,
+    padButtons: freePedalButtons(BUMPER_SHIFT_BUTTONS, LB_CLUTCH),
+    padTuning: { pedalSources: LB_CLUTCH, stickPedalDeadzone: 0.1 },
+  };
+  const f = new DeviceInputReader().read([pad('Xbox', 'standard', [0, 0], [4])], padSettings, 1 / 60);
+  near(f.clutch, 1);
+  assert.ok(!f.pressed.has('shiftDown'), 'the clutch button shifts nothing');
+  const plain = new DeviceInputReader().read([pad('Xbox', 'standard', [0, 0], [4])], { wheel: DEFAULT_WHEEL_SETTINGS, padButtons: BUMPER_SHIFT_BUTTONS }, 1 / 60);
+  assert.equal(plain.clutch, 0);
+  // A clutch pedal on axis 3 of a separate pedal set, idle at 1 and fully pressed at −1, half way down
+  const wheel = {
+    ...DEFAULT_WHEEL_SETTINGS,
+    steer: { padId: 'G29', axis: 0, center: 0, invert: false },
+    clutch: { padId: 'Pedals', axis: 3, idle: 1, full: -1 },
+  };
+  const reader = new DeviceInputReader();
+  const w = reader.read([pad('G29', '', [0]), pad('Pedals', '', [0, 0, 0, 0])], { wheel, padButtons: BUMPER_SHIFT_BUTTONS }, 1 / 60);
+  assert.equal(w.source, 'wheel');
+  near(w.clutch, (0.5 - 0.02) / 0.98);
+  // The pedal set unplugged mid-drive: the wheel is lost, as with the throttle's or the brake's device
+  const gone = reader.read([pad('G29', '', [0])], { wheel, padButtons: BUMPER_SHIFT_BUTTONS }, 1 / 60);
+  assert.ok(gone.wheelLost);
+  assert.equal(gone.clutch, 0);
+  assert.equal(DEFAULT_WHEEL_SETTINGS.clutch, null);
+  assert.deepEqual(parsePlayerSettings({ wheel: { clutch: wheel.clutch } }).wheel.clutch, wheel.clutch, 'a saved clutch pedal');
+  assert.equal(parsePlayerSettings({ wheel: { clutch: { padId: 'Pedals' } } }).wheel.clutch, null, 'a broken one is none');
+});
+check('GT classic: right stick drives, RT / LT shift, R3 does nothing', () => {
+  const reader = new DeviceInputReader();
+  const settings = {
+    wheel: DEFAULT_WHEEL_SETTINGS,
+    padButtons: PAD_LAYOUTS.gtClassic.buttons,
+    padTuning: { pedalSources: STICK_SOURCES, stickPedalDeadzone: 0.1 },
+  };
+  const f1 = reader.read([pad('Xbox', 'standard', [0.2, 0, 0, -1], [7], { 7: 1 })], settings, 1 / 60);
+  assert.equal(f1.source, 'controller');
+  near(f1.throttle, 1);
+  assert.equal(f1.brake, 0);
+  assert.ok(f1.pressed.has('shiftUp'));
+  const f2 = reader.read([pad('Xbox', 'standard', [0, 0, 0, 0.5], [6, 11], { 6: 0.7 })], settings, 1 / 60);
+  assert.equal(f2.throttle, 0);
+  near(f2.brake, 0.4 / 0.85);
+  assert.ok(f2.pressed.has('shiftDown'));
+  assert.deepEqual([...f2.pressed], ['shiftDown'], 'R3 is unbound');
+  // A light touch on a shift trigger (a browser already calls it pressed) shifts nothing; half its travel does
+  const r = new DeviceInputReader();
+  const touch = (v: number, pressed: boolean) => r.read([pad('Xbox', 'standard', [0, 0, 0, 0], pressed ? [7] : [], { 7: v })], settings, 1 / 60);
+  assert.equal(touch(0.2, true).pressed.size, 0, 'resting finger');
+  assert.ok(touch(0.6, true).pressed.has('shiftUp'), 'past half');
+  touch(0, false);
+  assert.ok(touch(0, true).pressed.has('shiftUp'), 'a digital trigger, pressed with no travel');
+  // The same pad on trigger pedals and the default buttons: RT is the throttle and shifts nothing
+  const f3 = new DeviceInputReader().read(
+    [pad('Xbox', 'standard', [0, 0, 0, -1], [7], { 7: 1 })],
+    { wheel: DEFAULT_WHEEL_SETTINGS, padButtons: BUMPER_SHIFT_BUTTONS, padTuning: { pedalSources: DEFAULT_PAD_PEDAL_SOURCES, stickPedalDeadzone: 0.1 } },
+    1 / 60,
+  );
+  near(f3.throttle, 1);
+  assert.equal(f3.pressed.size, 0);
+});
 check('uncalibrated non-standard device keeps the original raw path', () => {
   const reader = new DeviceInputReader();
-  const f = reader.read([pad('Generic wheel', '', [0.3, 0], [], { 7: 0.5 })], { wheel: DEFAULT_WHEEL_SETTINGS, padButtons: DEFAULT_PAD_BUTTONS }, 1 / 60);
+  const f = reader.read([pad('Generic wheel', '', [0.3, 0], [], { 7: 0.5 })], { wheel: DEFAULT_WHEEL_SETTINGS, padButtons: BUMPER_SHIFT_BUTTONS }, 1 / 60);
   assert.equal(f.source, 'legacy');
   near(f.analogSteer!, 0.3);
   near(f.throttle, 0.5);
@@ -212,7 +470,7 @@ check('calibrated wheel with pedals and paddles on separate devices', () => {
     buttons: { ...DEFAULT_WHEEL_SETTINGS.buttons, shiftUp: { padId: 'DD base', button: 4 } },
   };
   const pads = [pad('DD base', '', [60 / 540], [4]), pad('Pedals', '', [0, 1, -1])];
-  const f = reader.read(pads, { wheel, padButtons: DEFAULT_PAD_BUTTONS }, 1 / 60);
+  const f = reader.read(pads, { wheel, padButtons: BUMPER_SHIFT_BUTTONS }, 1 / 60);
   assert.equal(f.source, 'wheel');
   near(f.analogSteer!, 60 / 180); // 60° of a 180° half-lock
   near(f.throttle, 1);
@@ -223,7 +481,7 @@ check('an unplugged wheel is reported once (the game pauses), not silently hande
   const reader = new DeviceInputReader();
   const wheel = { ...DEFAULT_WHEEL_SETTINGS, steer: { padId: 'DD base', axis: 0, center: 0, invert: false } };
   const xbox = pad('Xbox', 'standard', [0.5, 0], [0, 5], { 7: 0.9 });
-  const settings = { wheel, padButtons: DEFAULT_PAD_BUTTONS };
+  const settings = { wheel, padButtons: BUMPER_SHIFT_BUTTONS };
   assert.equal(reader.read([pad('DD base', '', [0.1]), xbox], settings, 1 / 60).wheelLost, undefined);
   const lost = reader.read([xbox], settings, 1 / 60);
   assert.equal(lost.wheelLost, true);
@@ -236,7 +494,7 @@ check('an unplugged wheel is reported once (the game pauses), not silently hande
       throttle: { padId: 'Pedals', axis: 1, idle: -1, full: 1 },
       brake: { padId: 'Pedals', axis: 2, idle: 1, full: -1 },
     },
-    padButtons: DEFAULT_PAD_BUTTONS,
+    padButtons: BUMPER_SHIFT_BUTTONS,
   };
   const r2 = new DeviceInputReader();
   assert.equal(r2.read([pad('DD base', '', [0.1]), pad('Pedals', '', [0, 1, 1])], pedalled, 1 / 60).wheelLost, undefined);
@@ -351,18 +609,18 @@ check('FFB soft lock pushes back past the car steering lock only', () => {
   near(softLockForce(half + 50), -1);
 });
 check('per-car steering lock: 360° for Formula cars, 640° for AMG GT3 (steering & soft lock)', () => {
-  assert.equal(carWheelLockDeg('vf26'), 360);
+  assert.equal(carWheelLockDeg('lc26'), 360);
   assert.equal(carWheelLockDeg('f12026-car'), 360);
   assert.equal(carWheelLockDeg('amg-gt3'), 640);
   const binding = { padId: 'Simucube 2 Pro', axis: 0, center: 0, invert: false };
   // On a 900° wheel turned 180° right (raw = +0.4): full lock (+1.0) in F1, 180/320 = 0.5625 in AMG GT3
-  near(wheelSteerValue(0.4, binding, 900, 0, carWheelLockDeg('vf26')), 1);
+  near(wheelSteerValue(0.4, binding, 900, 0, carWheelLockDeg('lc26')), 1);
   near(wheelSteerValue(0.4, binding, 900, 0, carWheelLockDeg('amg-gt3')), 180 / 320);
   // On a 540° wheel driving the 640° AMG GT3, full physical lock (raw = ±1) still reaches full rack travel (±1)
   near(wheelSteerValue(1.0, binding, 540, 0, carWheelLockDeg('amg-gt3')), 1);
   near(wheelSteerValue(-1.0, binding, 540, 0, carWheelLockDeg('amg-gt3')), -1);
   // Soft lock at 250° right: past lock in F1 (< 0), still inside the 320° half-lock in AMG GT3 (0)
-  assert.ok(softLockForce(250, carWheelLockDeg('vf26')) < 0);
+  assert.ok(softLockForce(250, carWheelLockDeg('lc26')) < 0);
   assert.equal(softLockForce(250, carWheelLockDeg('amg-gt3')), 0);
   assert.ok(softLockForce(330, carWheelLockDeg('amg-gt3')) < 0);
 });
@@ -370,7 +628,7 @@ check("a player's steering lock quickens the rack, never slows it, and loads fro
   const binding = { padId: 'Simucube 2 Pro', axis: 0, center: 0, invert: false };
   const locks = { 'amg-gt3': 400 };
   assert.equal(carWheelLockDeg('amg-gt3', locks), 400);
-  assert.equal(carWheelLockDeg('vf26', locks), 360);
+  assert.equal(carWheelLockDeg('lc26', locks), 360);
   assert.equal(carWheelLockDeg('amg-gt3', { 'amg-gt3': 800 }), 640, 'slower than the real car: ignored');
   assert.equal(carWheelLockDeg('amg-gt3', { 'amg-gt3': 90 }), 640, 'below the minimum: ignored');
   // 200° right on a 900° wheel (raw 0.4444): full lock on the 400° GT3 rack, 200/320 on the real one
@@ -573,6 +831,43 @@ check('pre-fix ffbInvert: true save is reset once on load; post-v2 ffbInvert: tr
     else g.localStorage = prevStorage;
   }
 });
+check('a touch screen starts on Medium graphics until the player picks; a saved preset is kept', () => {
+  const store = new Map<string, string>();
+  const g = globalThis as unknown as { localStorage?: Storage; window?: unknown };
+  const prevStorage = g.localStorage;
+  g.localStorage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+    clear: () => store.clear(),
+    key: () => null,
+    length: 0,
+  };
+  g.window = { matchMedia: (q: string) => ({ matches: q === '(pointer: coarse)' }) };
+  try {
+    assert.equal(defaultGraphicsSettings().quality, 'medium');
+    assert.equal(loadPlayerSettings().graphics.quality, 'medium', 'first visit');
+    assert.equal(parsePlayerSettings({}).graphics.quality, 'medium', 'a save without graphics');
+    assert.equal(parsePlayerSettings({ graphics: { quality: 'ultra', renderScale: 0.8 } }).graphics.quality, 'medium', 'an unknown preset');
+    assert.equal(parsePlayerSettings({ graphics: { quality: 'high' } }).graphics.quality, 'high', 'a saved High is kept');
+    store.set(SETTINGS_STORAGE_KEY, JSON.stringify({ ...DEFAULT_PLAYER_SETTINGS, graphics: { ...DEFAULT_PLAYER_SETTINGS.graphics, quality: 'low' } }));
+    assert.equal(loadPlayerSettings().graphics.quality, 'low', 'a saved Low is kept');
+    assert.equal(resetAllSettings(loadPlayerSettings()).graphics.quality, 'medium', 'Reset all settings');
+    assert.equal(DEFAULT_PLAYER_SETTINGS.graphics.quality, 'high', 'the prerendered defaults stay as they were');
+    assert.equal(defaultGraphicsSettings().autoQuality, true, 'automatic quality is on for touch screens');
+    assert.equal(defaultGraphicsSettings().fpsCap, 0, 'the frame rate is the screen\'s on touch screens too');
+    assert.equal(parsePlayerSettings({ graphics: { quality: 'high' } }).graphics.autoQuality, true, 'a save from before it takes the device default');
+    assert.equal(parsePlayerSettings({ graphics: { autoQuality: false, fpsCap: 30 } }).graphics.autoQuality, false, 'a saved off is kept');
+    assert.equal(parsePlayerSettings({ graphics: { fpsCap: 30 } }).graphics.fpsCap, 30, 'a saved 30 fps is kept');
+    assert.equal(parsePlayerSettings({ graphics: { fpsCap: 45 } }).graphics.fpsCap, 0, 'an unknown cap is none');
+  } finally {
+    delete g.window;
+    if (prevStorage === undefined) delete g.localStorage;
+    else g.localStorage = prevStorage;
+  }
+  assert.equal(defaultGraphicsSettings().quality, 'high', 'no touch screen (or no window): High');
+  assert.equal(defaultGraphicsSettings().autoQuality, false, 'no touch screen: automatic quality off');
+});
 
 check('direction test: right then left (left first inverted), zero in the gap and after', () => {
   near(directionTestForce(0.5, false), 0.25);
@@ -626,7 +921,7 @@ check('clearing or rebinding the steering with the wheel plugged in is not an un
   const reader = new DeviceInputReader();
   const steer = { padId: 'DD base', axis: 0, center: 0, invert: false };
   const pads = [pad('DD base', '', [0.1, 0])];
-  const bound = { wheel: { ...DEFAULT_WHEEL_SETTINGS, steer }, padButtons: DEFAULT_PAD_BUTTONS };
+  const bound = { wheel: { ...DEFAULT_WHEEL_SETTINGS, steer }, padButtons: BUMPER_SHIFT_BUTTONS };
   const withSteer = (s: typeof steer | null) => ({ ...bound, wheel: { ...bound.wheel, steer: s } });
   assert.equal(reader.read(pads, bound, 1 / 60).wheelLost, undefined);
   assert.equal(reader.read(pads, withSteer({ ...steer, axis: 1 }), 1 / 60).wheelLost, undefined, 'rebound to another axis');
@@ -637,7 +932,7 @@ check('clearing or rebinding the steering with the wheel plugged in is not an un
 });
 check('a button already held on the device the input switches to is not a press; pressing it again is', () => {
   const reader = new DeviceInputReader();
-  const settings = { wheel: { ...DEFAULT_WHEEL_SETTINGS, steer: { padId: 'DD base', axis: 0, center: 0, invert: false } }, padButtons: DEFAULT_PAD_BUTTONS };
+  const settings = { wheel: { ...DEFAULT_WHEEL_SETTINGS, steer: { padId: 'DD base', axis: 0, center: 0, invert: false } }, padButtons: BUMPER_SHIFT_BUTTONS };
   const xboxHeld = pad('Xbox', 'standard', [0, 0], [5]);
   assert.equal(reader.read([pad('DD base', '', [0]), xboxHeld], settings, 1 / 60).source, 'wheel');
   const switched = reader.read([xboxHeld], settings, 1 / 60);
@@ -647,7 +942,7 @@ check('a button already held on the device the input switches to is not a press;
   assert.ok(reader.read([xboxHeld], settings, 1 / 60).pressed.has('shiftUp'), 'pressed again: a press');
   // A pad that only appears with a press (the browser hides it until then) still counts from no device at all
   const fresh = new DeviceInputReader();
-  const pads = { wheel: DEFAULT_WHEEL_SETTINGS, padButtons: DEFAULT_PAD_BUTTONS };
+  const pads = { wheel: DEFAULT_WHEEL_SETTINGS, padButtons: BUMPER_SHIFT_BUTTONS };
   assert.equal(fresh.read([], pads, 1 / 60).source, null);
   assert.ok(fresh.read([xboxHeld], pads, 1 / 60).pressed.has('shiftUp'), 'first press of a pad that just appeared');
 });
@@ -776,6 +1071,102 @@ check('bridge socket: replaced is final until FFB goes off and on; a retry after
     assert.equal(c.status.connection, 'off');
   } finally {
     g.WebSocket = prevWs;
+  }
+});
+
+check('forces go to the bridge only while force feedback is on, and never while WebHID drives the wheel', () => {
+  const sent: string[] = [];
+  class FakeSocket {
+    static OPEN = 1;
+    readyState = 1;
+    onopen: (() => void) | null = null;
+    onmessage: ((e: { data: unknown }) => void) | null = null;
+    onclose: (() => void) | null = null;
+    constructor(readonly url: string) {}
+    send(m: string) {
+      sent.push(m);
+    }
+    close() {
+      this.readyState = 3;
+    }
+  }
+  const g = globalThis as unknown as { WebSocket?: unknown };
+  const prevWs = g.WebSocket;
+  g.WebSocket = FakeSocket;
+  try {
+    const c = new WheelFfbClient();
+    const forces = () => sent.filter((m) => JSON.parse(m).t === 'f').length;
+    const t = { speedKmh: 0, ffbTorqueNorm: 0 } as never;
+    const telemetry = { ...DEFAULT_WHEEL_SETTINGS, ffbEnabled: false, telemetryOut: true, hidFfb: false };
+    c.update(t, telemetry, [], 1000, false);
+    c.update(t, telemetry, [], 1016, false);
+    assert.equal(forces(), 0, 'a bridge kept for telemetry is sent no force, so it never opens the wheel');
+    c.update(t, { ...telemetry, ffbEnabled: true }, [], 1032, false);
+    assert.equal(forces(), 1, 'force feedback on, through the bridge: it gets the force');
+    c.hidSink = () => {};
+    c.update(t, { ...telemetry, ffbEnabled: true, hidFfb: true }, [], 1048, false);
+    assert.equal(forces(), 1, 'WebHID drives the wheel: nothing for the bridge');
+  } finally {
+    g.WebSocket = prevWs;
+  }
+});
+
+console.log('Install app');
+check('an install is the Home Screen app or an app display mode; fullscreen counts only without a fullscreen element', () => {
+  const facts = (modes: string[], extra: { standalone?: boolean; elementFullscreen?: boolean } = {}) => ({
+    standalone: extra.standalone,
+    displayMode: (mode: string) => modes.includes(mode),
+    elementFullscreen: extra.elementFullscreen ?? false,
+  });
+  assert.equal(installedFrom(facts(['browser'])), false, 'a tab');
+  assert.equal(installedFrom(facts(['browser'], { standalone: true })), true, 'iOS Home Screen app');
+  assert.equal(installedFrom(facts(['browser'], { standalone: false })), false, 'iOS Safari tab');
+  assert.equal(installedFrom(facts(['standalone'])), true);
+  assert.equal(installedFrom(facts(['minimal-ui'])), true);
+  assert.equal(installedFrom(facts(['fullscreen'])), true, 'Android fullscreen app');
+  // The loading screen's tap takes a tab full screen, and Chrome then reports display-mode fullscreen
+  assert.equal(installedFrom(facts(['fullscreen'], { elementFullscreen: true })), false, 'a tab the Fullscreen API made full screen');
+  assert.equal(installedFrom(facts(['standalone'], { elementFullscreen: true })), true, 'an installed app with a fullscreen element');
+});
+check('Apple touch devices: iPhone, iPad, iPod, and iPadOS with its Mac user agent; never a Mac or an Android', () => {
+  const iphone = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+  const iphoneChrome = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/130.0.0.0 Mobile/15E148 Safari/604.1';
+  const ipadOld = 'Mozilla/5.0 (iPad; CPU OS 12_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.1.2 Mobile/15E148 Safari/604.1';
+  const mac = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15';
+  const android = 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36';
+  assert.equal(isAppleTouchAgent(iphone, 5), true);
+  assert.equal(isAppleTouchAgent(iphoneChrome, 5), true, 'Chrome on iOS installs through Share too');
+  assert.equal(isAppleTouchAgent(ipadOld, 5), true);
+  assert.equal(isAppleTouchAgent('Mozilla/5.0 (iPod touch; CPU iPhone OS 12_0 like Mac OS X)', 5), true);
+  assert.equal(isAppleTouchAgent(mac, 5), true, 'iPadOS asks for the desktop site with a Mac user agent');
+  assert.equal(isAppleTouchAgent(mac, 0), false, 'a Mac');
+  assert.equal(isAppleTouchAgent(mac, 1), false, 'a Mac reporting one touch point');
+  assert.equal(isAppleTouchAgent(android, 5), false);
+});
+check('without a window: not installed, not Apple, no prompt, and going full screen does nothing', () => {
+  assert.equal(isInstalledApp(), false);
+  assert.equal(isAppleTouch(), false);
+  assert.deepEqual(installStore.getSnapshot(), { canPrompt: false, installed: false });
+  assert.equal(installStore.getSnapshot(), installStore.getServerSnapshot(), 'one snapshot object until something changes');
+  enterFullscreenOnTouch();
+});
+check('Settings > Touch: turning Tilt to steer on asks iOS for motion access in the same tap; turning it off does not', () => {
+  const g = globalThis as unknown as { window?: unknown; DeviceOrientationEvent?: unknown };
+  let asked = 0;
+  g.window = {};
+  g.DeviceOrientationEvent = { requestPermission: () => (asked++, Promise.resolve('granted')) };
+  try {
+    let settings = DEFAULT_PLAYER_SETTINGS;
+    const env = { settings, update: (fn: (s: typeof settings) => typeof settings) => void (settings = fn(settings)) } as unknown as SettingsEnv;
+    tiltSteer.write(env, true);
+    assert.equal(asked, 1, 'asked before the tap handler returns (iOS prompts only inside the gesture)');
+    assert.equal(settings.touch.tiltSteer, true);
+    tiltSteer.write(env, false);
+    assert.equal(asked, 1, 'turning tilt off asks nothing');
+    assert.equal(settings.touch.tiltSteer, false);
+  } finally {
+    delete g.window;
+    delete g.DeviceOrientationEvent;
   }
 });
 

@@ -1,0 +1,123 @@
+name: Release Desktop App
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+            target_flag: --mac
+          - os: windows-latest
+            platform: win
+            target_flag: --win
+          - os: ubuntu-latest
+            platform: linux
+            target_flag: --linux
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Check desktop wrapper
+        working-directory: desktop
+        run: npm run check
+
+      - name: Sync version from tag
+        working-directory: desktop
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
+          npm version --no-git-tag-version --allow-same-version "$VERSION"
+
+      - name: Build installer (${{ matrix.platform }})
+        working-directory: desktop
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "${CSC_LINK:-}" ]; then unset CSC_LINK CSC_KEY_PASSWORD; fi
+          if [ -z "${WIN_CSC_LINK:-}" ]; then unset WIN_CSC_LINK WIN_CSC_KEY_PASSWORD; fi
+          if [ -z "${APPLE_ID:-}" ] || [ -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] || [ -z "${APPLE_TEAM_ID:-}" ]; then
+            unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
+          fi
+          if [ "${{ matrix.platform }}" = "mac" ] && [ -z "${CSC_LINK:-}" ]; then
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+          fi
+          if [ "${{ matrix.platform }}" = "win" ] && [ -z "${CSC_LINK:-}" ] && [ -z "${WIN_CSC_LINK:-}" ]; then
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+          fi
+          npx electron-builder ${{ matrix.target_flag }} --publish never
+
+      - name: Upload release files (${{ matrix.platform }})
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.platform }}
+          if-no-files-found: error
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.dmg
+            desktop/dist/*.zip
+            desktop/dist/*.AppImage
+            desktop/dist/*.blockmap
+            desktop/dist/latest*.yml
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: desktop/release-notes.md
+          sparse-checkout-cone-mode: false
+
+      - name: Download release files
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # The gh CLI on the runner, not a third-party action: the repository allows GitHub's own actions only, and
+      # a third-party one stops the whole run before it starts. The notes file comes first, then GitHub's notes.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "LibreCorsa Desktop ($GITHUB_REF_NAME)" \
+            --notes-file desktop/release-notes.md \
+            --generate-notes

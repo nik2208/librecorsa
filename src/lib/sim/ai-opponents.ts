@@ -1,9 +1,9 @@
 /**
- * AI opponents: full-physics VF26 cars driven by the racing-line AI, with a standing start behind
+ * AI opponents: full-physics LC26 cars driven by the racing-line AI, with a standing start behind
  * the five start lights, traffic awareness (follow or pass on the free side, give room alongside),
  * simple car-to-car contact and live race standings.
  *
- * The player's car (the VF26 or the f12026-car) is passed in so that it takes part in the start
+ * The player's car (the LC26 or the f12026-car) is passed in so that it takes part in the start
  * procedure, contact and order; it is stepped by the caller (the field only steps its AI cars).
  */
 import { steerAngleOf, wheelRpmOf } from './car-pose';
@@ -12,7 +12,7 @@ import { F1Physics2026 } from '@/lib/f1-physics-2026';
 import { DEFAULT_TRACK_ID, getActiveTrackMetadata, type AiPlanCheck, type BuiltTrackData } from '@/lib/track-data';
 import { resolveCarToCarObbCollision, type RigidBodyCollisionCar } from '@/lib/sim/track-evolution';
 import { TrackEnvironment } from '@/lib/sim/track-environment';
-import { aiLineOffsetM, computeSpeedProfile, createVf26ProfileCarModel, withPlanningGrip } from '@/lib/sim/speed-profile';
+import { aiLineOffsetM, computeSpeedProfile, createLc26ProfileCarModel, withPlanningGrip } from '@/lib/sim/speed-profile';
 import { RacingLineDriver } from '@/lib/sim/ai-mpc';
 import {
   AI_SKILL_DEFAULT,
@@ -36,7 +36,7 @@ import { AiSectionLearner, loadLearnedCorners, saveLearnedCorners, type LearnedC
 import type { InterpolatedPeerState } from '@/lib/sim/multiplayer-sync';
 import type { SimulatorCar } from '@/lib/sim/simulator-car';
 import { carAheadOnRoad, earnedAtDetection, type OvertakingRaceControl } from '@/lib/sim/overtaking-rules';
-import type { RaceStatus, VehicleModelId } from '@/types/f1';
+import type { RaceStatus, RacingLineId, VehicleModelId } from '@/types/f1';
 import { AiCarControl, aiControlTraits, KNOCK_LATERAL_MS, KNOCK_WALL_MS, KNOCK_YAW_RADS, type AiControlCarState } from '@/lib/sim/ai-car-control';
 import { CarDamage, worldToCarLocal, type DamageLevel, type DamageReport } from '@/lib/sim/car-damage';
 import {
@@ -49,17 +49,30 @@ import {
   ownsCorner,
   passFeasible,
   RacecraftMemory,
+  travelM,
 } from '@/lib/sim/ai-racecraft';
 import { RaceIncidents } from '@/lib/sim/race-incidents';
+import { YellowPassJudge, type PassCar, type YellowLevel } from '@/lib/sim/yellow-passes';
+import type { PenaltyReason } from '@/lib/sim/penalty-ledger';
+import { aiQualifyingMs, qualifyingOrder, type QualifyingGridInput, type QualifyingResult } from '@/lib/sim/qualifying';
 import { aiTrackFor, sampleGrid, type AiTrack } from '@/lib/sim/ai/ai-track';
 import { carLimitsFor } from '@/lib/sim/ai/ggv';
-import { makeDrivePlan, type AiDrivePlan } from '@/lib/sim/ai/drive-plan';
+import { drivePlanJob, driveLineOf, makeDrivePlan, type AiDrivePlan, type DriveLine } from '@/lib/sim/ai/drive-plan';
+import { planCost } from '@/lib/sim/ai/speed-plan';
 import { DEFAULT_PLANNER_WEIGHTS, PLAN_DT, PLAN_STEPS, planLocal, type PlannerResult, type PredictedCar } from '@/lib/sim/ai/local-planner';
 import type { AiGridOrder, PlayerGridSlot } from '@/lib/sim/race-setup';
+import type { AiRace, RaceDriverLabel } from '@/lib/sim/ai-race';
 import { F12026_CAR_CONFIG } from '@/lib/sim/f12026-car/F12026CarConfig';
 import { AMG_GT3_CONFIG } from '@/lib/sim/gt3/AmgGt3Config';
 import { SUZUKI_LIANA_CONFIG } from '@/lib/sim/road/SuzukiLianaConfig';
 import { MTR_496R_CONFIG } from '@/lib/sim/proto/Mtr496rConfig';
+import { LC_LMDH_CONFIG } from '@/lib/sim/proto/LcLmdhConfig';
+import { NISSAN_R33_CONFIG } from '@/lib/sim/classic/NissanR33Config';
+import { NISSAN_R32_CONFIG } from '@/lib/sim/classic/NissanR32Config';
+import { BMW_M1_PROCAR_CONFIG } from '@/lib/sim/classic/BmwM1ProcarConfig';
+import { CHAPARRAL_2D_67_CONFIG, CHAPARRAL_2D_CONFIG } from '@/lib/sim/classic/Chaparral2dConfig';
+import { PORSCHE_934_RSR_CONFIG } from '@/lib/sim/classic/Porsche934RsrConfig';
+import { VW_SCIROCCO_CONFIG } from '@/lib/sim/road/VwSciroccoConfig';
 import {
   classificationClosed,
   classifiedTimeS,
@@ -109,7 +122,25 @@ export function aiDriversFor(n: number): AiDriverDef[] {
   return [...AI_DRIVERS, ...AI_RESERVE_DRIVERS].slice(0, Math.max(1, Math.min(n, AI_DRIVERS.length + AI_RESERVE_DRIVERS.length)));
 }
 
+/**
+ * Codes a driver races under when the player's own code is theirs: made up, as the field's are (no real driver's), and
+ * none of the eleven above
+ */
+const AI_SPARE_CODES = ['ZOL', 'VEK', 'ORA', 'TIB', 'MAV', 'QEN'];
+
+/**
+ * The codes the AI drivers race under beside the player's: their own, except a driver whose code is the player's, who
+ * takes the first spare code nobody in the race has
+ */
+export function aiRaceCodes(aiCodes: readonly string[], playerCode: string): string[] {
+  const taken = new Set([...aiCodes, playerCode]);
+  const free = AI_SPARE_CODES.filter((c) => !taken.has(c));
+  return aiCodes.map((code) => (code === playerCode ? (free.shift() ?? code) : code));
+}
+
+/** The player's car in the field: its code (the field's key for it) and, without a driver of their own, what it shows */
 const PLAYER_CODE = 'YOU';
+const PLAYER_COLOR = '#E10600';
 /** Car footprint used for contact (m): length, width */
 const CAR_LEN_M = 5.0;
 const CAR_WID_M = 1.95;
@@ -156,6 +187,38 @@ export interface RacecraftParams {
   defendRoomS: number;
   /** Off the start an AI keeps its grid lane until a corner comes into view, or this far into the race at most (m) */
   startLaneMaxM: number;
+  /**
+   * Side by side into a corner, the room for the other car may take the car this much further off its line than the
+   * corner otherwise lets it go (m; 0: the corner's reach is the limit, so a car that stays put is turned in on)
+   */
+  alongsideReachM: number;
+  /**
+   * Side by side with less than a car's width of room left on our side (the corner's reach or the road's edge used up)
+   * and not clearly ahead: lift and drop in behind (1), or only when the road's edge is the limit (0)
+   */
+  squeezeYield: number;
+  /**
+   * How far ahead (s) each car checks its own path against the predicted paths of the cars around it: a car its line
+   * will run into is followed, one alongside is given room, and no move is made across the nose of a car behind
+   * (0: off)
+   */
+  predictS: number;
+  /**
+   * Extra margin against the player's car (m): a player keeps no racecraft rules (no tucking in, no room given, early or
+   * late braking), so the AI follows a little further back and keeps a little more room beside it
+   */
+  playerMarginM: number;
+  /**
+   * The room past the corner's reach and the squeeze lift only for the player's car (1), or for every car (0). Between
+   * two AI cars both make room, and taken past the reach by both they ran wide into the corners (GT3 offs at
+   * Oschersleben up a third)
+   */
+  roomPlayerOnly: number;
+  /**
+   * The path check's room and lift beside a car only for the player's car (1), or for every car (0). Another AI car
+   * beside us keeps the same rules; ahead and behind are checked for every car either way
+   */
+  pathSidePlayerOnly: number;
 }
 
 export const DEFAULT_RACECRAFT: RacecraftParams = {
@@ -177,7 +240,23 @@ export const DEFAULT_RACECRAFT: RacecraftParams = {
   defendReachM: 2.2,
   defendRoomS: 0.8,
   startLaneMaxM: 900,
+  alongsideReachM: 2.5,
+  squeezeYield: 1,
+  predictS: 1.5,
+  playerMarginM: 0.4,
+  roomPlayerOnly: 1,
+  pathSidePlayerOnly: 1,
 };
+/** The path check's step (s) */
+const PATH_STEP_S = 0.1;
+/** How quickly a car moves across to give room the path check found it needs (m/s): a line sweeping to the apex crosses
+ * the road at ~4 m/s, and at the usual rate the room came a second late */
+const AVOID_RATE_MS = 4;
+/** How much less sure the path check is of where a car will be along the road, and across it, per second ahead (m/s) */
+const PATH_SPREAD_MS = 1;
+const PATH_SPREAD_LAT_MS = 0.25;
+/** How long a car's tracker takes to bring it onto the path it aims for (s) */
+const PATH_TRACK_LAG_S = 0.35;
 /** Rate at which an AI moves off / back onto its line (m/s) */
 const BIAS_RATE_MS = 2.2;
 /** ... and out of the tow to pass (m/s): a quick move, made with the speed the tow gave */
@@ -229,6 +308,8 @@ function cornerLimitedShare(plan: AiDrivePlan, s: number, vMs: number, lookM: nu
 const PLAN_GRIP = 0.97;
 /** Below a circuit's checked grip ceiling, what the fastest level plans to (see refreshPlan) */
 const RACE_GRIP_MARGIN = 0.04;
+/** Drive plans a field keeps by car, line and grip (a plan is ~60 kB on a 4 km lap) */
+const PLAN_MEMO_MAX = 48;
 
 /**
  * Lights out to the car moving (s) for an AI skill 0..100 and two seeded draws 0..1: a reaction of 0.30 s for a rookie
@@ -271,7 +352,7 @@ interface AiDriveHooks {
   refresh?(): boolean;
 }
 
-const vf26Bases = new WeakMap<BuiltTrackData, Map<string, { base: Float64Array; env: Float32Array }>>();
+const lc26Bases = new WeakMap<BuiltTrackData, Map<string, { base: Float64Array; env: Float32Array }>>();
 
 function driveHooksFor(sim: SimulatorCar, track: BuiltTrackData): AiDriveHooks | null {
   const L = track.totalLengthM;
@@ -284,19 +365,19 @@ function driveHooksFor(sim: SimulatorCar, track: BuiltTrackData): AiDriveHooks |
       setSteerGain: (g) => (sim.aiSteerGain = g),
     };
   }
-  // The VF26 drives on a RacingLineDriver over the profile it builds from this planning model; f1-physics-2026.ts has
+  // The LC26 drives on a RacingLineDriver over the profile it builds from this planning model; f1-physics-2026.ts has
   // no tuning setters of its own, so the tuning goes straight to its driver
   const driver = (sim as unknown as { aiDriver?: unknown }).aiDriver;
   if (driver instanceof RacingLineDriver) {
-    let perTrack = vf26Bases.get(track);
-    if (!perTrack) vf26Bases.set(track, (perTrack = new Map()));
+    let perTrack = lc26Bases.get(track);
+    if (!perTrack) lc26Bases.set(track, (perTrack = new Map()));
     const cache = perTrack;
     // The limit profile on the tyres' grip on this road (the dry one unless it rains)
     const entryFor = (grip: number) => {
       const key = `${sim.aeroPreset}@${grip}`;
       let entry = cache.get(key);
       if (!entry) {
-        const base = computeSpeedProfile(track.samples, withPlanningGrip(createVf26ProfileCarModel(sim.aeroPreset), grip)).speedMs;
+        const base = computeSpeedProfile(track.samples, withPlanningGrip(createLc26ProfileCarModel(sim.aeroPreset), grip)).speedMs;
         entry = { base, env: decelEnvelope(base, L) };
         cache.set(key, entry);
       }
@@ -357,13 +438,22 @@ export interface AiFieldOptions {
    * rules on the drive plans race cleaner until its weights are tuned)
    */
   localPlanner?: boolean;
+  /**
+   * AI cars already made with `player.createAiPeerCar()`, one per driver in order (a field built ahead makes them a
+   * few at a time); any missing are made here
+   */
+  peers?: readonly SimulatorCar[];
 }
 
 export type { AiGridOrder, PlayerGridSlot } from '@/lib/sim/race-setup';
 
 interface FieldCar {
   id: string;
+  /** The driver's code as built: the key of the car's dice, learning, penalties and `carInfo` ('YOU' for the player) */
   code: string;
+  /** The code the race shows: the player's own, and a driver's own unless it is the player's (`aiRaceCodes`) */
+  label: string;
+  /** The colour the race shows (the player's own) */
   teamColorHex: string;
   isPlayer: boolean;
   sim: SimulatorCar;
@@ -387,7 +477,7 @@ interface FieldCar {
   wasOff: boolean;
   lastWallMs: number;
   prevVx: number;
-  /** Decelerating like a wall hit last frame (the VF26's impacts are counted from this) */
+  /** Decelerating like a wall hit last frame (the LC26's impacts are counted from this) */
   inWallHit: boolean;
   /** Touched another car this frame */
   contact: boolean;
@@ -408,6 +498,8 @@ interface FieldCar {
   gridSlot: number;
   /** Grip its current drive plan was built on (the plan is rebuilt when it moves) */
   planGrip: number;
+  /** The next drive plan, being built a slice per field update (`runPlanJobs`), and the grip it is for */
+  planJob: { grip: number; job: Generator<number, AiDrivePlan, void> } | null;
   /** The local planner's last choice, and the race time it was made */
   local: PlannerResult | null;
   /** What the racecraft rules asked the planner for last (end offset from the line; null: race the line) */
@@ -456,6 +548,24 @@ const fieldContactYawCap = (impactMs: number) => THREE.MathUtils.clamp(0.25 + 0.
 const fieldContactDvCap = (impactMs: number) => Math.max(CONTACT_MAX_DV_MS, 2 + 1.3 * impactMs);
 /** Two boxes can only overlap with their centres within a full diagonal (m, squared) */
 const CONTACT_BROAD_M2 = CAR_LEN_M * CAR_LEN_M + CAR_WID_M * CAR_WID_M;
+/** After qualifying, the grid stands this long before the first red light, for its order to be read (s) */
+export const QUALIFYING_GRID_SHOW_S = 8;
+
+/** AI pace through a yellow zone and a double-yellow one (share of the car's own) */
+export const YELLOW_PACE = 0.93;
+export const DOUBLE_YELLOW_PACE = 0.72;
+/**
+ * Double yellow: a hazard stopped on the road (under this speed, m/s), going the wrong way, or two hazards within this
+ * distance of each other (m); up once its cause has lasted `DOUBLE_ON_S`, down once it has been gone `DOUBLE_OFF_S`
+ */
+const DOUBLE_STOPPED_MS = 2;
+const DOUBLE_CLUSTER_M = 250;
+const DOUBLE_ON_S = 0.5;
+const DOUBLE_OFF_S = 2;
+/** Blue flag: a car a lap up within this time behind the player on the road (s), and this close (m) */
+const BLUE_FLAG_S = 1.2;
+const BLUE_FLAG_M = 90;
+
 /** A retired car stopped this long is taken away by the marshals (s): long enough to be a yellow-flag hazard */
 const RETIRED_REMOVE_S = 20;
 
@@ -561,6 +671,14 @@ function remoteContactMass(vehicle: VehicleModelId | undefined): [number, number
   if (vehicle === 'amg-gt3') return [AMG_GT3_CONFIG.chassis.totalMassKg, AMG_GT3_CONFIG.chassis.inertia.yaw];
   if (vehicle === 'liana') return [SUZUKI_LIANA_CONFIG.chassis.totalMassKg, SUZUKI_LIANA_CONFIG.chassis.inertia.yaw];
   if (vehicle === 'mtr-496r') return [MTR_496R_CONFIG.chassis.totalMassKg, MTR_496R_CONFIG.chassis.inertia.yaw];
+  if (vehicle === 'lc-lmdh') return [LC_LMDH_CONFIG.chassis.totalMassKg, LC_LMDH_CONFIG.chassis.inertia.yaw];
+  if (vehicle === 'nissan-r33-jgtc') return [NISSAN_R33_CONFIG.chassis.totalMassKg, NISSAN_R33_CONFIG.chassis.inertia.yaw];
+  if (vehicle === 'nissan-r32-jtcc') return [NISSAN_R32_CONFIG.chassis.totalMassKg, NISSAN_R32_CONFIG.chassis.inertia.yaw];
+  if (vehicle === 'bmw-m1-procar') return [BMW_M1_PROCAR_CONFIG.chassis.totalMassKg, BMW_M1_PROCAR_CONFIG.chassis.inertia.yaw];
+  if (vehicle === 'vw-scirocco-gtx') return [VW_SCIROCCO_CONFIG.chassis.totalMassKg, VW_SCIROCCO_CONFIG.chassis.inertia.yaw];
+  if (vehicle === 'chaparral-2d') return [CHAPARRAL_2D_CONFIG.chassis.totalMassKg, CHAPARRAL_2D_CONFIG.chassis.inertia.yaw];
+  if (vehicle === 'chaparral-2d-67') return [CHAPARRAL_2D_67_CONFIG.chassis.totalMassKg, CHAPARRAL_2D_67_CONFIG.chassis.inertia.yaw];
+  if (vehicle === 'porsche-934-rsr') return [PORSCHE_934_RSR_CONFIG.chassis.totalMassKg, PORSCHE_934_RSR_CONFIG.chassis.inertia.yaw];
   if (vehicle === 'f12026-car') return [F12026_CAR_CONFIG.chassis.totalMassKg, F12026_CAR_CONFIG.chassis.inertia.yaw];
   return [CONTACT_MASS_KG, CONTACT_YAW_INERTIA_KGM2];
 }
@@ -645,7 +763,7 @@ export interface AiFieldReport {
   raceControl: { kind: string; text: string; detail?: string; atS: number }[];
 }
 
-export class AiOpponentField {
+export class AiOpponentField implements AiRace {
   public phase: RaceStatus['phase'] = 'racing';
   /**
    * False until startRace: the shell builds a spare field in the menus, and a field that never started is not a race
@@ -704,8 +822,10 @@ export class AiOpponentField {
   public playerGrid: PlayerGridSlot;
   /** Added to every driver's temperament (`RACE_AGGRESSION_OFFSET`): the race setup's clean / normal / hard */
   public aggressionAdd = 0;
-  /** Race control: contacts judged, penalties, yellow flags, the messages for the HUD */
-  public readonly raceControl = new RaceIncidents(PLAYER_CODE);
+  /** The player's code and colour, from the next start (`AiRace.playerDriver`); null: 'YOU' in red */
+  public playerDriver: RaceDriverLabel | null = null;
+  /** Race control: contacts judged, penalties, yellow flags, the messages for the HUD (with the codes the race shows) */
+  public readonly raceControl = new RaceIncidents(PLAYER_CODE, (code) => this.labelOf(code));
 
   constructor(
     private readonly track: BuiltTrackData,
@@ -733,8 +853,8 @@ export class AiOpponentField {
     this.corners = cornerSections(track);
     const library = options.library ?? AI_TUNING_LIBRARY;
     let tuning: AiTrackTuning | null = null;
-    for (const d of drivers) {
-      const sim = player.createAiPeerCar ? player.createAiPeerCar() : new F1Physics2026(track);
+    for (const [i, d] of drivers.entries()) {
+      const sim = options.peers?.[i] ?? (player.createAiPeerCar ? player.createAiPeerCar() : new F1Physics2026(track));
       sim.assistPreset = 'pro';
       sim.aiAutopilot = true;
       // The field rejoins its own cars after a spin, by driving, not by the car's own teleport
@@ -754,7 +874,7 @@ export class AiOpponentField {
       const s = (i * track.totalLengthM) / this.tuning.n;
       this.cornerAt[i] = this.corners.findIndex((c) => inSection(s, c.fromM, c.toM, track.totalLengthM));
     }
-    if (!this.spectate) this.cars.push(this.makeCar('player', PLAYER_CODE, '#E10600', player, null, 1));
+    if (!this.spectate) this.cars.push(this.makeCar('player', PLAYER_CODE, PLAYER_COLOR, player, null, 1));
     for (const car of this.cars) this.allSims.push(car.sim);
     // The AI cars' overtaking aids follow the race rules too (the player's are wired by the simulator)
     for (const car of this.cars) if (car.ai) car.ai.raceControl = this.raceControlFor(car.ai);
@@ -832,13 +952,12 @@ export class AiOpponentField {
       },
       hooks.env
     );
-    if (car.ai?.vehicleId === 'vf26' && car.ai.aiPlan) return;
+    if (car.ai?.vehicleId === 'lc26' && car.ai.aiPlan) return;
     hooks.setTarget(target);
   }
 
   /** The AI grid and the racing line per class, built on first use */
   private aiTrack: AiTrack | null = null;
-  private readonly classLines = new Map<string, Float64Array>();
 
   /** A driver's temperament in this race: its own, moved by the race setup's aggression */
   private aggressionOf(car: FieldCar): number {
@@ -862,29 +981,120 @@ export class AiOpponentField {
     const sim = car.ai;
     if (!sim || !AiOpponentField.tracksPlans(sim)) return;
     const weather = this.environment.weatherPaceScale(sim);
-    // A damaged car (a broken wing, bent suspension) has less grip to plan with
-    const damaged = car.damage.pristine ? 1 : 1 - 0.35 * car.damage.overall;
+    // A damaged car (a broken wing, bent suspension) has less grip to plan with, and a puncture leaves its tyre under
+    // half: the plan takes the weaker axle's grip too, as a car through a corner is held by its worse end, with the
+    // weak tyre on the outside carrying 70 % of its axle (a puncture: 0.6)
+    let damaged = 1;
+    if (!car.damage.pristine) {
+      const g = car.damage.effects().wheelGripMult;
+      const axle = (a: number, b: number) => 0.7 * Math.min(a, b) + 0.3 * Math.max(a, b);
+      damaged = Math.min(1 - 0.35 * car.damage.overall, axle(g[0], g[1]), axle(g[2], g[3]));
+    }
     // The fastest levels plan toward the most grip this car drove cleanly here (the circuit's line check), one step
     // (0.04) under it: the check is a flying lap alone, and a race adds traffic, dirty air and a pack on lap 1 (at
-    // the full step the VF26 hit Okayama's barriers four times as often)
+    // the full step the LC26 hit Okayama's barriers four times as often)
     const checked = (getActiveTrackMetadata().aiPlans?.[sim.vehicleId ?? ''] as AiPlanCheck | undefined)?.maxGrip;
     const ceiling = Math.max(PLAN_GRIP, (checked ?? PLAN_GRIP) - RACE_GRIP_MARGIN);
-    const planGrip = PLAN_GRIP + (ceiling - PLAN_GRIP) * this.mods.gripReach;
+    // On a race's first lap the pack brakes into the corners together: the extra grip waits for the second lap (with
+    // it, Alien GT3 fields went off at Spielberg's Turn 1 on lap 1 two races in six)
+    const reach = this.started && car.clock.lapsDone === 0 ? 0 : this.mods.gripReach;
+    const planGrip = PLAN_GRIP + (ceiling - PLAN_GRIP) * reach;
     const grip = Math.round(planGrip * car.pace * car.pace * weather * weather * damaged * 200) / 200;
-    if (sim.aiPlan && grip === car.planGrip) return;
+    if (sim.aiPlan && grip === car.planGrip) {
+      // Back on the grip it has: a plan still being built for another is dropped
+      this.dropPlanJob(car);
+      return;
+    }
+    const key = `${sim.vehicleId ?? ''}|${sim.racingLineId ?? 'f1'}|${grip}`;
+    const known = this.planMemo.get(key);
+    if (known) {
+      this.dropPlanJob(car);
+      this.installPlan(car, known, grip, key);
+      return;
+    }
+    const line = this.driveLineFor(sim.racingLineId ?? 'f1');
+    const t = this.aiTrack as AiTrack;
+    // A car's first plan is built at once: it has nothing else to drive
+    if (!sim.aiPlan) {
+      this.installPlan(car, makeDrivePlan(t, line, carLimitsFor(sim.vehicleId, grip)), grip, key);
+      return;
+    }
+    // A plan being built finishes first, even for a grip that has moved on since: restarting it on every change of
+    // the weather could keep a car on its old plan for good. Its next refresh starts the one it wants then
+    if (car.planJob) return;
+    car.planJob = { grip, job: drivePlanJob(t, line, carLimitsFor(sim.vehicleId, grip), Math.ceil(this.planSliceWork(t) / 4)) };
+    this.planQueue.push(car);
+  }
+
+  /**
+   * Drive plans built a slice at a time, a fixed share of one per field update (the same on every run of a seed): a
+   * plan is ~8 ms of work on a fast laptop and each car wants a new one most laps, which built at once was a hitch
+   * every time a car crossed the line. Until its new plan is ready a car drives its last one
+   */
+  private readonly planQueue: FieldCar[] = [];
+  private readonly planMemo = new Map<string, AiDrivePlan>();
+  private readonly driveLines = new Map<string, DriveLine>();
+
+  /** A plan's slices: about a sixteenth of a plan per field update */
+  private planSliceWork(t: AiTrack): number {
+    return Math.ceil(planCost(t) / 16);
+  }
+
+  /** The racing line of a class on the AI grid, with what every plan on it shares */
+  private driveLineFor(lineId: RacingLineId): DriveLine {
     this.aiTrack ??= aiTrackFor(this.track);
     const t = this.aiTrack;
-    const lineId = sim.racingLineId ?? 'f1';
-    let line = this.classLines.get(lineId);
+    let line = this.driveLines.get(lineId);
     if (!line) {
-      line = new Float64Array(t.n);
-      for (let i = 0; i < t.n; i++) line[i] = aiLineOffsetM(this.track.getSampleAtDistance(i * t.ds), lineId);
-      this.classLines.set(lineId, line);
+      const offsets = new Float64Array(t.n);
+      for (let i = 0; i < t.n; i++) offsets[i] = aiLineOffsetM(this.track.getSampleAtDistance(i * t.ds), lineId);
+      line = driveLineOf(t, offsets);
+      this.driveLines.set(lineId, line);
     }
-    sim.aiPlan = makeDrivePlan(t, line, carLimitsFor(sim.vehicleId, grip));
+    return line;
+  }
+
+  private installPlan(car: FieldCar, plan: AiDrivePlan, grip: number, key: string): void {
+    const sim = car.ai;
+    if (!sim) return;
+    // The plans of this field by car, line and grip, the most recent few: cars on the same grip share one
+    this.planMemo.delete(key);
+    this.planMemo.set(key, plan);
+    if (this.planMemo.size > PLAN_MEMO_MAX) this.planMemo.delete(this.planMemo.keys().next().value as string);
+    sim.aiPlan = plan;
     car.planGrip = grip;
-    // The VF26's driver takes a tuning target in place of its profile's speeds: with a plan, the plan's speeds rule
-    if (sim.vehicleId === 'vf26') car.hooks?.setTarget(null);
+    // The LC26's driver takes a tuning target in place of its profile's speeds: with a plan, the plan's speeds rule
+    if (sim.vehicleId === 'lc26') car.hooks?.setTarget(null);
+  }
+
+  private dropPlanJob(car: FieldCar): void {
+    if (!car.planJob) return;
+    car.planJob = null;
+    const i = this.planQueue.indexOf(car);
+    if (i >= 0) this.planQueue.splice(i, 1);
+  }
+
+  /** This update's slice of the plans being built, first asked first served */
+  private runPlanJobs(): void {
+    if (!this.planQueue.length || !this.aiTrack) return;
+    let budget = this.planSliceWork(this.aiTrack);
+    while (budget > 0 && this.planQueue.length) {
+      const car = this.planQueue[0];
+      const pending = car.planJob;
+      const sim = car.ai;
+      if (!pending || !sim) {
+        this.planQueue.shift();
+        continue;
+      }
+      const r = pending.job.next();
+      if (!r.done) {
+        budget -= r.value;
+        continue;
+      }
+      this.planQueue.shift();
+      car.planJob = null;
+      this.installPlan(car, r.value, pending.grip, `${sim.vehicleId ?? ''}|${sim.racingLineId ?? 'f1'}|${pending.grip}`);
+    }
   }
 
   public attachTrackRoot(root: THREE.Object3D): void {
@@ -921,6 +1131,7 @@ export class AiOpponentField {
       },
       id,
       code,
+      label: code,
       teamColorHex,
       isPlayer: ai === null,
       sim,
@@ -950,6 +1161,7 @@ export class AiOpponentField {
       craft: new RacecraftMemory(),
       gridSlot: 0,
       planGrip: 0,
+      planJob: null,
       local: null,
       localAtS: -Infinity,
       intentD: null,
@@ -978,9 +1190,33 @@ export class AiOpponentField {
     };
   }
 
+  /**
+   * The codes and colours this race shows: the player's driver (or 'YOU' in red), and each AI driver's own code unless
+   * it is the player's. Set at every start: a field built ahead or raced again may have another player's driver
+   */
+  private applyLabels(): void {
+    const player = this.cars.find((c) => c.isPlayer);
+    if (player) {
+      player.label = player.peer.driverCode = this.playerDriver?.code || PLAYER_CODE;
+      player.teamColorHex = player.peer.teamColorHex = this.playerDriver?.color || PLAYER_COLOR;
+    }
+    const ai = this.cars.filter((c) => !c.isPlayer);
+    const codes = aiRaceCodes(ai.map((c) => c.code), player?.label ?? '');
+    ai.forEach((c, i) => (c.label = c.peer.driverCode = codes[i]));
+  }
+
+  /** The code the race shows for a car's code */
+  private labelOf(code: string): string {
+    return this.cars.find((c) => c.code === code)?.label ?? code;
+  }
+
   /** The player is held on the grid until the lights go out */
   get playerFrozen(): boolean {
     return this.phase === 'lights';
+  }
+
+  get gridStanding(): boolean {
+    return this.phase === 'lights' && this.preStartS > 0;
   }
 
   /**
@@ -991,10 +1227,14 @@ export class AiOpponentField {
   public startRace(standing: boolean): void {
     const L = this.track.totalLengthM;
     this.raceCount++;
+    this.applyLabels();
     this.environment.reset();
     this.assignGrid();
+    // Plans the last race was still building are for its grips
+    for (const car of this.planQueue) car.planJob = null;
+    this.planQueue.length = 0;
     this.cars.forEach((car) => {
-      car.sim.resetToStartGrid(!standing, car.gridSlot, standing ? undefined : this.cars.length);
+      car.sim.resetToStartGrid(!standing, car.gridSlot, standing ? undefined : this.cars.length, true);
       if (car.ai) {
         car.ai.aiLineBiasM = 0;
         car.ai.aiSpeedCapMs = Infinity;
@@ -1047,6 +1287,7 @@ export class AiOpponentField {
     });
     this.player.aiAutopilot = false;
     this.playerPenaltyS = 0;
+    this.playerDq = false;
     this.raceTimeS = 0;
     this.gapTimer.reset();
     this.splitTimer.reset();
@@ -1056,11 +1297,17 @@ export class AiOpponentField {
     this.incidents.length = 0;
     this.raceControl.reset();
     this.yellowS.length = 0;
+    this.yellowDouble.length = 0;
+    this.yellowCar.length = 0;
+    this.doubleState.clear();
+    this.yellowPasses.reset();
     this.passOrder = [];
     this.passTimerS = 0;
     this.phase = standing ? 'lights' : 'racing';
     this.lightsOn = 0;
     this.lightsTimerS = 0;
+    // After qualifying the grid stands a few seconds before the lights, for its order to be read
+    this.preStartS = standing && this.qualiResults ? QUALIFYING_GRID_SHOW_S : 0;
     this.holdS = 0.2 + this.rng() * 2.8;
   }
 
@@ -1072,10 +1319,23 @@ export class AiOpponentField {
     const ai = this.cars.filter((c) => c.ai);
     const rng = seededRng(this.seed ^ 0x9e3779b9);
     const quali = new Map<FieldCar, number>();
-    for (const c of ai) quali.set(c, this.gridOrder === 'qualifying' ? c.basePace * (1 + gaussian(rng) * 0.012) : c.basePace);
+    const q = this.qualifying;
+    // After qualifying every AI car has its session's pace: its own, with a lap's worth of luck
+    for (const c of ai) quali.set(c, this.gridOrder === 'qualifying' || q ? c.basePace * (1 + gaussian(rng) * 0.012) : c.basePace);
     ai.sort((a, b) => (quali.get(b) as number) - (quali.get(a) as number));
-    if (this.gridOrder === 'reversed') ai.reverse();
+    if (this.gridOrder === 'reversed' && !q) ai.reverse();
     const player = this.cars.find((c) => c.isPlayer);
+    this.qualiResults = null;
+    if (q && q.refLapMs !== null) {
+      // The AI cars' laps from the reference at their session's pace, the player's own best clean lap among them
+      const refLapMs = q.refLapMs;
+      const entries = ai.map((c) => ({ id: c.id, car: c, lapMs: aiQualifyingMs(refLapMs, q.refBase, quali.get(c) as number) }));
+      const all: { id: string; car: FieldCar; lapMs: number | null }[] = player ? [...entries, { id: player.id, car: player, lapMs: q.playerMs }] : entries;
+      const order = qualifyingOrder(all);
+      order.forEach((e, i) => (e.car.gridSlot = i));
+      this.qualiResults = order.map((e) => ({ code: e.car.label, isPlayer: e.car.isPlayer, lapMs: e.lapMs }));
+      return;
+    }
     const n = ai.length + (player ? 1 : 0);
     let playerSlot = n - 1;
     if (this.playerGrid === 'front') playerSlot = 0;
@@ -1092,6 +1352,12 @@ export class AiOpponentField {
   /** Advances the start procedure and steps the AI cars. Call after the player's physics step. */
   public update(dt: number): void {
     if (!(dt > 0)) return;
+    this.runPlanJobs();
+    if (this.phase === 'lights' && this.preStartS > 0) {
+      this.preStartS = Math.max(0, this.preStartS - dt);
+      for (const car of this.cars) this.syncPeer(car);
+      return;
+    }
     if (this.phase === 'lights') {
       this.lightsTimerS += dt;
       this.lightsOn = Math.min(5, 1 + Math.floor(this.lightsTimerS / LIGHT_INTERVAL_S));
@@ -1106,7 +1372,7 @@ export class AiOpponentField {
     this.raceTimeS += dt;
     this.incidents.length = 0;
     if (this.ownsEnvironment) this.environment.update(dt, this.allSims);
-    this.updateYellows();
+    this.updateYellows(dt);
     this.planTraffic(dt);
     for (const car of this.cars) {
       car.contact = false;
@@ -1147,7 +1413,8 @@ export class AiOpponentField {
       this.trackDistance(car);
       this.syncPeer(car);
     }
-    this.raceControl.update(this.raceTimeS, this.incidents, this.playerUnderYellow());
+    this.raceControl.update(this.raceTimeS, this.incidents, this.playerYellowLevel());
+    this.judgeYellowPasses(dt);
     this.countPasses();
   }
 
@@ -1171,15 +1438,14 @@ export class AiOpponentField {
 
   /** The player is coming up on a yellow flag (someone else's incident ahead) */
   public playerUnderYellow(): boolean {
+    return this.playerYellowLevel() > 0;
+  }
+
+  /** The flag where the player is (someone else's incident ahead): green, yellow or double yellow */
+  public playerYellowLevel(): YellowLevel {
     const me = this.cars.find((c) => c.isPlayer);
-    if (!me || this.phase !== 'racing') return false;
-    const L = this.track.totalLengthM;
-    for (const c of this.cars) {
-      if (c === me || !this.isHazard(c)) continue;
-      const sample = this.track.getSampleAtDistance(c.sim.sMeters);
-      if (Math.abs(c.sim.lateralOffsetM) < sample.width / 2 + 4 && inYellowZone(me.sim.sMeters, c.sim.sMeters, L)) return true;
-    }
-    return false;
+    if (!me || this.phase !== 'racing') return 0;
+    return this.yellowLevelAt(me.sim.sMeters, me);
   }
 
   /** What the driver feels of the car, for its hands (`AiCarControl`) */
@@ -1262,7 +1528,7 @@ export class AiOpponentField {
     const off = t.offTrack;
     if (off && !car.wasOff) car.stats.offTracks++;
     car.wasOff = off;
-    // A wall hit: the rigid-body cars report their impacts; on the VF26 it is a deceleration no brake can give
+    // A wall hit: the rigid-body cars report their impacts; on the LC26 it is a deceleration no brake can give
     const wall = t.f12026?.wallImpact;
     if (t.f12026) {
       if (wall && wall.atMs !== car.lastWallMs && wall.speedMs > 2) car.stats.wallHits++;
@@ -1319,7 +1585,8 @@ export class AiOpponentField {
       // Racecraft here: the tuning (with its section overrides), the skill level and the driver's temperament.
       // At the shipped caution the passing rules are exactly the ones this field always raced with.
       const T = this.tuning;
-      const yellow = this.underYellow(me.sMeters);
+      const yellowFlag = this.yellowLevelAt(me.sMeters);
+      const yellow = yellowFlag > 0;
       const caution = THREE.MathUtils.clamp(
         T.at('overtakeCaution', me.sMeters) + this.mods.cautionAdd - 0.25 * this.aggressionOf(car) + this.raceControl.cautionOf(car.code, this.raceTimeS),
         0,
@@ -1340,6 +1607,9 @@ export class AiOpponentField {
       let hazard: FieldCar | null = null;
       let hazardGap = Infinity;
       let lapper: FieldCar | null = null;
+      // The car beside us the room below is made for, and where that room puts us
+      let roomFor: FieldCar | null = null;
+      let roomLat = 0;
       const hazardLook = 40 + me.vxMs * 3;
       for (const other of this.cars) {
         if (other === car || other.removed) continue;
@@ -1356,15 +1626,19 @@ export class AiOpponentField {
           continue;
         }
         // Alongside: keep a car's width of room
-        if (Math.abs(ds) < CAR_LEN_M + 1.5 && Math.abs(dLat) < this.rc.alongsideSpacingM) {
+        // (the player keeps no racecraft rules: a little more room beside it)
+        const extraLat = other.isPlayer ? 0.5 * this.rc.playerMarginM : 0;
+        if (Math.abs(ds) < CAR_LEN_M + 1.5 && Math.abs(dLat) < this.rc.alongsideSpacingM + extraLat) {
           const away = me.lateralOffsetM >= other.sim.lateralOffsetM ? 1 : -1;
-          targetLat = other.sim.lateralOffsetM + away * this.rc.alongsideSpacingM;
+          targetLat = other.sim.lateralOffsetM + away * (this.rc.alongsideSpacingM + extraLat);
           // Squeezed against the edge with no room left on that side and not clearly ahead: back out of it
           if (Math.abs(targetLat) > half && ds > -0.5 * CAR_LEN_M) squeezedBy = other;
+          roomFor = other;
+          roomLat = targetLat;
         }
         // Side by side with its nose behind the other car's: the one that yields if a corner comes and it doesn't own it
         if (ds > 0.5 && along && Math.abs(dLat) < this.rc.alongsideSpacingM + 0.6) alongsideAhead = other;
-        if (ds > 0 && ds < 90 && Math.abs(dLat) < CAR_WID_M + 0.4 && ds < aheadGap) {
+        if (ds > 0 && ds < 90 && Math.abs(dLat) < CAR_WID_M + 0.4 + extraLat && ds < aheadGap) {
           ahead = other;
           aheadGap = ds;
         }
@@ -1382,8 +1656,8 @@ export class AiOpponentField {
         if (ds < 0 && ds > -90 && other.distM > car.distM + 0.5 * L && other.finishTimeS === null) lapper = other;
         // A car in our path: never closer than we could still stop behind it if it braked now (the pack into a
         // braking zone, each car on its own braking point, otherwise ran into each other's gearboxes)
-        if (ds > 0 && ds < 80 && Math.abs(dLat) < CAR_WID_M + 0.35) {
-          speedCap = Math.min(speedCap, followCapMs(other.sim, ds - CAR_LEN_M, this.rc));
+        if (ds > 0 && ds < 80 && Math.abs(dLat) < CAR_WID_M + 0.35 + extraLat) {
+          speedCap = Math.min(speedCap, followCapMs(other.sim, ds - CAR_LEN_M - (other.isPlayer ? this.rc.playerMarginM : 0), this.rc));
         }
       }
 
@@ -1608,7 +1882,34 @@ export class AiOpponentField {
       }
       // (backing off beside a car, the corner's room is no limit: held to it, the car was taken back across into the other)
       if (holdingOut) maxBias = Math.max(maxBias, sample.width / 2);
-      const biasTarget = pos === null ? 0 : THREE.MathUtils.clamp(pos - line, -maxBias, maxBias);
+      // How far off its line the corner lets this car go before the room for a car alongside (the off-line speed below)
+      const cornerReach = maxBias;
+      // Side by side: the room for the other car may take us past the corner's reach (and costs speed there, below).
+      // Held to the reach, a car alongside that stays where it is was turned in on: another AI car moves over too, so
+      // between them they made the room, but a player doesn't
+      const roomRules = roomFor !== null && (roomFor.isPlayer || !this.rc.roomPlayerOnly);
+      if (roomFor && roomRules && targetLat === roomLat && this.rc.alongsideReachM > 0) {
+        maxBias = Math.max(maxBias, Math.min(Math.abs((pos ?? line) - line), maxBias + this.rc.alongsideReachM));
+      }
+      let biasTarget = pos === null ? 0 : THREE.MathUtils.clamp(pos - line, -maxBias, maxBias);
+      // ... and with less than a car's width of room left on our side, not clearly ahead: lift and drop in behind
+      if (roomFor && roomRules && this.rc.squeezeYield > 0) {
+        const dsR = wrapHalf(roomFor.sim.sMeters - me.sMeters, L);
+        const sep = Math.abs(line + biasTarget - roomFor.sim.lateralOffsetM);
+        // (another AI car makes room on its side too: only the one behind lifts, or both did and stayed side by side)
+        if (sep < CAR_WID_M + 0.4 && dsR > (roomFor.isPlayer ? -0.5 * CAR_LEN_M : 0)) {
+          const overlapM = Math.max(0, CAR_LEN_M + 0.5 - dsR);
+          speedCap = Math.min(speedCap, roomFor.sim.vxMs - THREE.MathUtils.clamp(1.5 * overlapM, 1.5, 5));
+        }
+      }
+      // A car whose path ours will run into, or one beside it that ours will squeeze: checked ahead of time
+      // (a car spun or rejoining keeps to its rejoin: steered round the others as well, it was run across the grass)
+      if (this.rc.predictS > 0 && car.control?.racing !== false) {
+        const check = this.pathCheck(car, biasTarget, biasRate, half, line);
+        speedCap = Math.min(speedCap, check.capMs);
+        if (check.biasM !== null) biasTarget = check.biasM;
+        if (check.rateMs !== null) biasRate = Math.max(biasRate, check.rateMs);
+      }
       // A pass the corner ahead has no room for: held to its line there, the passing car is back in the other car's path,
       // so it follows it in. With a run from the tow and a later braking point, it went on and ran into its rear corner
       let passBlocked = false;
@@ -1645,7 +1946,7 @@ export class AiOpponentField {
       // Rain: the pace the tyres' grip on this much water allows (weather.ts / track-environment.ts)
       const weatherPace = this.environment.weatherPaceScale(me);
       // Yellow flag: lift through the zone
-      const yellowLift = yellow ? 0.93 : 1;
+      const yellowLift = yellowFlag === 2 ? DOUBLE_YELLOW_PACE : yellow ? YELLOW_PACE : 1;
       // Making a pass stick: a little more into the corner (a later brake, more speed) once alongside
       const passing = craft.passTargetId !== null && ahead !== null && aheadGap < CAR_LEN_M * 1.2 && !passBlocked;
       const attackPush = passing ? 1 + this.rc.attackPush * (1 + Math.max(0, this.aggressionOf(car))) : 1;
@@ -1653,7 +1954,9 @@ export class AiOpponentField {
       this.refreshPlan(car);
       const planned = me.aiPlan ? 1 : car.pace * weatherPace;
       // (a planned car's speed off the line is the planner's, from its path: no blanket slow-down per metre)
-      const offLine = me.aiPlan ? 1 : 1 - 0.012 * Math.abs(car.biasM);
+      // Past the corner's reach for a car alongside: that line is tighter than the plan's, so a little slower
+      const pastReach = this.rc.alongsideReachM > 0 ? Math.max(0, Math.abs(car.biasM) - cornerReach) : 0;
+      const offLine = (me.aiPlan ? 1 : 1 - 0.012 * Math.abs(car.biasM)) * (1 - 0.015 * pastReach);
       me.aiPaceScale = Math.min(me.aiPlan ? 1.03 : 0.999, planned * attackPush) * offLine * dirtyAirPenalty * yellowLift * blueLift;
       me.aiSpeedCapMs = speedCap;
       me.aiTopSpeedOpen = yellowLift === 1 && blueLift === 1;
@@ -1711,6 +2014,144 @@ export class AiOpponentField {
    * car keeps to the racecraft rules (a car's width of room, yielding a corner it doesn't own), which hold the space
    * the other driver is owed; the planner chooses how to approach and pass the cars ahead
    */
+  private readonly pathLine = new Float64Array(64);
+  private readonly pathS = new Float64Array(64);
+
+  /**
+   * The path check (`RacecraftParams.predictS`): where this car will be over the next moments (its line, the bias it is
+   * heading for, its speed and acceleration now) against where each car near it will be. Another AI car runs down its
+   * own line from where it is; the player's car holds its offset and carries on its sideways move for half a second (a
+   * human keeps no line of ours). The first moment two footprints would overlap decides:
+   *  - a car ahead whose path ours runs into (our line closing onto it, or it braking early): followed, as a car in our
+   *    path is (it was only followed once already in line, too late through a turn-in)
+   *  - a car beside us that our path squeezes: given room, or, with no road left for it and not clearly ahead, a lift to
+   *    drop in behind
+   *  - a car behind whose path our move across would cut: the move waits
+   * Returns a speed cap (Infinity: none) and a bias to aim for instead (null: keep the one chosen)
+   */
+  private pathCheck(
+    car: FieldCar,
+    biasTarget: number,
+    biasRate: number,
+    half: number,
+    line: number
+  ): { capMs: number; biasM: number | null; rateMs: number | null } {
+    const me = car.ai as SimulatorCar;
+    const L = this.track.totalLengthM;
+    const steps = Math.min(this.pathLine.length, Math.max(1, Math.round(this.rc.predictS / PATH_STEP_S)));
+    const meS = me.sMeters;
+    const meN = me.lateralOffsetM;
+    const meV = Math.max(0, me.vxMs);
+    const meA = (me.telemetry.longitudinalG ?? 0) * 9.81;
+    let capMs = Infinity;
+    let biasM: number | null = null;
+    let rateMs: number | null = null;
+    let near = false;
+    for (const o of this.cars) {
+      if (o === car || o.removed) continue;
+      const ds = wrapHalf(o.sim.sMeters - meS, L);
+      if (ds > -30 && ds < 60 + meV * this.rc.predictS) near = true;
+    }
+    if (!near) return { capMs, biasM, rateMs };
+    // Our own path: distance covered and the line's offset there, at each step
+    for (let k = 1; k <= steps; k++) {
+      const t = k * PATH_STEP_S;
+      const s = travelM(meV, meA, t);
+      this.pathS[k - 1] = s;
+      this.pathLine[k - 1] = aiLineOffsetM(this.track.getSampleAtDistance((meS + s) % L), me.racingLineId) - line;
+    }
+    // Where we will be across the road: on our way to the line and bias, from where the car is heading now (the tracker
+    // takes a moment to bring it back: on a corner exit a car moving across at 4 m/s was a metre past its line, into the
+    // car beside it, before its own path said so)
+    const meLat = this.lateralSpeedMs(me);
+    const myN = (k: number, b0: number, b1: number) => {
+      const t = k * PATH_STEP_S;
+      const planned = meN + this.pathLine[k - 1] + THREE.MathUtils.clamp(b1 - b0, -biasRate * t, biasRate * t);
+      return planned + (meN + meLat * t - planned) * Math.exp(-t / PATH_TRACK_LAG_S);
+    };
+    for (const o of this.cars) {
+      if (o === car || o.removed || this.isHazard(o)) continue;
+      const os = o.sim;
+      const dsNow = wrapHalf(os.sMeters - meS, L);
+      if (dsNow < -30 || dsNow > 60 + meV * this.rc.predictS) continue;
+      const human = o.isPlayer;
+      const lenGap = CAR_LEN_M + 0.6 + (human ? this.rc.playerMarginM : 0);
+      const widGap = CAR_WID_M + 0.2 + (human ? 0.5 * this.rc.playerMarginM : 0);
+      // Another AI car already beside us keeps the racecraft rules too (room on its side, the corner yielded): those
+      // rules deal with it. The player's car is checked all the way: it keeps none of them
+      if (!human && Math.abs(dsNow) < lenGap && Math.abs(os.lateralOffsetM - meN) < widGap) continue;
+      const oV = Math.max(0, os.vxMs);
+      const oA = (os.telemetry.longitudinalG ?? 0) * 9.81;
+      const oLat = human ? this.lateralSpeedMs(os) : 0;
+      const oLine0 = human ? 0 : aiLineOffsetM(this.track.getSampleAtDistance(os.sMeters), os.racingLineId);
+      // (the guess grows less sure further ahead for the player's car only: another AI car runs down its own line, and
+      // with the margin grown for it too, a car pulling out to pass at the passing spacing saw a conflict and gave up)
+      const spreadS = human ? PATH_SPREAD_MS : 0;
+      const spreadN = human ? PATH_SPREAD_LAT_MS : 0;
+      // The first step the footprints overlap (null: none), and, side by side, how far short of a car's width of room on
+      // our side of it the path comes at its worst (m)
+      const away = Math.sign(meN - os.lateralOffsetM) || 1;
+      const conflictAt = (b1: number): { k: number; need: number } | null => {
+        let first = 0;
+        let need = 0;
+        for (let k = 1; k <= steps; k++) {
+          const t = k * PATH_STEP_S;
+          const dsT = dsNow + travelM(oV, oA, t) - this.pathS[k - 1];
+          // (where the player's car will be is less sure further ahead: a metre along the road per second. Held to the
+          // footprints alone, a player a few metres behind flickered in and out of the check and the room closed again)
+          if (Math.abs(dsT) >= lenGap + spreadS * t) continue;
+          const oN = human
+            ? os.lateralOffsetM + oLat * Math.min(t, 0.5)
+            : os.lateralOffsetM + aiLineOffsetM(this.track.getSampleAtDistance((os.sMeters + travelM(oV, oA, t)) % L), os.racingLineId) - oLine0;
+          // (crossing to its other side is running through it: measured on our side of it)
+          const short = widGap + spreadN * t - away * (myN(k, car.biasM, b1) - oN);
+          if (short > 0) {
+            if (!first) first = k;
+            need = Math.max(need, short);
+          }
+        }
+        return first ? { k: first, need } : null;
+      };
+      const hit = conflictAt(biasM ?? biasTarget);
+      if (!hit) continue;
+      if (dsNow >= lenGap) {
+        // Ahead: slot in behind it
+        capMs = Math.min(capMs, followCapMs(os, dsNow - CAR_LEN_M - (human ? this.rc.playerMarginM : 0), this.rc));
+      } else if (dsNow > -lenGap) {
+        if (!human && this.rc.pathSidePlayerOnly) continue;
+        // Beside: room on our side of it, made quickly, if the road has it; and, not clearly ahead, a lift to drop in
+        // behind when it doesn't or the move can't be made in time
+        let want: number = (biasM ?? biasTarget) + away * (hit.need + 0.1);
+        // ... and, close beside the player's car, no move toward it at all: where we are now is the least we keep (the
+        // tracker runs a little past where it aims, and a car moving across onto its exit line touched the player's)
+        const hold = meN - line;
+        if (human && away * (meN - os.lateralOffsetM) < widGap + 1.5 && away * (hold - want) > 0) want = hold;
+        const inTime = Math.abs(want - car.biasM) <= AVOID_RATE_MS * hit.k * PATH_STEP_S + 0.3;
+        const onRoad = Math.abs(line + want) <= half;
+        if (onRoad) {
+          biasM = want;
+          rateMs = AVOID_RATE_MS;
+        }
+        if ((!onRoad || !inTime) && dsNow > (human ? -0.5 * CAR_LEN_M : 0)) {
+          capMs = Math.min(capMs, oV - THREE.MathUtils.clamp(1.5 * Math.max(0, CAR_LEN_M + 0.5 - dsNow), 1.5, 5));
+        }
+      } else if (!conflictAt(car.biasM)) {
+        // Behind: our move across would cut its nose; hold where we are until it is clear
+        biasM = car.biasM;
+      }
+    }
+    return { capMs, biasM, rateMs };
+  }
+
+  /** A car's speed across the road (m/s, + right) */
+  private lateralSpeedMs(sim: SimulatorCar): number {
+    const v = sim.worldVelocity;
+    if (!v) return 0;
+    const b = this.track.getSampleAtDistance(sim.sMeters).binormal;
+    const bl = Math.hypot(b.x, b.z) || 1;
+    return (v.x * b.x + v.z * b.z) / bl;
+  }
+
   private trafficNear(car: FieldCar): boolean {
     const L = this.track.totalLengthM;
     const me = car.sim;
@@ -1829,24 +2270,128 @@ export class AiOpponentField {
     return Math.atan2(Math.sin(err), Math.cos(err));
   }
 
-  /** Lap distances of the hazards on the road (yellow flags), refreshed each frame */
+  /** The hazards on the road (yellow flags), refreshed each frame: lap distance, double yellow or not, and the car */
   private readonly yellowS: number[] = [];
+  private readonly yellowDouble: boolean[] = [];
+  private readonly yellowCar: FieldCar[] = [];
+  /** Each hazard's double-yellow cause: how long it has lasted or been gone, and whether its double yellow is up */
+  private readonly doubleState = new Map<FieldCar, { onS: number; offS: number; up: boolean }>();
 
-  private updateYellows(): void {
+  private updateYellows(dt: number): void {
     this.yellowS.length = 0;
+    this.yellowDouble.length = 0;
+    this.yellowCar.length = 0;
+    const L = this.track.totalLengthM;
     for (const c of this.cars) {
       if (!this.isHazard(c)) continue;
       const sample = this.track.getSampleAtDistance(c.sim.sMeters);
       // On or by the road: a car far out in a run-off area needs no yellow
-      if (Math.abs(c.sim.lateralOffsetM) < sample.width / 2 + 4) this.yellowS.push(c.sim.sMeters);
+      if (Math.abs(c.sim.lateralOffsetM) < sample.width / 2 + 4) {
+        this.yellowS.push(c.sim.sMeters);
+        this.yellowCar.push(c);
+      }
     }
+    for (const [car] of this.doubleState) if (!this.yellowCar.includes(car)) this.doubleState.delete(car);
+    for (let i = 0; i < this.yellowCar.length; i++) {
+      const c = this.yellowCar[i];
+      const sample = this.track.getSampleAtDistance(c.sim.sMeters);
+      const stoppedOnRoad = Math.abs(c.sim.vxMs) < DOUBLE_STOPPED_MS && Math.abs(c.sim.lateralOffsetM) < sample.width / 2;
+      const wrongWay = Math.abs(this.headingErr(c.sim)) > Math.PI / 2;
+      const cluster = this.yellowS.some((s, j) => j !== i && Math.abs(wrapHalf(s - this.yellowS[i], L)) < DOUBLE_CLUSTER_M);
+      const st = this.doubleState.get(c) ?? { onS: 0, offS: 0, up: false };
+      if (stoppedOnRoad || wrongWay || cluster) {
+        st.onS += dt;
+        st.offS = 0;
+        if (st.onS >= DOUBLE_ON_S) st.up = true;
+      } else {
+        st.offS += dt;
+        st.onS = 0;
+        if (st.offS >= DOUBLE_OFF_S) st.up = false;
+      }
+      this.doubleState.set(c, st);
+      this.yellowDouble.push(st.up);
+    }
+  }
+
+  /** The flag at lap distance `s`: green, yellow or double yellow; `except` leaves a car's own incident out */
+  public yellowLevelAt(s: number, except?: FieldCar): YellowLevel {
+    const L = this.track.totalLengthM;
+    let level: YellowLevel = 0;
+    for (let i = 0; i < this.yellowS.length; i++) {
+      if (this.yellowCar[i] === except || !inYellowZone(s, this.yellowS[i], L)) continue;
+      if (this.yellowDouble[i]) return 2;
+      level = 1;
+    }
+    return level;
   }
 
   /** Inside a yellow flag zone at lap distance `s` */
   public underYellow(s: number): boolean {
+    return this.yellowLevelAt(s) > 0;
+  }
+
+  /** Passes the player makes under yellow, and the places owed back */
+  private readonly yellowPasses = new YellowPassJudge();
+
+  private judgeYellowPasses(dt: number): void {
+    const me = this.cars.find((c) => c.isPlayer);
+    if (!me) return;
+    const active = this.phase === 'racing' && !me.retired && me.finishTimeS === null && !this.player.aiAutopilot;
+    const cars: PassCar[] = [];
+    for (const c of this.cars) {
+      if (c === me) continue;
+      const sample = this.track.getSampleAtDistance(c.sim.sMeters);
+      const gone = c.removed || c.retired || c.finishTimeS !== null;
+      const off = Math.abs(c.sim.lateralOffsetM) > sample.width / 2 + 1;
+      const wrongWay = Math.abs(this.headingErr(c.sim)) > Math.PI / 2;
+      cars.push({ code: c.code, distM: c.distM, exempt: gone || off || wrongWay || this.isHazard(c), gone });
+    }
+    const t = this.raceTimeS;
+    for (const e of this.yellowPasses.update(dt, me.distM, cars, this.playerYellowLevel(), active)) {
+      const flag = e.double ? 'double yellow' : 'yellow';
+      if (e.kind === 'order') {
+        this.raceControl.announce(t, 'investigation', `Overtake under ${flag}`, `Give the place back to ${this.labelOf(e.code)}`);
+      } else if (e.kind === 'returned') {
+        this.raceControl.announce(t, 'nfa', 'Position handed back', 'No further action');
+      } else if (e.kind === 'penalty') {
+        this.raceControl.penalise(t, me.code, e.seconds ?? 5, 'yellow_overtake', `Overtaking under ${flag} · ${this.labelOf(e.code)}`, true);
+      }
+    }
+  }
+
+  /** The place the player owes back after passing under yellow, under the code the race shows for that car */
+  private giveBackStatus(): RaceStatus['giveBack'] {
+    const owed = this.yellowPasses.owed;
+    return owed ? { ...owed, code: this.labelOf(owed.code) } : undefined;
+  }
+
+  /**
+   * The car lapping the player, close behind it on the road (the blue flag), under the code the race shows; null when
+   * there is none
+   */
+  private playerBlueFlag(): string | null {
+    const me = this.cars.find((c) => c.isPlayer);
+    if (!me || this.phase !== 'racing' || me.retired || me.finishTimeS !== null) return null;
     const L = this.track.totalLengthM;
-    for (const ys of this.yellowS) if (inYellowZone(s, ys, L)) return true;
-    return false;
+    for (const c of this.cars) {
+      if (c === me || c.removed || c.retired || c.finishTimeS !== null || c.distM - me.distM < 0.5 * L) continue;
+      const behindM = (((me.sim.sMeters - c.sim.sMeters) % L) + L) % L;
+      if (behindM > 0 && behindM <= BLUE_FLAG_M && behindM / Math.max(5, c.sim.vxMs) <= BLUE_FLAG_S) return c.label;
+    }
+    return null;
+  }
+
+  /**
+   * The race's rules close the overtaking aids inside a yellow zone (race-rules.ts `lockAidsInYellow`); set before the
+   * start, read every frame
+   */
+  public lockAidsInYellow = true;
+
+  /** A car's overtaking aids are closed: the rules say so and it is inside someone else's yellow zone */
+  public aidsLockedFor(sim: SimulatorCar): boolean {
+    if (!this.lockAidsInYellow || this.phase !== 'racing' || this.yellowS.length === 0) return false;
+    const car = this.cars.find((c) => c.sim === sim);
+    return this.yellowLevelAt(sim.sMeters, car) > 0;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -1941,14 +2486,7 @@ export class AiOpponentField {
   private reportContact(carA: FieldCar, carB: FieldCar, dsAB: number, impactMs: number): void {
     // `a` is the car further back
     const [back, front, ds] = dsAB >= 0 ? [carA, carB, dsAB] : [carB, carA, -dsAB];
-    const latSpeed = (sim: SimulatorCar) => {
-      const sample = this.track.getSampleAtDistance(sim.sMeters);
-      const v = sim.worldVelocity;
-      const b = sample.binormal;
-      const bl = Math.hypot(b.x, b.z) || 1;
-      if (v) return (v.x * b.x + v.z * b.z) / bl;
-      return 0;
-    };
+    const latSpeed = (sim: SimulatorCar) => this.lateralSpeedMs(sim);
     this.incidents.push({
       kind: 'contact',
       a: back.code,
@@ -2045,8 +2583,8 @@ export class AiOpponentField {
   private progressOf(c: FieldCar): RacerProgress {
     return {
       id: c.id,
-      code: c.code,
-      name: c.code,
+      code: c.label,
+      name: c.label,
       color: c.teamColorHex,
       isPlayer: c.isPlayer,
       distM: c.distM,
@@ -2059,6 +2597,7 @@ export class AiOpponentField {
       penaltyS: (c.isPlayer ? this.playerPenaltyS : 0) + this.raceControl.penaltyOf(c.code),
       compound: c.sim.tireCompound,
       dnf: c.retired || undefined,
+      dq: (c.isPlayer && this.playerDq) || undefined,
     };
   }
 
@@ -2197,11 +2736,17 @@ export class AiOpponentField {
       get racing() {
         return field.raceRulesActiveFor(sim);
       },
+      get aidsLocked() {
+        return field.aidsLockedFor(sim);
+      },
       earnedAtDetection: () => field.detectionEarnedFor(sim),
     };
   }
 
-  /** One car's state by its code ('YOU' for the player): the driver's mode, damage, retirement, incidents */
+  /**
+   * One car's state by its code as built ('YOU' for the player, whatever the race shows): the driver's mode, damage,
+   * retirement, incidents
+   */
   public carInfo(code: string): {
     mode: AiCarControl['mode'];
     damage: CarDamage;
@@ -2241,6 +2786,15 @@ export class AiOpponentField {
     return this.cars.find((c) => c.isPlayer)?.damage ?? null;
   }
 
+  /**
+   * The AI cars in grid order: their render state, their physics, and whether the marshals have taken them away
+   * (the simulation worker sends every one, `runtime/field-frame.ts`)
+   */
+  public aiSlots(): readonly { readonly peer: InterpolatedPeerState; readonly sim: SimulatorCar; readonly removed: boolean }[] {
+    return (this.aiCarsInGridOrder ??= this.cars.filter((c) => !c.isPlayer));
+  }
+  private aiCarsInGridOrder: FieldCar[] | null = null;
+
   /** Render / HUD states of the AI cars (the player is drawn by the caller) */
   public peers(): InterpolatedPeerState[] {
     return this.cars.filter((c) => !c.isPlayer && !c.removed).map((c) => c.peer);
@@ -2248,6 +2802,36 @@ export class AiOpponentField {
 
   /** Time penalties the player serves at the flag (track limits), in seconds */
   public playerPenaltyS = 0;
+  public manualStart = false;
+  /** The grid from qualifying (qualifying.ts); undefined: none. Read at `startRace` */
+  public qualifying: QualifyingGridInput | undefined = undefined;
+  /** The qualifying classification the race lined up in; null without qualifying */
+  private qualiResults: QualifyingResult[] | null = null;
+  /** The grid's pause before the first red light after qualifying (s left) */
+  private preStartS = 0;
+
+  private playerDq = false;
+
+  public penalisePlayer(seconds: number, reason: PenaltyReason, detail: string): void {
+    const me = this.cars.find((c) => c.isPlayer);
+    if (me) this.raceControl.penalise(this.raceTimeS, me.code, seconds, reason, detail, true);
+  }
+
+  public get playerDisqualified(): boolean {
+    return this.playerDq;
+  }
+
+  /** Race control's black flag: the player is out, classified last (the cool-down takes the car, as on a retirement) */
+  public set playerDisqualified(dq: boolean) {
+    if (!dq || this.playerDq) return;
+    this.playerDq = true;
+    const car = this.cars.find((c) => c.isPlayer);
+    if (!car || car.retired || car.finishTimeS !== null) return;
+    car.retired = true;
+    car.retiredAtS = this.raceTimeS;
+    this.phase = 'finished';
+    this.raceControl.announce(this.raceTimeS, 'penalty', `${car.label} disqualified`, 'Track limits');
+  }
 
   public status(): RaceStatus {
     const L = this.track.totalLengthM;
@@ -2270,6 +2854,8 @@ export class AiOpponentField {
     return {
       phase: this.phase,
       lightsOn: this.lightsOn,
+      countdownS: this.phase === 'lights' && this.preStartS > 0 ? this.preStartS : undefined,
+      qualifying: this.qualiResults ?? undefined,
       position: playerIdx + 1,
       fieldSize: order.length,
       lap: Math.max(1, Math.min(this.raceLaps, Math.floor(player.distM / L) + 1)),
@@ -2286,7 +2872,7 @@ export class AiOpponentField {
         const intervalS = i > 0 ? gapFloor - prevGap : undefined;
         prevGap = gapFloor;
         return {
-          driverCode: c.code,
+          driverCode: c.label,
           teamColorHex: c.teamColorHex,
           isPlayer: c.isPlayer,
           lap: Math.max(1, Math.min(this.raceLaps, Math.floor(c.distM / L) + 1)),
@@ -2294,6 +2880,7 @@ export class AiOpponentField {
           intervalS,
           finished: c.finishTimeS !== null,
           retired: c.retired || undefined,
+          dq: (c.isPlayer && this.playerDq) || undefined,
           damage: c.damage.pristine ? undefined : Math.round(c.damage.overall * 100) / 100,
           bestLapMs: c.bestLapMs,
           lastLapMs: c.lastLapMs,
@@ -2311,6 +2898,9 @@ export class AiOpponentField {
       splits: this.phase === 'racing' ? this.playerSplits.compute(this.splitTimer, this.raceTimeS, orderedProgress) : undefined,
       raceControl: this.raceControlFeed(),
       yellow: this.playerUnderYellow() || undefined,
+      doubleYellow: this.playerYellowLevel() === 2 || undefined,
+      blueFlag: this.playerBlueFlag() ?? undefined,
+      giveBack: this.giveBackStatus(),
       damage: this.playerDamageStatus(),
     };
   }

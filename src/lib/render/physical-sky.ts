@@ -263,7 +263,11 @@ export class PhysicalSky {
         this.applyLook();
         onReady();
       })
-      .catch((error: unknown) => console.error("[physical-sky] atmosphere precompute failed; keeping the classic sky", error));
+      .catch((error: unknown) => {
+        if (this.disposed) return;
+        // three's readback rejects with nothing when its fence fails, which is what a lost GPU context does
+        console.error("[physical-sky] atmosphere precompute failed; keeping the classic sky", error ?? "(no reason: the GPU context was lost)");
+      });
 
     void fetch(withBasePath(BLUE_NOISE_URL))
       .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`${r.status} ${BLUE_NOISE_URL}`))))

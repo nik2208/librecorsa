@@ -6,7 +6,8 @@
  * by speed, braking g by speed (95th percentile above 60 % pedal), full-throttle g by speed, engine rpm per m/s of rear
  * wheel speed by gear, the slip the ABS and TC allow, and the steering needed per curvature and per g.
  * Sea-level air (ρ 1.2) like Valencia, flat ground, no driver aids (the slip targets stand in for them), and the car
- * in the state those runs were driven in: tyres in their working window, part of a tank of fuel aboard.
+ * in the state those runs were driven in: tyres in their working window, part of a tank of fuel aboard. The car runs
+ * the soft (the car's first slot), the tyre the sprints run on.
  *
  * Shared by `compare-gt3-telemetry.ts` (prints the table) and `verify-gt3-telemetry.ts` (asserts it).
  */
@@ -39,13 +40,15 @@ export interface Gt3Measurement {
   understeerDegPerG: number;
   brakingG: [number, number, number][];
   throttleG: [number, number, number][];
+  /** At each full-throttle row: the car's aero drag over its weight there (g), its speed (m/s) and its mass (kg) */
+  throttleDrag: { dragG: number; speedMs: number; massKg: number }[];
   /** [gear, ours, reference] */
   rpmPerMs: [number, number, number][];
   limiterRpm: number;
 }
 
 const DT = 1 / 120;
-const RHO = 1.2;
+export const RHO = 1.2;
 
 function run(car: VehiclePhysics, seconds: number, drive: (c: VehiclePhysics, t: number) => VehicleInputs, each?: (c: VehiclePhysics, t: number) => boolean): void {
   for (let t = 0; t < seconds; t += DT) {
@@ -164,19 +167,28 @@ export function measureGt3(cfg = AMG_GT3_CONFIG, conditions: Gt3Conditions = GT3
 
   // Full-throttle g at speed: rear slip held at the reference TC level
   const throttleG: [number, number, number][] = [];
+  const throttleDrag: { dragG: number; speedMs: number; massKg: number }[] = [];
   {
     const car = makeCar(40 / 3.6);
     let pedal = 0.6;
     const seen = new Map<number, number>();
+    const drag = new Map<number, { dragG: number; speedMs: number; massKg: number }>();
     run(car, 60, (c) => {
       const sr = Math.max(c.wheels[2].slipRatio, c.wheels[3].slipRatio);
       pedal = THREE.MathUtils.clamp(pedal + (GT3_REF.tcRearSlip - sr) * 0.25, 0.3, 1);
       return { throttle: pedal, brake: 0, steer: 0 };
     }, (c) => {
-      for (const [kmh] of GT3_REF.throttleG) if (!seen.has(kmh) && c.telemetry.speedKmh >= kmh) seen.set(kmh, c.telemetry.lonG);
+      for (const [kmh] of GT3_REF.throttleG) {
+        if (seen.has(kmh) || c.telemetry.speedKmh < kmh) continue;
+        seen.set(kmh, c.telemetry.lonG);
+        drag.set(kmh, { dragG: c.telemetry.dragN / (c.totalMassKg * 9.81), speedMs: c.speedMs, massKg: c.totalMassKg });
+      }
       return seen.size === GT3_REF.throttleG.length;
     });
-    for (const [kmh, ref] of GT3_REF.throttleG) throttleG.push([kmh, seen.get(kmh) ?? NaN, ref]);
+    for (const [kmh, ref] of GT3_REF.throttleG) {
+      throttleG.push([kmh, seen.get(kmh) ?? NaN, ref]);
+      throttleDrag.push(drag.get(kmh) ?? { dragG: NaN, speedMs: NaN, massKg: NaN });
+    }
   }
 
   // Gearing and engine
@@ -191,6 +203,7 @@ export function measureGt3(cfg = AMG_GT3_CONFIG, conditions: Gt3Conditions = GT3
     understeerDegPerG: my - m * mx,
     brakingG,
     throttleG,
+    throttleDrag,
     rpmPerMs,
     limiterRpm: gb.gears.redline_rpm,
   };

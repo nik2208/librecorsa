@@ -19,6 +19,7 @@ on:
       - '**/*.unity'
       - '**/*.prefab'
       - '**/*.asset'
+      - 'src/lib/home/whats-new.json'
   workflow_dispatch:
     inputs:
       base:

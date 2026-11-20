@@ -1,6 +1,6 @@
 /**
- * The anonymous usage counter: when a stretch of driving ends, one line (circuit, car, mode, minutes, and what it was
- * driven with: input, kind of screen, weather, assists, build) goes to the online side (POST <api>/usage, cloudflare/api/usage.ts), which only adds it to the day's totals. No player id, no
+ * The anonymous usage counter: when a stretch of driving ends, one line (circuit, car, mode, minutes, laps completed,
+ * and what it was driven with: input, kind of screen, weather, assists, build) goes to the online side (POST <api>/usage, cloudflare/api/usage.ts), which only adds it to the day's totals. No player id, no
  * cookie, nothing kept in the browser that ties one stretch to another.
  */
 import type { VehicleModelId } from "../../types/f1";
@@ -15,15 +15,19 @@ export interface UsageStretch {
   vehicle: VehicleModelId;
   mode: UsageMode;
 }
-/** The line sent when a stretch ends; the extras (input, device, weather, assists, build) are as they were at its end */
-export type UsageLine = UsageStretch & { minutes: number } & UsageExtras;
+/**
+ * The line sent when a stretch ends: its minutes and the laps it completed; the extras (input, device, weather,
+ * assists, build) are as they were at its end
+ */
+export type UsageLine = UsageStretch & { minutes: number; laps: number } & UsageExtras;
 
 /**
  * Times stretches of driving. `set` says what is driven now (null: nothing) and whether the clock runs (not while
- * paused); a change of circuit, car, mode or `part` ends the stretch, and one of half a minute or more is reported.
+ * paused); a change of circuit, car, mode or `part` ends the stretch, and one of half a minute or more is reported
+ * with the laps `lap` counted during it.
  */
 export class UsageClock {
-  private current: { key: string; stretch: UsageStretch; ms: number; since: number | null } | null = null;
+  private current: { key: string; stretch: UsageStretch; ms: number; since: number | null; laps: number } | null = null;
 
   constructor(
     private readonly report: (line: UsageLine) => void,
@@ -35,12 +39,17 @@ export class UsageClock {
     if (this.current && this.current.key !== key) this.end();
     if (!stretch || key === null) return;
     const t = this.now();
-    this.current ??= { key, stretch, ms: 0, since: null };
+    this.current ??= { key, stretch, ms: 0, since: null, laps: 0 };
     if (running && this.current.since === null) this.current.since = t;
     if (!running && this.current.since !== null) {
       this.current.ms += t - this.current.since;
       this.current.since = null;
     }
+  }
+
+  /** A lap completed in the stretch under way (none under way: nothing to count it in) */
+  lap(): void {
+    if (this.current) this.current.laps++;
   }
 
   /** Ends the stretch under way, reporting it when long enough */
@@ -49,7 +58,7 @@ export class UsageClock {
     if (!c) return;
     this.current = null;
     const minutes = Math.min((c.ms + (c.since !== null ? this.now() - c.since : 0)) / 60_000, MAX_USAGE_MINUTES);
-    if (minutes >= MIN_USAGE_MINUTES) this.report({ ...c.stretch, minutes: Math.round(minutes * 10) / 10 });
+    if (minutes >= MIN_USAGE_MINUTES) this.report({ ...c.stretch, minutes: Math.round(minutes * 10) / 10, laps: c.laps });
   }
 }
 

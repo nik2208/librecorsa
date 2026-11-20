@@ -8,8 +8,9 @@
  *
  * Workers caching is on (wrangler.jsonc): Cloudflare keeps those files at the edge, tiered, and answers repeat and
  * byte-range requests without running this or reading R2. Each deploy is a fresh cache (the Worker version is part of
- * the key), and CI uploads to R2 before it deploys, so a re-uploaded file is never served stale. Browsers still check
- * the ETag before reusing their copy.
+ * the key): CI uploads to R2 before it deploys, and a file re-uploaded by hand (scripts/upload-hosted.mjs) reaches
+ * players at the next deploy. Browsers and the game's service worker (public/sw.js) check the ETag before reusing
+ * their copy, so after a deploy a file that didn't change costs a 304, not a download.
  *
  * The game used to live at https://khazp.github.io/librecorsa/, and browsers keep saved data per origin, so
  * settings, garage setups, ghost laps and the leaderboard driver key stayed behind there. The redirect page
@@ -24,7 +25,7 @@
 import { handleApi } from "./api/index.ts";
 
 // Durable Object classes (wrangler.jsonc binds them)
-export { RaceServer, RoomServer } from "./api/index.ts";
+export { PresenceCounter, RaceServer, RoomServer } from "./api/index.ts";
 
 const OLD_ORIGIN = "https://khazp.github.io";
 // localStorage keys the game writes (bugesera.* settings/track/car/driver key, lc.* garage and MFD, librecorsa.* AI learning)
@@ -78,6 +79,10 @@ async function fromBucket(request, env, url) {
   // deploy (a new Worker version starts an empty cache); Cloudflare reads this header and strips it
   headers.set("Cache-Control", "public, max-age=0, must-revalidate");
   headers.set("Cloudflare-CDN-Cache-Control", "public, max-age=31536000");
+  // The file's full size for the loading screen's progress (three's FileLoader reads this before Content-Length).
+  // A compression rule sends the GLBs brotli-encoded with no Content-Length, and the bytes the game counts are the
+  // decoded ones, which add up to this
+  headers.set("X-File-Size", String(object.size));
 
   if (request.method === "HEAD") {
     headers.set("Content-Length", String(object.size));

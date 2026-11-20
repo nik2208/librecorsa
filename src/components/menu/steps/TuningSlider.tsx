@@ -1,40 +1,9 @@
 "use client";
 
 import React, { useEffect, useRef } from "react";
-import { PAD_BRAKE_BUTTON, PAD_THROTTLE_BUTTON } from "@/lib/input/bindings";
 import { shapeStick } from "@/lib/input/stick-shape";
-import { connectedPads } from "@/lib/input/device-input";
-
-/** Labelled slider in the setup screens' look: volt thumb, mono readout, optional one-line hint */
-export const TuningSlider: React.FC<{
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  format: (value: number) => string;
-  onChange: (value: number) => void;
-  hint?: string;
-}> = ({ label, value, min, max, step, format, onChange, hint }) => (
-  <label className="flex flex-col gap-2 rounded-[14px] p-1.5 transition-colors duration-200 hover:bg-white/[0.03]">
-    <span className="flex items-center justify-between gap-2">
-      <span className="text-[15px] leading-tight font-bold text-[#F5F7FA]">{label}</span>
-      <span className="shrink-0 font-f1-mono text-[13px] font-extrabold text-[#CCFF00] tabular-nums">{format(value)}</span>
-    </span>
-    <input
-      type="range"
-      min={min}
-      max={max}
-      step={step}
-      value={value}
-      onChange={(e) => onChange(Number(Number(e.target.value).toFixed(3)))}
-      className="lc-range"
-      style={{ "--lc-fill": `${((value - min) / (max - min || 1)) * 100}%` } as React.CSSProperties}
-    />
-    {hint ? <span className="text-[12px] leading-[1.4] text-[#8E96AA]">{hint}</span> : null}
-  </label>
-);
-
+import { connectedPads, padPedals, type PadPedalTuning } from "@/lib/input/device-input";
+import { PAD_PEDAL_LABELS, pedalSourceText, type PadPedal } from "@/lib/input/bindings";
 
 // Plot geometry (viewBox 0 0 160 100): input x maps to 10..150, output y to 90..10
 const toX = (x: number) => 80 + x * 70;
@@ -79,29 +48,36 @@ export const StickCurve: React.FC<{ deadzone: number; outerDeadzone: number; lin
   }
 
   return (
-    <div className="flex flex-col gap-2 rounded-[18px] border border-[#262B3D] bg-[#08090D] p-3.5">
-      <span className="lc-lbl!">Stick response</span>
+    <div className="flex flex-col gap-2 rounded-lc-tile border border-lc-line bg-lc-void p-3.5">
+      <span className="lc-field-label">Stick response</span>
       <svg viewBox="0 0 160 100" className="block h-auto w-full" role="img" aria-label="Stick response curve">
-        <rect x="6" y="6" width="148" height="88" rx="10" fill="none" stroke="#262B3D" strokeWidth="1" />
-        <line x1="80" y1="6" x2="80" y2="94" stroke="#262B3D" strokeWidth="1" />
-        <line x1="6" y1="50" x2="154" y2="50" stroke="#262B3D" strokeWidth="1" />
-        <line x1="10" y1="90" x2="150" y2="10" stroke="#5B6275" strokeWidth="1" strokeDasharray="3 3" />
-        <path d={points.join(" ")} fill="none" stroke="#CCFF00" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
-        <circle ref={dotRef} r="4.5" fill="#00E5FF" opacity="0" style={{ filter: "drop-shadow(0 0 4px #00E5FF)" }} />
+        <rect x="6" y="6" width="148" height="88" rx="10" fill="none" stroke="var(--color-lc-line)" strokeWidth="1" />
+        <line x1="80" y1="6" x2="80" y2="94" stroke="var(--color-lc-line)" strokeWidth="1" />
+        <line x1="6" y1="50" x2="154" y2="50" stroke="var(--color-lc-line)" strokeWidth="1" />
+        <line x1="10" y1="90" x2="150" y2="10" stroke="var(--color-lc-dim)" strokeWidth="1" strokeDasharray="3 3" />
+        <path d={points.join(" ")} fill="none" stroke="var(--color-lc-chalk)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+        <circle ref={dotRef} r="4.5" fill="var(--color-lc-info)" opacity="0"  />
       </svg>
     </div>
   );
 };
 
-/** One trigger: raw travel bar and the shaped (raw^gamma) bar, live from the standard mapping */
-const TriggerRow: React.FC<{ label: string; button: number; gamma: number; color: string }> = ({
-  label,
-  button,
+/**
+ * One pedal: raw travel bar and the shaped (raw^gamma) bar, live from the standard mapping as the game reads it, named
+ * with where it is read ("Throttle trigger", "Brake, right stick down")
+ */
+export const PedalRow: React.FC<{ pedal: PadPedal; tuning: PadPedalTuning; gamma: number; color: string }> = ({
+  pedal,
+  tuning,
   gamma,
   color,
 }) => {
+  const where = pedalSourceText(tuning.pedalSources[pedal]);
+  const label = where === "trigger" ? `${PAD_PEDAL_LABELS[pedal]} trigger` : `${PAD_PEDAL_LABELS[pedal]}, ${where}`;
   const gammaRef = useRef(gamma);
   gammaRef.current = gamma;
+  const tuningRef = useRef(tuning);
+  tuningRef.current = tuning;
   const rawBar = useRef<HTMLSpanElement>(null);
   const shapedBar = useRef<HTMLSpanElement>(null);
   const readout = useRef<HTMLSpanElement>(null);
@@ -111,38 +87,45 @@ const TriggerRow: React.FC<{ label: string; button: number; gamma: number; color
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const pad = connectedPads().find((p) => p.mapping === "standard");
-      const raw = Math.min(1, Math.max(0, pad?.buttons[button]?.value ?? 0));
+      const raw = Math.min(1, Math.max(0, pad ? padPedals(pad, tuningRef.current)[pedal] : 0));
       const shaped = raw <= 0 ? 0 : Math.pow(raw, gammaRef.current);
-      if (rawBar.current) rawBar.current.style.width = `${(raw * 100).toFixed(1)}%`;
-      if (shapedBar.current) shapedBar.current.style.width = `${(shaped * 100).toFixed(1)}%`;
-      if (readout.current) readout.current.textContent = `${Math.round(raw * 100)}% → ${Math.round(shaped * 100)}%`;
+      if (rawBar.current) rawBar.current.style.transform = `translateX(${((raw - 1) * 100).toFixed(1)}%)`;
+      if (shapedBar.current) shapedBar.current.style.transform = `translateX(${((shaped - 1) * 100).toFixed(1)}%)`;
+      if (readout.current) readout.current.textContent = `${Math.round(raw * 100)}% in, ${Math.round(shaped * 100)}% out`;
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [button]);
+  }, [pedal]);
 
   return (
     <div className="flex flex-col gap-1.5">
       <span className="flex items-center justify-between gap-2">
-        <span className="lc-lbl!">{label}</span>
-        <span ref={readout} className="font-f1-mono text-[11px] font-extrabold text-[#F5F7FA] tabular-nums">
-          0% → 0%
+        <span className="lc-field-label">{label}</span>
+        <span ref={readout} className="lc-mono text-[11px] font-extrabold text-lc-chalk tabular-nums">
+          0% in, 0% out
         </span>
       </span>
-      <span className="block h-1 overflow-hidden rounded-full bg-[#1B1F2B]">
-        <span ref={rawBar} className="block h-full rounded-full bg-[#5B6275]" style={{ width: "0%" }} />
+      <span className="block h-1 overflow-hidden rounded-full bg-lc-titanium">
+        <span ref={rawBar} className="block h-full w-full rounded-full bg-lc-dim" style={{ transform: "translateX(-100%)" }} />
       </span>
-      <span className="block h-1 overflow-hidden rounded-full bg-[#1B1F2B]">
-        <span ref={shapedBar} className="block h-full rounded-full" style={{ width: "0%", background: color }} />
+      <span className="block h-1 overflow-hidden rounded-full bg-lc-titanium">
+        <span ref={shapedBar} className="block h-full w-full rounded-full" style={{ transform: "translateX(-100%)", background: color }} />
       </span>
     </div>
   );
 };
 
-/** Live RT / LT readout with the throttle and brake curves applied (grey = raw travel, colour = shaped) */
-export const TriggerBars: React.FC<{ throttleGamma: number; brakeGamma: number }> = ({ throttleGamma, brakeGamma }) => (
-  <div className="flex flex-col gap-3 rounded-[18px] border border-[#262B3D] bg-[#08090D] p-3.5">
-    <TriggerRow label="RT · throttle" button={PAD_THROTTLE_BUTTON} gamma={throttleGamma} color="#00E676" />
-    <TriggerRow label="LT · brake" button={PAD_BRAKE_BUTTON} gamma={brakeGamma} color="#FF2A3C" />
+/**
+ * Live throttle / brake readout with their curves applied (grey = raw travel, colour = shaped), from wherever each
+ * pedal is read
+ */
+export const PedalCurveBars: React.FC<{ tuning: PadPedalTuning; throttleGamma: number; brakeGamma: number }> = ({
+  tuning,
+  throttleGamma,
+  brakeGamma,
+}) => (
+  <div className="flex flex-col gap-3 rounded-lc-tile border border-lc-line bg-lc-void p-3.5">
+    <PedalRow pedal="throttle" tuning={tuning} gamma={throttleGamma} color="var(--lc-sem-throttle)" />
+    <PedalRow pedal="brake" tuning={tuning} gamma={brakeGamma} color="var(--lc-sem-brake)" />
   </div>
 );

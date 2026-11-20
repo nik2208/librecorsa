@@ -4,7 +4,22 @@
  * garage setup clamping.
  * Run: npx tsx scripts/verify-race-control.ts
  */
-import { TrackLimitsMonitor, type TrackLimitsEvent, type TrackLimitsFrame } from "../src/lib/sim/track-limits";
+import {
+  COURSE_CUT_MARGIN_S,
+  COURSE_CUT_MIN_PENALTY_S,
+  TrackLimitsMonitor,
+  weightedCutPoints,
+  type CutInput,
+  type TrackLimitsEvent,
+  type TrackLimitsFrame,
+} from "../src/lib/sim/track-limits";
+import { resolveRaceRules } from "../src/lib/sim/race-rules";
+import { YellowPassJudge, type YellowPassEvent } from "../src/lib/sim/yellow-passes";
+import { PenaltyLedger } from "../src/lib/sim/penalty-ledger";
+import { parseRaceSetup, rulesForSetup } from "../src/lib/sim/race-setup";
+import { VEHICLE_MODELS } from "../src/lib/cars/vehicle-models";
+import { classify, raceOrder } from "../src/lib/sim/race-session";
+import { stretchTimeS } from "../src/lib/sim/course-limits";
 import { classifiedTimeS, type RacerProgress } from "../src/lib/sim/race-session";
 import { computeRelatives, fuelStrategy, type LapRecord } from "../src/components/hud/mfd-data";
 import { clampChassisSetup, DEFAULT_CHASSIS_SETUP, FUEL_LOAD } from "../src/lib/sim/car-setup";
@@ -17,7 +32,7 @@ import { F12026CarSim } from "../src/lib/sim/f12026-car/F12026CarSim";
 import { createAmgGt3Sim } from "../src/lib/sim/gt3/AmgGt3Sim";
 import { createMtr496rSim } from "../src/lib/sim/proto/Mtr496rSim";
 import { createSuzukiLianaSim } from "../src/lib/sim/road/SuzukiLianaSim";
-import { createVf26Sim } from "../src/lib/sim/f12026-car/Vf26Sim";
+import { createLc26Sim } from "../src/lib/sim/f12026-car/Lc26Sim";
 import type { SimulatorCar } from "../src/lib/sim/simulator-car";
 import { F1Physics2026 } from "../src/lib/f1-physics-2026";
 import { createFlatTestTrack } from "./lib/flat-track";
@@ -173,6 +188,70 @@ console.log("Track limits · warnings and penalties");
   check("judged again without a reference: no stale gain on the card", relifted?.stage === "give_back" && relifted.gainS === null, JSON.stringify(relifted));
 }
 
+console.log("Track limits · a course cut");
+{
+  // The short lap's link on the Grand Prix lap: off the road at 1,100 m, 685 m round the lap in one frame, still off
+  // until it joins the lap again at 1,900 m 3 s after leaving, then a corner of the lap cut on the way out (so a later
+  // excursion would be a strike). The reference lap runs at 50 m/s: 16 s from 1,100 to 1,900 m, so the cut saved 13 s
+  const L = 5895;
+  const ref = new Float64Array(1179).fill(50);
+  const stretchRefS = (a: number, b: number) => stretchTimeS(ref, L, a, b);
+  const link = (m: TrackLimitsMonitor, ref: typeof stretchRefS | null = stretchRefS, refS = ref ?? undefined) => [
+    ...drive(m, 1, { distM: 1100, lapLengthM: L, stretchRefS: refS, deltaS: 0 }),
+    ...drive(m, 2, { distM: 1200, lapLengthM: L, stretchRefS: refS, offTrack: true, lateralM: -30, curvature: 0.01, deltaS: 0 }),
+    ...drive(m, 1, { distM: 1885, lapLengthM: L, stretchRefS: refS, offTrack: true, lateralM: -30, curvature: 0.01, deltaS: -10 }),
+    ...drive(m, 3, { distM: 1900, lapLengthM: L, stretchRefS: refS, deltaS: -10 }),
+  ];
+  check("the reference lap's time over a stretch", Math.abs(stretchRefS(1100, 1900) - 16) < 1e-9 && Math.abs(stretchRefS(5800, 100) - 195 / 50) < 1e-9);
+  const race = new TrackLimitsMonitor();
+  race.reset("race");
+  const ev = link(race);
+  const said = race.snapshot(clock * 1000).message?.text;
+  const saved = race.lastCutSavedS ?? 0;
+  const pen = ev.filter((e) => e.kind === "penalty");
+  check(
+    "in a race: the cut deletes the lap, and back on the track it costs the time it saved and 5 s more",
+    pen.length === 1 && ev.every((e) => e.kind === "penalty" || e.kind === "lap_invalid") && pen[0].reason === "course_cut" &&
+      Math.abs(saved - 13) < 0.05 && pen[0].penaltyS === Math.ceil(saved + COURSE_CUT_MARGIN_S) && race.penaltyTotalS === pen[0].penaltyS &&
+      said === `Course cut · +${pen[0].penaltyS?.toFixed(1)}s time penalty`,
+    `${JSON.stringify(ev)} ${said}, saved ${saved.toFixed(2)} s`
+  );
+  check("no warning on top for the rest of that excursion", race.strikes === 0 && !race.judging && race.snapshot(clock * 1000).warnings === 0);
+  const blind = new TrackLimitsMonitor();
+  blind.reset("race");
+  const bev = link(blind, null);
+  check("without a reference lap: the least penalty", bev.some((e) => e.kind === "penalty" && e.penaltyS === COURSE_CUT_MIN_PENALTY_S) && blind.penaltyTotalS === COURSE_CUT_MIN_PENALTY_S);
+  // The Grand Prix lap's loop driven on the short lap: off the road at 1,100 m, the lap position jumps back to 480 m,
+  // then 10 s later ahead to 1,206 m, and the car rejoins at 1,210 m having lost over 10 s on the reference
+  const detour = new TrackLimitsMonitor();
+  detour.reset("race");
+  const dev = [
+    ...drive(detour, 1, { distM: 1100, lapLengthM: L, stretchRefS, deltaS: 0 }),
+    ...drive(detour, 2, { distM: 1150, lapLengthM: L, stretchRefS, offTrack: true, lateralM: 30, deltaS: 0 }),
+    ...drive(detour, 10, { distM: 480, lapLengthM: L, stretchRefS, offTrack: true, lateralM: 180, deltaS: 0 }),
+    ...drive(detour, 1, { distM: 1206, lapLengthM: L, stretchRefS, offTrack: true, lateralM: 30, deltaS: 0 }),
+    ...drive(detour, 2, { distM: 1210, lapLengthM: L, stretchRefS, deltaS: 0 }),
+  ];
+  check("a longer way round: the lap is deleted, no penalty", detour.penaltyTotalS === 0 && dev.some((e) => e.kind === "lap_invalid") && (detour.lastCutSavedS ?? 0) < -5,
+    `${JSON.stringify(dev)} saved ${detour.lastCutSavedS?.toFixed(1)} s`);
+  const practice = new TrackLimitsMonitor();
+  practice.reset("practice");
+  const pev = link(practice);
+  check("in practice: the lap is deleted, no penalty", pev.some((e) => e.kind === "lap_invalid") && practice.penaltyTotalS === 0 && practice.snapshot(clock * 1000).message?.text === "Course cut · lap deleted");
+  const plain = new TrackLimitsMonitor();
+  plain.reset("race");
+  check("without the lap length nothing is read into a jump", drive(plain, 1, { distM: 1100 }).length === 0 && drive(plain, 2, { distM: 1885 }).length === 0);
+  // Far off the road between two parts of the lap that lie close: the lap distance jumps there and back
+  const between = new TrackLimitsMonitor();
+  between.reset("race");
+  const there = [
+    ...drive(between, 1, { distM: 30, lapLengthM: 932 }),
+    ...drive(between, DT, { distM: 210, lapLengthM: 932 }),
+    ...drive(between, 3, { distM: 32, lapLengthM: 932 }),
+  ];
+  check("a jump there and back is no cut", there.length === 0 && between.snapshot(clock * 1000).message === null, JSON.stringify(there));
+}
+
 console.log("Track limits · strict outside a race");
 {
   const p = new TrackLimitsMonitor();
@@ -215,12 +294,139 @@ console.log("Track limits · strict outside a race");
   check("practice: a lap the autopilot starts takes the next lap's deletion with it", !p.nextLapForfeit && drive(p, 0.2, { lapCount: 4, sector: 1 }).length === 0);
 }
 
+console.log("Track limits · barrier contact");
+{
+  // The car's contact total grows by `share` of each frame (1 = touching the whole frame)
+  let total = 0;
+  const walls = (m: TrackLimitsMonitor, seconds: number, share: number, wallRule: TrackLimitsFrame["wallRule"], f: Partial<TrackLimitsFrame> = {}): TrackLimitsEvent[] => {
+    const events: TrackLimitsEvent[] = [];
+    for (let t = 0; t < seconds - 1e-9; t += DT) {
+      total += share * DT;
+      events.push(...drive(m, DT, { sector: 1, wallContactS: total, wallRule, ...f }));
+    }
+    return events;
+  };
+  const p = new TrackLimitsMonitor();
+  p.reset("practice");
+  walls(p, 0.5, 0, "ride");
+  const brushes = [...walls(p, 0.15, 1, "ride"), ...walls(p, 1.35, 0, "ride"), ...walls(p, 0.15, 1, "ride"), ...walls(p, 3.2, 0, "ride")];
+  check("a circuit: two brushes off the wall (0.15 s each) in 3 s keep the lap", brushes.length === 0, JSON.stringify(brushes));
+  const ride = walls(p, 1.5, 0.3, "ride");
+  check("a circuit: leaning on the wall (a third of the time) deletes the lap once it adds up to 0.35 s", ride.length === 1 && ride[0].kind === "lap_invalid" && ride[0].reason === "wall_contact" && ride[0].lap === 1, JSON.stringify(ride));
+  const said = p.snapshot(clock * 1000).message;
+  check("and the banner says why", said?.text === "Wall contact · lap deleted" && said?.detail === "Rode the wall", JSON.stringify(said));
+  check("scraping on along it is the same breach, one deletion", walls(p, 2, 1, "ride").length === 0);
+  walls(p, 3.2, 0, "ride");
+  check("a second ride after 3 clean seconds is another", walls(p, 0.5, 1, "ride", { lapCount: 2 }).length === 1);
+  walls(p, 3.2, 0, "ride", { lapCount: 2 });
+  const touch = walls(p, DT, 0.1, "touch", { lapCount: 3 });
+  check("a hill climb: any touch ends the run", touch.length === 1 && p.snapshot(clock * 1000).message?.detail === "Touched the barrier", JSON.stringify(touch));
+  walls(p, 3.2, 0, "touch", { lapCount: 3 });
+  check("no wall rule (past a hill climb's finish), no verdict", walls(p, 1, 1, undefined, { lapCount: 3 }).length === 0);
+  check("the autopilot is not judged", walls(p, 1, 1, "ride", { lapCount: 3, active: false }).length === 0);
+  check("the contact the autopilot had is not counted when the driver takes over", walls(p, 0.2, 0, "ride", { lapCount: 3 }).length === 0);
+
+  // A circuit's wall-ride in the last sector is as an excursion there: the lap that starts next goes too
+  const w = new TrackLimitsMonitor();
+  w.reset("practice");
+  walls(w, 0.5, 0, "ride", { sector: 3 });
+  const lastCorner = walls(w, 1.0, 0.4, "ride", { sector: 3 });
+  check(
+    "a circuit: riding the wall in the last sector deletes the lap and the next",
+    lastCorner.length === 1 && lastCorner[0].reason === "wall_contact" && lastCorner[0].lap === 1 && w.nextLapForfeit && w.snapshot(clock * 1000).message?.detail === "Next lap too",
+    JSON.stringify({ lastCorner, forfeit: w.nextLapForfeit, said: w.snapshot(clock * 1000).message }),
+  );
+  const overLine = walls(w, 1.0, 0.4, "ride", { lapCount: 2, sector: 1 });
+  check("held over the line, the new lap is deleted from its start, for the wall", overLine.length === 1 && overLine[0].kind === "lap_invalid" && overLine[0].reason === "wall_contact" && overLine[0].lap === 2 && !w.nextLapForfeit, JSON.stringify(overLine));
+  const saidAtLine = w.snapshot(clock * 1000).message;
+  check("and the banner says why", saidAtLine?.text === "Wall contact · lap deleted" && saidAtLine?.detail === "Rode the wall before the line", JSON.stringify(saidAtLine));
+  walls(w, 3.2, 0, "ride", { lapCount: 2, sector: 1 });
+  check("the lap after that is clean", walls(w, 0.5, 0, "ride", { lapCount: 3, sector: 1 }).length === 0);
+
+  w.reset("practice");
+  walls(w, 0.5, 0, "ride", { sector: 3 });
+  walls(w, 1.0, 0.4, "ride", { sector: 3 });
+  walls(w, 3.2, 0, "ride", { sector: 3 });
+  const nextAfterRide = walls(w, 0.3, 0, "ride", { lapCount: 2, sector: 1 });
+  check("a ride in the last sector over before the line still deletes the next lap", nextAfterRide.length === 1 && nextAfterRide[0].lap === 2 && nextAfterRide[0].reason === "wall_contact", JSON.stringify(nextAfterRide));
+
+  w.reset("practice");
+  walls(w, 0.5, 0, "ride", { sector: 2 });
+  walls(w, 1.0, 0.4, "ride", { sector: 2 });
+  walls(w, 3.2, 0, "ride", { sector: 3 });
+  check("a ride before the last sector leaves the next lap alone", !w.nextLapForfeit && walls(w, 0.5, 0, "ride", { lapCount: 2, sector: 1 }).length === 0);
+
+  // A frame with no sector: a breach still running as the lap starts deletes that lap too
+  w.reset("practice");
+  walls(w, 0.5, 0, "ride", { sector: undefined });
+  walls(w, 1.0, 0.4, "ride", { sector: undefined });
+  const noSector = walls(w, 0.5, 0.4, "ride", { lapCount: 2, sector: undefined });
+  check("with no sector, a ride still going at the line deletes the new lap", noSector.length === 1 && noSector[0].lap === 2 && noSector[0].reason === "wall_contact", JSON.stringify(noSector));
+  // With sectors, only the last one's riding carries: the lap clock going back mid-ride (a restart's first crossing)
+  // deletes nothing more for a ride before it
+  w.reset("practice");
+  walls(w, 0.5, 0, "ride", { lapTimeMs: 20_000 });
+  walls(w, 1.0, 0.4, "ride", { lapTimeMs: 21_000 });
+  const clockBack = walls(w, 0.3, 0, "ride", { lapTimeMs: 10 });
+  check("with sectors, a ride before the last sector carries nothing to a lap clock starting over", clockBack.length === 0 && !w.nextLapForfeit, JSON.stringify(clockBack));
+
+  w.reset("practice");
+  walls(w, 0.5, 0, "ride", { sector: 3 });
+  walls(w, 1.0, 0.4, "ride", { sector: 3 });
+  walls(w, 0.2, 0, "ride", { lapCount: 2, sector: 1, active: false });
+  check("a lap the autopilot starts takes the wall's next-lap deletion with it", !w.nextLapForfeit && walls(w, 0.5, 0, "ride", { lapCount: 3, sector: 1 }).length === 0);
+
+  // A hill climb's run ends at its finish: a touch before it is that run's, and the return road is not the next run
+  w.reset("practice");
+  walls(w, 0.5, 0, "touch", { sector: 3 });
+  const bale = walls(w, DT, 0.1, "touch", { sector: 3 });
+  const nextRun = walls(w, 0.5, 0, "touch", { lapCount: 2, sector: 1 });
+  check("a hill climb: a touch before the finish deletes that run only", bale.length === 1 && !w.nextLapForfeit && nextRun.length === 0, JSON.stringify({ bale, nextRun }));
+
+  // In a race, riding the wall is judged as time off the track: an excursion, warnings and penalties as any other
+  const r = new TrackLimitsMonitor();
+  r.reset("race");
+  walls(r, 0.5, 0, "ride", { deltaS: 0 });
+  check("a race: a brush is nothing", walls(r, 0.15, 1, "ride", { deltaS: 0 }).length === 0 && !r.judging);
+  walls(r, 3.2, 0, "ride", { deltaS: 0 });
+  walls(r, 1.0, 1, "ride", { deltaS: 0, lateralM: 4 });
+  check("a race: a wall-ride is under review like an excursion", r.judging);
+  const verdict = [...walls(r, 0.4, 0, "ride", { deltaS: -0.5, lateralM: 4 }), ...walls(r, 8, 0, "ride", { deltaS: -0.5 })];
+  check("a race: gaining time by it is a warning", verdict.length === 1 && verdict[0].kind === "warning", JSON.stringify(verdict));
+  // As a car really rides a wall: bouncing along it, touching it one frame in three
+  const b = new TrackLimitsMonitor();
+  b.reset("race");
+  walls(b, 0.5, 0, "ride", { deltaS: 0 });
+  let reviewed = false;
+  const bounced: TrackLimitsEvent[] = [];
+  for (let k = 0; k < 150; k++) {
+    bounced.push(...walls(b, DT, k % 3 === 0 ? 1 : 0, "ride", { deltaS: 0, lateralM: 4 }));
+    reviewed ||= b.judging;
+  }
+  bounced.push(...walls(b, 0.4, 0, "ride", { deltaS: -0.5 }), ...walls(b, 8, 0, "ride", { deltaS: -0.5 }));
+  check("a race: bouncing along the wall is one excursion under review, then one verdict", reviewed && bounced.length === 1 && bounced[0].kind === "warning", JSON.stringify(bounced));
+  // A ride from the last corner held over the line, as an excursion over it: under review as the lap ends (so that
+  // lap can't count), then one verdict, for the lap it began on; the new lap is not deleted for it
+  const o = new TrackLimitsMonitor();
+  o.reset("race");
+  walls(o, 0.5, 0, "ride", { deltaS: 0, sector: 3 });
+  walls(o, 1.0, 1, "ride", { deltaS: 0, lateralM: 4, sector: 3 });
+  const overTheLine = walls(o, 0.5, 1, "ride", { lapCount: 2, deltaS: 0, lateralM: 4, sector: 1 });
+  const reviewedAtLine = o.judging;
+  overTheLine.push(...walls(o, 0.4, 0, "ride", { lapCount: 2, deltaS: 0, sector: 1 }), ...walls(o, 8, 0, "ride", { lapCount: 2, deltaS: 0, sector: 1 }));
+  check(
+    "a race: a ride over the line is under review at the line, then one verdict for the lap it began on",
+    reviewedAtLine && overTheLine.length === 1 && overTheLine[0].kind === "warning" && overTheLine[0].lap === 1,
+    JSON.stringify(overTheLine),
+  );
+}
+
 console.log("Track limits · every engine honours strict and judged");
 {
   const track = getActiveTrackData(1200);
   const engines = [
     ["2026 Prototype (classic engine)", () => new F1Physics2026(track)],
-    ["2026 Prototype (rigid body)", () => createVf26Sim(track)],
+    ["2026 Prototype (rigid body)", () => createLc26Sim(track)],
     ["AMG GT3", () => createAmgGt3Sim(track)],
     ["MTR 496R", () => createMtr496rSim(track)],
     ["Suzuki Liana", () => createSuzukiLianaSim(track)],
@@ -250,8 +456,8 @@ console.log("Time trial · fixed conditions");
 {
   const track = getActiveTrackData(1200);
   const cars = [
-    ["2026 Prototype (classic engine)", () => new F1Physics2026(track), "vf26", FUEL_LOAD.vf26.minKg],
-    ["2026 Prototype (rigid body)", () => createVf26Sim(track), "vf26", FUEL_LOAD["f12026-car"].minKg],
+    ["2026 Prototype (classic engine)", () => new F1Physics2026(track), "lc26", FUEL_LOAD.lc26.minKg],
+    ["2026 Prototype (rigid body)", () => createLc26Sim(track), "lc26", FUEL_LOAD["f12026-car"].minKg],
     ["AMG GT3", () => createAmgGt3Sim(track), "amg-gt3", FUEL_LOAD["amg-gt3"].minKg],
     ["MTR 496R", () => createMtr496rSim(track), "mtr-496r", FUEL_LOAD["mtr-496r"].minKg],
     ["Suzuki Liana", () => createSuzukiLianaSim(track), "liana", FUEL_LOAD.liana.minKg],
@@ -303,8 +509,9 @@ console.log("Time trial · fixed conditions");
       for (let i = 0; i < 60 * 10; i++) car.step(1 / 60, { throttle: 1, brake: 0, steerLeft: 0, steerRight: 0, manualOverride: false, toggleXMode: false, shiftUp: false, shiftDown: false });
       return before - car.telemetry.fuelKg;
     };
-    const used = burn(SIM_REALISM_FLAGS.full);
-    const held = burn(timeTrialRealism(SIM_REALISM_FLAGS.full));
+    // Burning switched on (the game's sprints run a fixed load): the time trial still burns none
+    const used = burn({ ...SIM_REALISM_FLAGS.full, fuelUse: true });
+    const held = burn(timeTrialRealism({ ...SIM_REALISM_FLAGS.full, fuelUse: true }));
     check(`${name}: the time trial burns none of its low fuel`, used > 0.05 && held === 0, `${used.toFixed(3)} kg in 10 s flat out at Full, ${held} in the time trial`);
   }
 }
@@ -312,9 +519,9 @@ console.log("Time trial · fixed conditions");
 console.log("Time trial · race control, the car and the lap recorder together");
 {
   const track = getActiveTrackData(1200);
-  const car = createVf26Sim(track);
+  const car = createLc26Sim(track);
   const monitor = new TrackLimitsMonitor();
-  const recorder = new LapRecorder({ trackLengthM: track.totalLengthM, turns: [], trackId: "test", vehicle: "vf26", driverName: "Test", driverCode: "TST" });
+  const recorder = new LapRecorder({ trackLengthM: track.totalLengthM, turns: [], trackId: "test", vehicle: "lc26", driverName: "Test", driverCode: "TST" });
   /** One frame as the drive session runs it: the car, race control (its deletion on the car), then the recorder */
   const frame = (offTrack?: boolean) => {
     car.step(DT, {});
@@ -403,13 +610,15 @@ console.log("MFD relative");
       standings: [st("LAP", 4950, 9950), st("YOU", 100, 5100, true), st("AHD", 160, 5160), st("BHD", 40, 5040), st("DWN", 300, 300)],
     },
   } as unknown as CarTelemetry;
-  const rows = computeRelatives(t, null, L, "soft");
+  const rows = computeRelatives(t, null, L, "soft", "TST");
   const codes = rows.map((r) => r.code).join(",");
   check("ordered by road position around the player", codes === "DWN,AHD,YOU,BHD,LAP", codes);
   const byCode = Object.fromEntries(rows.map((r) => [r.code, r]));
   check("a car across the line shows behind on the road", byCode.LAP.dsM === -150);
   check("lap up / lap down", byCode.LAP.lapDiff === 1 && byCode.DWN.lapDiff === -1 && byCode.AHD.lapDiff === 0);
   check("road gap from speed without a reference", Math.abs(byCode.AHD.gapS - 60 / 50) < 1e-9 && byCode.BHD.gapS < 0);
+  const practice = computeRelatives({ ...t, race: undefined, peers: [] } as unknown as CarTelemetry, null, L, "soft", "TST");
+  check("outside a race the player goes by their own code", practice.find((r) => r.isPlayer)?.code === "TST");
 }
 
 console.log("Fuel strategy");
@@ -485,8 +694,9 @@ console.log("Garage on the sims");
     const lift = settle(8) - settle(0);
     check(`${name}: +8 mm ride height settles about 8 mm higher`, lift > 5 && lift < 11, `${lift.toFixed(2)} mm`);
 
-    // Live fuel consumption on f12026-car and amg-gt3
+    // Live fuel consumption on f12026-car and amg-gt3, burning switched on (the game's sprints run a fixed load)
     const fuelCar = make();
+    (fuelCar as { setSimRealism?: (f: SimRealismFlags) => void }).setSimRealism?.({ ...SIM_REALISM_FLAGS.full, fuelUse: true });
     fuelCar.resetToStartGrid(true);
     const startFuel = fuelCar.telemetry.fuelKg;
     for (let i = 0; i < 60; i++) fuelCar.step(1 / 60, { throttle: 1 });
@@ -500,9 +710,9 @@ console.log("Garage on the sims");
   type VfAxles = { axles: { spec: { arbRate: number } }[] };
   const a = (vf as unknown as VfAxles).axles[1].spec.arbRate;
   const b = (other as unknown as VfAxles).axles[1].spec.arbRate;
-  check("vf26: the setup changes this car only (the AI cars keep the baseline)", Math.abs(a - b * 1.5) < 1e-6, `${a} vs ${b}`);
+  check("lc26: the setup changes this car only (the AI cars keep the baseline)", Math.abs(a - b * 1.5) < 1e-6, `${a} vs ${b}`);
 
-  // VF26 ride-height setup affects ground-effect downforce and rideHeightOffsetM
+  // LC26 ride-height setup affects ground-effect downforce and rideHeightOffsetM
   const vfLow = new F1Physics2026(flat);
   vfLow.applyChassisSetup({ ...DEFAULT_CHASSIS_SETUP, rideHeightFrontMm: -6, rideHeightRearMm: -6 });
   vfLow.resetToStartGrid(true);
@@ -512,7 +722,7 @@ console.log("Garage on the sims");
   vfHigh.resetToStartGrid(true);
   for (let i = 0; i < 30; i++) vfHigh.step(1 / 60, { throttle: 1 });
   check(
-    "vf26: ride-height setup shifts ground-effect downforce and chassis height",
+    "lc26: ride-height setup shifts ground-effect downforce and chassis height",
     Math.abs(vfHigh.telemetry.downforceN - vfLow.telemetry.downforceN) > 50 &&
       vfHigh.rideHeightOffsetM > vfLow.rideHeightOffsetM + 0.01,
     `df: ${vfLow.telemetry.downforceN.toFixed(0)} vs ${vfHigh.telemetry.downforceN.toFixed(0)} N`
@@ -578,6 +788,343 @@ console.log("AI race · overtaking-aid rules per car");
     rows.length === 2 && rows.every((r) => r.gridPosition === grid.find(([code]) => code === r.driverCode)?.[1]),
     JSON.stringify(rows.map((r) => [r.driverCode, r.gridPosition]))
   );
+}
+
+console.log("Track limits · weighted points");
+{
+  const cut = (c: Partial<CutInput>): number =>
+    weightedCutPoints({
+      gainS: null,
+      shortcutM: 0,
+      offThrottleAvg: 1,
+      brakingZone: false,
+      speedGainMs: 0,
+      curvatureRad: 0,
+      wallRiding: false,
+      wallContactS: 0,
+      ...c,
+    });
+  const ladder: [number, number][] = [
+    [0.05, 0],
+    [0.15, 0.25],
+    [0.5, 1],
+    [1.5, 3.25],
+    [5, 20.5],
+  ];
+  for (const [g, pts] of ladder) check(`a ${g} s gain flat out scores ${pts} pts`, cut({ gainS: g }) === pts, String(cut({ gainS: g })));
+  check("every score is in quarter points", [0.17, 0.33, 0.71, 1.23, 2.9].every((g) => (cut({ gainS: g }) * 4) % 1 === 0));
+  check("lifting halves the score", cut({ gainS: 1, offThrottleAvg: 0 }) === Math.round((1.85 + 0.55 * 0.25) * 0.5 * 4) / 4);
+  check(
+    "a wide exit given back by lifting (lost time, a little shortcut) scores nothing",
+    cut({ gainS: -0.4, shortcutM: 5, offThrottleAvg: 0.3 }) === 0,
+    String(cut({ gainS: -0.4, shortcutM: 5, offThrottleAvg: 0.3 }))
+  );
+  check(
+    "a chicane cut flat out with no time gained still scores its shortcut",
+    cut({ gainS: -0.05, shortcutM: 12, offThrottleAvg: 0.9, curvatureRad: 0.6 }) === 1.5,
+    String(cut({ gainS: -0.05, shortcutM: 12, offThrottleAvg: 0.9, curvatureRad: 0.6 }))
+  );
+  check("riding the wall is at least a point", cut({ wallRiding: true, wallContactS: 0.4 }) === 1);
+  check("without a reference only the shortcut scores", cut({ gainS: null, shortcutM: 10 }) === 1.25);
+}
+
+/** A strike on a straight: off with a gain, not given back (the 6 s window runs out) */
+const strikeWith = (m: TrackLimitsMonitor, gainS: number) => [...wide(m, 0.6, 0, -gainS), ...drive(m, 6.5, { deltaS: -gainS })];
+
+console.log("Track limits · four strikes (open wheel)");
+{
+  const m = new TrackLimitsMonitor();
+  m.reset("race", { scoring: "four_strike", pointsAllowed: 4 });
+  const calls: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    const ev = strikeWith(m, 0.3).filter((e) => e.kind !== "cleared" && e.kind !== "no_advantage");
+    calls.push(ev.map((e) => (e.kind === "penalty" ? `+${e.penaltyS}` : e.kind)).join(","));
+    if (i === 2) {
+      const snap = m.snapshot(clock * 1000);
+      check(
+        "three strikes: the black-and-white flag, next is +5 s",
+        snap.message?.kind === "final_warning" && snap.message.detail === "Time gained · next is +5 s" && snap.ladder?.blackWhite === true,
+        JSON.stringify(snap.message)
+      );
+    }
+  }
+  check(
+    "1-3 warnings, 4 +5 s, 8 +10 s, 12 disqualified",
+    calls.join("|") === "warning|warning|warning|+5|warning|warning|warning|+10|warning|warning|warning|disqualified",
+    calls.join("|")
+  );
+  check("the time penalties add up to 15 s", m.penaltyTotalS === 15, String(m.penaltyTotalS));
+  check("disqualified", m.disqualified && m.snapshot(clock * 1000).ladder?.disqualified === true);
+  check("nothing is judged after the disqualification", strikeWith(m, 0.3).length === 0 && !m.judging);
+  const snap = new TrackLimitsMonitor();
+  snap.reset("race", { scoring: "four_strike", pointsAllowed: 4 });
+  strikeWith(snap, 0.3);
+  strikeWith(snap, 0.3);
+  const s2 = snap.snapshot(clock * 1000);
+  check("the meter shows strikes of four", s2.warnings === 2 && s2.strikesPerPenalty === 4 && s2.ladder?.scoring === "four_strike", JSON.stringify(s2));
+}
+
+console.log("Track limits · weighted points (endurance)");
+{
+  const m = new TrackLimitsMonitor();
+  m.reset("race", { scoring: "weighted_pts", pointsAllowed: 5 });
+  const calls: string[] = [];
+  // A 1 s gain flat out is 2 points a time
+  for (let i = 0; i < 8; i++) {
+    const ev = strikeWith(m, 1).filter((e) => e.kind !== "cleared" && e.kind !== "no_advantage");
+    calls.push(ev.map((e) => (e.kind === "penalty" ? `+${e.penaltyS}` : e.kind)).join(","));
+  }
+  check("2, 4 (flag), 6 +5 s, 8, 10 +10 s, 12, 14, 16 disqualified", calls.join("|") === "warning|warning|+5|warning|+10|warning|warning|disqualified", calls.join("|"));
+  check("points total", m.pointsTotal === 16, String(m.pointsTotal));
+  const w = new TrackLimitsMonitor();
+  w.reset("race", { scoring: "weighted_pts", pointsAllowed: 5 });
+  strikeWith(w, 0.3);
+  const s = w.snapshot(clock * 1000);
+  check("a 0.3 s gain is half a point on the meter", s.warnings === 0.5 && s.ladder?.points === 0.5 && s.message?.detail === "Time gained · 0.50 pts", JSON.stringify(s));
+}
+
+console.log("Track limits · cuts measured from the car's path");
+{
+  /**
+   * One excursion along a way the test draws: `at(u)` (u 0..1 through the excursion) gives the lap distance, the
+   * world position, the curvature and the lateral offset; the car is on the track just before and just after
+   */
+  const along = (
+    m: TrackLimitsMonitor,
+    at: (u: number) => { distM: number; x: number; z: number; curvature?: number; lateralM?: number },
+    offS = 1.5,
+    deltaAfter = 0
+  ) => {
+    const events: TrackLimitsEvent[] = [];
+    const frame = (u: number, offTrack: boolean, seconds: number, deltaS: number) => {
+      const p = at(u);
+      events.push(
+        ...drive(m, seconds, {
+          offTrack,
+          distM: p.distM,
+          posX: p.x,
+          posZ: p.z,
+          curvature: p.curvature ?? 0,
+          lateralM: p.lateralM ?? 0,
+          halfWidthM: 6,
+          deltaS,
+          speedMs: 30,
+        })
+      );
+    };
+    frame(0, false, 0.2, 0);
+    const n = Math.round(offS / DT);
+    for (let i = 0; i <= n; i++) frame(i / n, true, DT, 0);
+    frame(1, false, 2, deltaAfter);
+    return events;
+  };
+  /** A straight 40 m of road the car crosses in `40 − cutM` of its own path (a cut, as far as the measure goes) */
+  const straightCut = (m: TrackLimitsMonitor, cutM: number) =>
+    along(m, (u) => ({ distM: 1000 + 40 * u, x: 0, z: (40 - cutM) * u, lateralM: -6 }));
+  /** A right-hand hairpin, 30 m radius round (0, 0): the car on a circle of radius `r`, or straight across from the inside edge */
+  const R = 30;
+  const hairpin = (m: TrackLimitsMonitor, path: "outside" | "inside_edge" | "across") =>
+    along(m, (u) => {
+      const th = Math.PI * u;
+      const r = path === "outside" ? R + 8 : R - 6;
+      const pos = path === "across" ? { x: (R - 6) * (1 - 2 * u), z: 0 } : { x: r * Math.cos(th), z: r * Math.sin(th) };
+      return { distM: 1000 + R * th, ...pos, curvature: 1 / R, lateralM: path === "outside" ? -8 : 6 };
+    });
+
+  const big = new TrackLimitsMonitor();
+  big.reset("race", { scoring: "four_strike", pointsAllowed: 4 });
+  const bev = straightCut(big, 25);
+  check("cutting 25 m is +5 s at once", bev.length === 1 && bev[0].kind === "penalty" && bev[0].penaltyS === 5 && !big.judging, JSON.stringify(bev));
+  const gain = new TrackLimitsMonitor();
+  gain.reset("race", { scoring: "weighted_pts", pointsAllowed: 5 });
+  const gev = [...wide(gain, 0.6, 0, -2.5)];
+  check("gaining 2.5 s is +5 s at once (no give-back)", gev.some((e) => e.kind === "penalty" && e.penaltyS === 5) && !gain.judging, JSON.stringify(gev));
+  const mid = new TrackLimitsMonitor();
+  mid.reset("race", { scoring: "weighted_pts", pointsAllowed: 5 });
+  const mev = straightCut(mid, 10);
+  check(
+    "a 10 m cut with no time gained scores its points on the weighted ladder",
+    mev.length === 1 && mev[0].kind === "warning" && mev[0].reason === "corner_cut" && mid.pointsTotal === 1.25,
+    JSON.stringify(mev) + " " + mid.pointsTotal
+  );
+  const four = new TrackLimitsMonitor();
+  four.reset("race", { scoring: "four_strike", pointsAllowed: 4 });
+  const fev = straightCut(four, 10);
+  check("the same cut with no gain is no strike on the open-wheel ladder", fev.length === 1 && fev[0].kind === "no_advantage", JSON.stringify(fev));
+
+  const wideHairpin = new TrackLimitsMonitor();
+  wideHairpin.reset("race", { scoring: "weighted_pts", pointsAllowed: 5 });
+  const wev = hairpin(wideHairpin, "outside");
+  check(
+    "running wide round a hairpin cuts nothing (no penalty, no points)",
+    wev.length === 1 && wev[0].kind === "no_advantage" && wideHairpin.pointsTotal === 0 && wideHairpin.penaltyTotalS === 0,
+    JSON.stringify(wev)
+  );
+  const edge = new TrackLimitsMonitor();
+  edge.reset("race", { scoring: "weighted_pts", pointsAllowed: 5 });
+  const eev = hairpin(edge, "inside_edge");
+  check("the inside edge's own line is no cut", eev.every((e) => e.kind !== "penalty") && edge.pointsTotal === 0, JSON.stringify(eev));
+  const across = new TrackLimitsMonitor();
+  across.reset("race", { scoring: "weighted_pts", pointsAllowed: 5 });
+  const aev = hairpin(across, "across");
+  check("straight across the hairpin's inside (27 m short) is +5 s at once", aev.length === 1 && aev[0].kind === "penalty" && aev[0].penaltyS === 5, JSON.stringify(aev));
+
+  const legacy = new TrackLimitsMonitor();
+  legacy.reset("race");
+  check("online's strike ladder takes no notice of the shortcut", straightCut(legacy, 25).every((e) => e.kind === "no_advantage"));
+  const off = new TrackLimitsMonitor();
+  off.reset("race", { scoring: "disabled", pointsAllowed: 5 });
+  check("track limits off: an excursion is not judged", strikeWith(off, 1).length === 0 && straightCut(off, 25).length === 0 && !off.judging);
+}
+
+console.log("Track limits · positions gained off the track (points ladders)");
+{
+  const pass = (m: TrackLimitsMonitor, from: number, to: number) => {
+    drive(m, 0.2, { racePosition: from, deltaS: 0 });
+    drive(m, 0.5, { offTrack: true, racePosition: to, deltaS: 0.1, throttle: 0.3, lateralM: 6 });
+  };
+  const m = new TrackLimitsMonitor();
+  m.reset("race", { scoring: "weighted_pts", pointsAllowed: 5 });
+  pass(m, 4, 3);
+  const watched = drive(m, 12.2, { racePosition: 3, deltaS: 0.1 });
+  const card = m.snapshot(clock * 1000).pending;
+  check("still time to hand it back after 12 s (3 s watched + 15 s)", watched.length === 0 && card?.giveBackPosition === 4, JSON.stringify(card));
+  const kept = drive(m, 7.5, { racePosition: 3, deltaS: 0.1 });
+  check("one place kept: +5 s", kept.length === 1 && kept[0].kind === "penalty" && kept[0].penaltyS === 5, JSON.stringify(kept));
+  pass(m, 5, 3);
+  const two = drive(m, 20, { racePosition: 3, deltaS: 0.1 });
+  check("two places kept: +10 s", two.length === 1 && two[0].penaltyS === 10, JSON.stringify(two));
+  pass(m, 4, 3);
+  drive(m, 1.5, { racePosition: 3, deltaS: 0.1 });
+  const full = m.snapshot(clock * 1000).pending;
+  check("while watched the bar is full", (full?.progress ?? 0) > 0.99 && full?.remainingS === 15, JSON.stringify(full));
+  const back = drive(m, 1, { racePosition: 4, deltaS: 0.1 });
+  check("handed back: cleared", back.length === 1 && back[0].kind === "cleared");
+}
+
+console.log("Race rules · presets by car class");
+{
+  for (const model of Object.values(VEHICLE_MODELS)) {
+    const r = resolveRaceRules(model.classId);
+    const f1 = model.classId === "f1";
+    check(
+      `${model.id}: ${f1 ? "open wheel, four strikes" : "endurance, weighted points"}, standing start`,
+      r.preset === (f1 ? "open_wheel" : "endurance_sprint") &&
+        r.trackLimits === (f1 ? "four_strike" : "weighted_pts") &&
+        r.pointsAllowed === (f1 ? 4 : 5) &&
+        r.startKind === "standing" &&
+        r.lockAidsInYellow === f1,
+      JSON.stringify(r)
+    );
+  }
+  check("a preset picked outright wins over the class", resolveRaceRules("gt3", { rulePreset: "open_wheel" }).trackLimits === "four_strike");
+  check("track limits off", resolveRaceRules("f1", { trackLimits: "off" }).trackLimits === "disabled");
+  check("a start picked outright", resolveRaceRules("f1", { start: "rolling" }).startKind === "rolling");
+  check("old saved setups: a rolling start stays rolling", parseRaceSetup({ start: "rolling" }).startMode === "rolling");
+  check("old saved setups: the old standing default becomes auto", parseRaceSetup({ start: "standing" }).startMode === "auto");
+  check("the setup's choices reach the rules", rulesForSetup("f1", parseRaceSetup({ rulePreset: "endurance_sprint", trackLimits: "off" })).trackLimits === "disabled");
+}
+
+console.log("Classification · disqualified");
+{
+  const base: RacerProgress = { id: "a", code: "AAA", name: "A", color: "#fff", isPlayer: false, distM: 5000, speedMs: 0, finishTimeS: 300, bestLapMs: null };
+  const order = raceOrder(
+    [
+      { ...base, id: "dq", code: "DQQ", isPlayer: true, finishTimeS: null, distM: 2000, dnf: true, dq: true },
+      { ...base, id: "dnf", code: "DNF", finishTimeS: null, distM: 1000, dnf: true },
+      { ...base, id: "win", code: "WIN" },
+    ],
+    1000
+  );
+  check("a disqualified car is classified behind the retirements", order.map((r) => r.code).join(",") === "WIN,DNF,DQQ", order.map((r) => r.code).join(","));
+  const rows = classify(order, 1000, 5, true);
+  check("its result says so", rows[2].dq === true && rows[2].dnf === true && !rows[1].dq);
+  const track = getActiveTrackData(1200);
+  const player = new F1Physics2026(track);
+  const field = new AiOpponentField(track, player, [AI_DRIVERS[0]], undefined, { seed: 1, learning: false });
+  field.startRace(true);
+  field.playerDisqualified = true;
+  const st = field.status();
+  const me = st.results?.find((r) => r.isPlayer);
+  check("the AI race takes the player out, disqualified", st.phase === "finished" && me?.dq === true && me.position === 2, JSON.stringify(me));
+  field.startRace(true);
+  check("the next start clears it", !field.playerDisqualified && field.status().phase === "lights");
+  // A jump start called by the page goes into race control's ledger and onto the feed, with the track-limits time kept apart
+  field.playerPenaltyS = 3;
+  field.penalisePlayer(10, "jump_start", "Jump start");
+  const meNow = field.status().standings.find((e) => e.isPlayer);
+  type Feed = { raceControl: { ledger: { entriesOf(code: string): readonly { reason: string; seconds: number }[] }; messages: { kind: string; detail?: string }[] } };
+  const rc = (field as unknown as Feed).raceControl;
+  check(
+    "a jump start is in the ledger and on the feed, added to the track-limits time",
+    meNow?.penaltyS === 13 && rc.ledger.entriesOf("YOU").some((e) => e.reason === "jump_start" && e.seconds === 10) && rc.messages.some((m) => m.kind === "penalty" && m.detail === "Jump start"),
+    JSON.stringify(meNow)
+  );
+  // A player racing under an AI driver's code: that driver races renamed, and race control's calls show the race's codes
+  const named = new AiOpponentField(track, new F1Physics2026(track), [AI_DRIVERS[0], AI_DRIVERS[1]], undefined, { seed: 1, learning: false });
+  named.playerDriver = { code: AI_DRIVERS[0].code, color: "#00ff00" };
+  named.qualifying = { playerMs: 1, refLapMs: 90000, refBase: 1 };
+  named.startRace(true);
+  const shown = named.status().standings.map((e) => e.driverCode);
+  const quali = (named.status().qualifying ?? []).map((r) => r.code);
+  check(
+    "qualifying shows the codes the standings show",
+    quali.length === 3 && quali.every((c) => shown.includes(c)) && quali.filter((c) => c === AI_DRIVERS[0].code).length === 1,
+    `${quali.join(",")} / ${shown.join(",")}`
+  );
+  named.playerDisqualified = true;
+  const namedFeed = (named as unknown as { raceControl: { messages: { kind: string; text: string }[] } }).raceControl.messages;
+  check(
+    "the disqualification names the player's own code",
+    namedFeed.some((m) => m.kind === "penalty" && m.text === `${AI_DRIVERS[0].code} disqualified`),
+    JSON.stringify(namedFeed)
+  );
+}
+
+console.log("Yellow flags · passing under yellow");
+{
+  const pass = (j: YellowPassJudge, level: 0 | 1 | 2, exempt = false) => {
+    // The other car 5 m ahead, then the player 5 m ahead of it
+    j.update(DT, 1000, [{ code: "AAA", distM: 1005, exempt, gone: false }], level, true);
+    return j.update(DT, 1010, [{ code: "AAA", distM: 1005, exempt, gone: false }], level, true);
+  };
+  const hold = (j: YellowPassJudge, seconds: number, meM: number, otherM: number, level: 0 | 1 | 2 = 0) => {
+    const ev: YellowPassEvent[] = [];
+    for (let t = 0; t < seconds; t += DT) ev.push(...j.update(DT, meM, [{ code: "AAA", distM: otherM, exempt: false, gone: false }], level, true));
+    return ev;
+  };
+  const j = new YellowPassJudge();
+  check("passing on a green track is no offence", pass(j, 0).length === 0 && j.owed === null);
+  const j2 = new YellowPassJudge();
+  const order = pass(j2, 1);
+  check("passing under yellow: the place is owed back", order.length === 1 && order[0].kind === "order" && j2.owed?.code === "AAA");
+  check("watched first: the hand-back clock shows the full 15 s", j2.owed?.remainingS === 15);
+  const back = hold(j2, 1, 1000, 1005);
+  check("letting the car back by clears it", back.some((e) => e.kind === "returned") && j2.owed === null, JSON.stringify(back));
+  const j3 = new YellowPassJudge();
+  pass(j3, 1);
+  const kept = hold(j3, 18.5, 1010, 1005);
+  check("kept past 3 + 15 s: +5 s", kept.length === 1 && kept[0].kind === "penalty" && kept[0].seconds === 5, JSON.stringify(kept));
+  const j4 = new YellowPassJudge();
+  pass(j4, 2);
+  const keptDouble = hold(j4, 18.5, 1010, 1005);
+  check("under a double yellow: +10 s", keptDouble.length === 1 && keptDouble[0].seconds === 10, JSON.stringify(keptDouble));
+  const j5 = new YellowPassJudge();
+  check("passing the car the flag is out for (or a crawling one) is no offence", pass(j5, 2, true).length === 0);
+  const j6 = new YellowPassJudge();
+  pass(j6, 1);
+  const gone = j6.update(DT, 1010, [{ code: "AAA", distM: 1005, exempt: true, gone: true }], 0, true);
+  check("the passed car retires: nothing left to hand back", gone.length === 1 && gone[0].kind === "dropped" && j6.owed === null);
+  const j7 = new YellowPassJudge();
+  pass(j7, 1);
+  for (let t = 0; t < 30; t += DT) j7.update(DT, 1010, [{ code: "AAA", distM: 1005, exempt: false, gone: false }], 0, false);
+  check("the clock stops while the player isn't racing (autopilot)", j7.owed?.remainingS === 15);
+
+  const ledger = new PenaltyLedger();
+  ledger.add("YOU", { kind: "time_penalty", reason: "yellow_overtake", seconds: 5, atS: 10, label: "" });
+  ledger.add("YOU", { kind: "warning", reason: "collision", seconds: 0, atS: 20, label: "" });
+  ledger.add("YOU", { kind: "time_penalty", reason: "collision", seconds: 10, atS: 30, label: "" });
+  check("the ledger sums the time penalties only", ledger.secondsOf("YOU") === 15 && ledger.entriesOf("YOU").length === 3 && !ledger.disqualified("YOU"));
 }
 
 console.log(`\n${passed} checks passed`);

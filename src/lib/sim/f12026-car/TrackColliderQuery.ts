@@ -14,8 +14,9 @@
  * under it (the road beneath a bridge). A kerb or sausage above that ground carries the wheel at its modelled height,
  * up to its surface's `maxRiseM`; failing all of these, the highest tagged surface (terrain) is used. The surface /
  * grip of a contact is the top-most tagged surface within `SURFACE_MATCH_M` of the contact height, falling back to
- * the contact layer's own tags. Converted circuits built with `conformSurfaces` fit their off-road bands to the
- * road first, and then also drive on their grass and let a kerb fitted just under the road name the surface.
+ * the contact layer's own tags. Converted circuits built with `conformSurfaces` fit their off-road bands to the road
+ * first and take them off it where another stretch's bands cover it (`clearOffroadOverRoad`), and then also drive on
+ * their grass and let a kerb fitted just under the road name the surface.
  *
  * A converted scan whose own ground is drawn in named materials (track data `mesh.groundMaterials`, see
  * `DrawnGroundOptions`) is driven on as it is drawn wherever its own surfaces leave off. Past the road collider's band
@@ -85,6 +86,14 @@ const DRAWN_TOLERANCE_M = 0.04;
  * triangle's size outside it (microns on the largest terrain triangles), so the box test never rejects one it keeps
  */
 const TRI_BOX_MARGIN_M = 1e-3;
+/**
+ * A grid cell listing more triangles than this is split into finer cells (`splitDenseCells`): a busy stretch of a
+ * circuit (Spielberg had one 4 m cell of 458 triangles, against 9 for a typical one) cost a car a whole frame there
+ */
+const DENSE_CELL_TRIS = 64;
+/** A split cell aims for about this many triangles in each of its finer cells, in at most 8 × 8 of them */
+const SPLIT_CELL_TRIS = 16;
+const SPLIT_MAX = 8;
 /** Most points one `queryMany` answers (a contact patch takes five) */
 export const GROUND_QUERY_MANY_MAX = 8;
 /** Tagged surfaces kept per point to classify its contact */
@@ -114,11 +123,18 @@ export interface GroundHit {
 /** Anything that can answer "what is under this XZ point, at or below probeY" */
 export interface GroundQuery {
   query(x: number, z: number, probeY: number, out: GroundHit): boolean;
+  /** The ground with the kerbs left out (the circuit's colliders only): what a kerb stands on */
+  queryBase?(x: number, z: number, probeY: number, out: GroundHit): boolean;
   /**
    * The ground is a smooth analytic surface (flat, or interpolated from the track samples) with no texture or seams for
    * a tyre's contact patch to envelope: the tyres probe it at their centre alone
    */
   readonly smooth?: boolean;
+  /**
+   * `query` answers from the point alone, never from the ground's own earlier queries: a car's settle on it is the same
+   * whenever the car is, so it can be reused (`settle-memo.ts`)
+   */
+  readonly stateless?: boolean;
   /**
    * Optional: `query` for up to `GROUND_QUERY_MANY_MAX` nearby points at once (a tyre's contact patch), for a ground
    * that can share work between them. Returns a bit mask, bit i set when point i has ground (in `outs[i]`); points
@@ -168,6 +184,9 @@ export interface TrackColliderBuffers {
   nz: number;
   cellStart: Uint32Array;
   cellTris: Uint32Array;
+  /** Per grid cell: -1, or the first of the k × k finer cells it is split into (`cellSplitK` holds k) */
+  cellSplit: Int32Array;
+  cellSplitK: Uint8Array;
   fitted: boolean;
   /** The scan's drawn ground (`DrawnGroundOptions`), on a grid of its own; absent on circuits without it */
   drawn?: DrawnGroundBuffers | null;
@@ -296,6 +315,64 @@ function buildCsrGrid(
   const fill = cellStart.slice(0, cellCount);
   for (let i = 0; i < count; i++) forEachCell(i, (cell) => (items[fill[cell]++] = i));
   return { nx, nz, cellStart, items };
+}
+
+/**
+ * Splits each grid cell of more than `DENSE_CELL_TRIS` items into k × k finer cells, each listing the cell's items
+ * whose box (grown by `TRI_BOX_MARGIN_M`, so every triangle a point there could be inside is kept) overlaps it, in the
+ * cell's own order. A query in a split cell then scans only its finer cell's list, and finds the same triangles in the
+ * same order as it found in the whole cell's: the same answer, ties included. The finer cells follow the grid's cells
+ * in `cellStart` (a split cell's own range is left empty); `cellAt` maps a point to one with the same arithmetic.
+ */
+function splitDenseCells(
+  grid: { nx: number; nz: number; cellStart: Uint32Array; items: Uint32Array },
+  minX: number,
+  minZ: number,
+  tris: Float32Array
+): { cellStart: Uint32Array; items: Uint32Array; cellSplit: Int32Array; cellSplitK: Uint8Array } {
+  const cells = grid.nx * grid.nz;
+  const cellSplit = new Int32Array(cells).fill(-1);
+  const cellSplitK = new Uint8Array(cells);
+  let leaves = cells;
+  for (let c = 0; c < cells; c++) {
+    const count = grid.cellStart[c + 1] - grid.cellStart[c];
+    if (count <= DENSE_CELL_TRIS) continue;
+    const k = Math.min(SPLIT_MAX, Math.max(2, Math.ceil(Math.sqrt(count / SPLIT_CELL_TRIS))));
+    cellSplit[c] = leaves;
+    cellSplitK[c] = k;
+    leaves += k * k;
+  }
+  if (leaves === cells) return { cellStart: grid.cellStart, items: grid.items, cellSplit, cellSplitK };
+  /** A coordinate's finer column / row within its cell (`cellAt`'s arithmetic), clamped to the cell */
+  const sub = (v: number, min: number, cell: number, k: number) => Math.min(k - 1, Math.max(0, Math.floor(((v - min) / CELL_SIZE_M - cell) * k)));
+  const forEachLeaf = (c: number, t: number, fn: (leaf: number) => void) => {
+    const k = cellSplitK[c];
+    const cx = c % grid.nx;
+    const cz = (c - cx) / grid.nx;
+    const o = t * 9;
+    const x0 = Math.min(tris[o], tris[o + 3], tris[o + 6]) - TRI_BOX_MARGIN_M;
+    const x1 = Math.max(tris[o], tris[o + 3], tris[o + 6]) + TRI_BOX_MARGIN_M;
+    const z0 = Math.min(tris[o + 2], tris[o + 5], tris[o + 8]) - TRI_BOX_MARGIN_M;
+    const z1 = Math.max(tris[o + 2], tris[o + 5], tris[o + 8]) + TRI_BOX_MARGIN_M;
+    const sx0 = sub(x0, minX, cx, k);
+    const sx1 = sub(x1, minX, cx, k);
+    const sz0 = sub(z0, minZ, cz, k);
+    const sz1 = sub(z1, minZ, cz, k);
+    for (let sz = sz0; sz <= sz1; sz++) for (let sx = sx0; sx <= sx1; sx++) fn(cellSplit[c] + sz * k + sx);
+  };
+  const cellStart = new Uint32Array(leaves + 1);
+  for (let c = 0; c < cells; c++) {
+    if (cellSplit[c] < 0) cellStart[c + 1] = grid.cellStart[c + 1] - grid.cellStart[c];
+    else for (let i = grid.cellStart[c]; i < grid.cellStart[c + 1]; i++) forEachLeaf(c, grid.items[i], (leaf) => cellStart[leaf + 1]++);
+  }
+  for (let l = 0; l < leaves; l++) cellStart[l + 1] += cellStart[l];
+  const items = new Uint32Array(cellStart[leaves]);
+  const fill = cellStart.slice(0, leaves);
+  for (let c = 0; c < cells; c++) {
+    if (cellSplit[c] < 0) items.set(grid.items.subarray(grid.cellStart[c], grid.cellStart[c + 1]), fill[c]);
+    else for (let i = grid.cellStart[c]; i < grid.cellStart[c + 1]; i++) forEachLeaf(c, grid.items[i], (leaf) => (items[fill[leaf]++] = grid.items[i]));
+  }
+  return { cellStart, items, cellSplit, cellSplitK };
 }
 
 /** Closest point in XZ on triangle (a, b, c) to (px, pz), writing the interpolated 3D point and squared XZ distance */
@@ -639,7 +716,191 @@ export function conformTrackSurfaceColliders(root: THREE.Object3D): void {
   }
 }
 
+/** The off-road bands a converted circuit lays either side of its lap */
+const OFFROAD_BANDS: ReadonlySet<string> = new Set(['Track_Surface_Runoff', 'Track_Surface_Gravel', 'Track_Surface_Grass']);
+/** A band face this close (m) above or below the road under it lies on it (a bridge's deck or the road under one does not) */
+const OVER_ROAD_HEIGHT_M = 1;
+/**
+ * A band face partly over the road is quartered until its pieces are this small (longest side, m), and then each
+ * piece's middle decides: the cut follows the road's edge to within half of it
+ */
+const OVER_ROAD_PIECE_M = 0.25;
+
+/**
+ * Takes the run-off, gravel and grass bands off the lap's road (`Track_Surface_Road`, the band between its edges) where
+ * they lie on it, once they are fitted to it (`conformTrackSurfaceColliders`). A converted circuit's bands run out from
+ * each stretch of its lap to 12 m past the barriers (where it found none, 57 m out), so wherever another stretch of the
+ * same lap passes within that reach, its road was covered: VIR's South course 55 m across open ground from the run
+ * back, Norisring's two straights either side of one wall. Fitted onto the road, that grass named the surface and the
+ * car on the asphalt was off the track, on grass grip. The road is under those faces, so they are dropped (the porter's
+ * `offroadOverRoad` moves them at the build, where a circuit asks for it); a face partly over the road is quartered
+ * until its middle, corners and side middles agree, or down to `OVER_ROAD_PIECE_M`. A band's own faces start at the
+ * road's edge and keep every face, and the porter's own `Track_Surface_Apron`
+ * (the mod's paved ground off the lap, Dunsfold's runways) is left as built. Returns the area dropped (m², per band).
+ */
+export function clearOffroadOverRoad(root: THREE.Object3D): Record<string, number> {
+  root.updateMatrixWorld(true);
+  const bands: THREE.Mesh[] = [];
+  const road: number[] = [];
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const forEachTri = (mesh: THREE.Mesh, fn: (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, i0: number, i1: number, i2: number) => void) => {
+    const geom = mesh.geometry as THREE.BufferGeometry;
+    const pos = geom.getAttribute('position');
+    if (!pos) return;
+    const idx = geom.getIndex();
+    const n = idx ? idx.count : pos.count;
+    for (let i = 0; i + 2 < n; i += 3) {
+      const i0 = idx ? idx.getX(i) : i;
+      const i1 = idx ? idx.getX(i + 1) : i + 1;
+      const i2 = idx ? idx.getX(i + 2) : i + 2;
+      fn(a.fromBufferAttribute(pos, i0).applyMatrix4(mesh.matrixWorld), b.fromBufferAttribute(pos, i1).applyMatrix4(mesh.matrixWorld),
+        c.fromBufferAttribute(pos, i2).applyMatrix4(mesh.matrixWorld), i0, i1, i2);
+    }
+  };
+  root.traverse((o) => {
+    if (!(o instanceof THREE.Mesh)) return;
+    // A band's node may hold its mesh as a child (several primitives)
+    let node: THREE.Object3D | null = o;
+    while (node && node !== root && !OFFROAD_BANDS.has(node.name) && node.name !== 'Track_Surface_Road') node = node.parent;
+    if (!node || node === root) return;
+    if (OFFROAD_BANDS.has(node.name)) {
+      bands.push(o);
+      return;
+    }
+    forEachTri(o, (p, q, r) => {
+      // Upward faces only: the road's skirts and steps are no ground to lie on
+      const ny = (q.z - p.z) * (r.x - p.x) - (q.x - p.x) * (r.z - p.z);
+      const len = Math.hypot((q.y - p.y) * (r.z - p.z) - (q.z - p.z) * (r.y - p.y), ny, (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x));
+      if (len < 1e-9 || Math.abs(ny) / len < 0.5) return;
+      road.push(p.x, p.y, p.z, q.x, q.y, q.z, r.x, r.y, r.z);
+    });
+  });
+  const dropped: Record<string, number> = {};
+  if (road.length === 0 || bands.length === 0) return dropped;
+
+  // The road's faces on an XZ grid, each listed in every cell its box overlaps
+  let minX = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxZ = -Infinity;
+  for (let i = 0; i < road.length; i += 3) {
+    minX = Math.min(minX, road[i]);
+    maxX = Math.max(maxX, road[i]);
+    minZ = Math.min(minZ, road[i + 2]);
+    maxZ = Math.max(maxZ, road[i + 2]);
+  }
+  const grid = buildCsrGrid(minX, minZ, maxX, maxZ, road.length / 9, (t, box) => {
+    const o = t * 9;
+    box[0] = Math.min(road[o], road[o + 3], road[o + 6]);
+    box[1] = Math.min(road[o + 2], road[o + 5], road[o + 8]);
+    box[2] = Math.max(road[o], road[o + 3], road[o + 6]);
+    box[3] = Math.max(road[o + 2], road[o + 5], road[o + 8]);
+    return true;
+  });
+  const onRoad = (x: number, y: number, z: number): boolean => {
+    const fx = (x - minX) / CELL_SIZE_M;
+    const fz = (z - minZ) / CELL_SIZE_M;
+    if (fx < 0 || fz < 0 || fx >= grid.nx || fz >= grid.nz) return false;
+    const cell = Math.floor(fz) * grid.nx + Math.floor(fx);
+    for (let k = grid.cellStart[cell], end = grid.cellStart[cell + 1]; k < end; k++) {
+      const o = grid.items[k] * 9;
+      const v0x = road[o + 3] - road[o];
+      const v0z = road[o + 5] - road[o + 2];
+      const v1x = road[o + 6] - road[o];
+      const v1z = road[o + 8] - road[o + 2];
+      const den = v0x * v1z - v1x * v0z;
+      if (Math.abs(den) < 1e-12) continue;
+      const px = x - road[o];
+      const pz = z - road[o + 2];
+      const u = (px * v1z - v1x * pz) / den;
+      const v = (v0x * pz - px * v0z) / den;
+      if (u < 0 || v < 0 || u + v > 1) continue;
+      const h = road[o + 1] + u * (road[o + 4] - road[o + 1]) + v * (road[o + 7] - road[o + 1]);
+      if (Math.abs(h - y) <= OVER_ROAD_HEIGHT_M) return true;
+    }
+    return false;
+  };
+
+  // A face as 3 corners of [x, y, z, u, v] (world position, texture coordinates)
+  type Corner = number[];
+  const votesOnRoad = (f: Corner[]): { all: boolean; none: boolean; middle: boolean } => {
+    const mx = (f[0][0] + f[1][0] + f[2][0]) / 3;
+    const my = (f[0][1] + f[1][1] + f[2][1]) / 3;
+    const mz = (f[0][2] + f[1][2] + f[2][2]) / 3;
+    const middle = onRoad(mx, my, mz);
+    let n = middle ? 1 : 0;
+    // The corners and the middles of the sides, each a tenth of the way in (a point on the road's edge is on neither side)
+    for (let k = 0; k < 3; k++) {
+      const p = f[k];
+      const q = f[(k + 1) % 3];
+      if (onRoad(p[0] + 0.1 * (mx - p[0]), p[1] + 0.1 * (my - p[1]), p[2] + 0.1 * (mz - p[2]))) n++;
+      const sx = (p[0] + q[0]) / 2;
+      const sy = (p[1] + q[1]) / 2;
+      const sz = (p[2] + q[2]) / 2;
+      if (onRoad(sx + 0.1 * (mx - sx), sy + 0.1 * (my - sy), sz + 0.1 * (mz - sz))) n++;
+    }
+    return { all: n === 7, none: n === 0, middle };
+  };
+  const mid = (p: Corner, q: Corner): Corner => p.map((v, k) => (v + q[k]) / 2);
+  const areaXZ = (f: Corner[]) => Math.abs((f[1][0] - f[0][0]) * (f[2][2] - f[0][2]) - (f[2][0] - f[0][0]) * (f[1][2] - f[0][2])) / 2;
+  const longestSide = (f: Corner[]) =>
+    Math.max(Math.hypot(f[1][0] - f[0][0], f[1][2] - f[0][2]), Math.hypot(f[2][0] - f[1][0], f[2][2] - f[1][2]), Math.hypot(f[0][0] - f[2][0], f[0][2] - f[2][2]));
+
+  for (const mesh of bands) {
+    const geom = mesh.geometry as THREE.BufferGeometry;
+    const uv = geom.getAttribute('uv');
+    const kept: Corner[][] = [];
+    let droppedM2 = 0;
+    forEachTri(mesh, (p, q, r, i0, i1, i2) => {
+      const corner = (v: THREE.Vector3, i: number): Corner => [v.x, v.y, v.z, uv ? uv.getX(i) : 0, uv ? uv.getY(i) : 0];
+      let todo: Corner[][] = [[corner(p, i0), corner(q, i1), corner(r, i2)]];
+      // (9 quarterings take a 100 m face under 0.25 m: the cap of 12 only guards against a degenerate one)
+      for (let depth = 0; depth <= 12 && todo.length; depth++) {
+        const next: Corner[][] = [];
+        for (const f of todo) {
+          const vote = votesOnRoad(f);
+          const last = depth === 12 || longestSide(f) < OVER_ROAD_PIECE_M;
+          if (vote.none || (last && !vote.all && !vote.middle)) kept.push(f);
+          else if (vote.all || last) droppedM2 += areaXZ(f);
+          else {
+            const ab = mid(f[0], f[1]);
+            const bc = mid(f[1], f[2]);
+            const ca = mid(f[2], f[0]);
+            next.push([f[0], ab, ca], [ab, f[1], bc], [ca, bc, f[2]], [ab, bc, ca]);
+          }
+        }
+        todo = next;
+      }
+    });
+    if (droppedM2 === 0) continue;
+    // Rebuilt unindexed, in the mesh's own space, keeping its texture coordinates (the surface ripple reads them)
+    const toLocal = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
+    const positions = new Float32Array(kept.length * 9);
+    const uvs = uv ? new Float32Array(kept.length * 6) : null;
+    const v = new THREE.Vector3();
+    kept.forEach((f, i) => {
+      f.forEach((p, k) => {
+        v.set(p[0], p[1], p[2]).applyMatrix4(toLocal);
+        positions.set([v.x, v.y, v.z], i * 9 + k * 3);
+        uvs?.set([p[3], p[4]], i * 6 + k * 2);
+      });
+    });
+    const out = new THREE.BufferGeometry();
+    out.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    if (uvs) out.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    mesh.geometry = out;
+    let name = mesh.name;
+    for (let o: THREE.Object3D | null = mesh; o && o !== root; o = o.parent) if (OFFROAD_BANDS.has(o.name)) name = o.name;
+    dropped[name] = (dropped[name] ?? 0) + droppedM2;
+  }
+  return dropped;
+}
+
 export class TrackColliderQuery implements GroundQuery {
+  /** Each query starts from cleared scratch buffers: nothing carries over from the last */
+  readonly stateless = true;
   /** Triangles: 9 floats each (a, b, c world positions) */
   private readonly tris: Float32Array;
   private readonly triLayer: Uint8Array;
@@ -655,23 +916,33 @@ export class TrackColliderQuery implements GroundQuery {
   private readonly minZ: number;
   private readonly nx: number;
   private readonly nz: number;
-  /** CSR grid: cell → [cellStart[c], cellStart[c+1]) into cellTris */
+  /** CSR grid: cell → [cellStart[c], cellStart[c+1]) into cellTris, the finer cells of split ones after the grid's */
   private readonly cellStart: Uint32Array;
   private readonly cellTris: Uint32Array;
+  /** Per grid cell: -1, or its first finer cell, and how many across (`splitDenseCells`) */
+  private readonly cellSplit: Int32Array;
+  private readonly cellSplitK: Uint8Array;
   public readonly triangleCount: number;
   /** The scan's drawn ground (`DrawnGroundOptions`) on a grid of its own, or null (every circuit without it) */
   private readonly drawn: DrawnGroundBuffers | null;
 
   /**
    * Build from the loaded track root: `Track_Collider_Road` plus every node tagged `userData.surface`, and with
-   * `drawnGround` the scan's meshes drawn in its ground materials. Throws when the road collider is missing.
+   * `drawnGround` the scan's meshes drawn in its ground materials (event branch).
+   * `prepare` runs on the root once its surfaces are fitted, before the layers are read (drawn-surfaces.ts).
+   * Throws when the road collider is missing.
    */
   static fromTrackRoot(
     root: THREE.Object3D,
     table: SurfaceTable = DEFAULT_SURFACE_TABLE,
-    options: { conformSurfaces?: boolean; drawnGround?: DrawnGroundOptions } = {}
+    options: { conformSurfaces?: boolean; prepare?: (root: THREE.Object3D) => void; splitDenseCells?: boolean; drawnGround?: DrawnGroundOptions } = {}
   ): TrackColliderQuery {
-    if (options.conformSurfaces) conformTrackSurfaceColliders(root);
+    if (options.conformSurfaces) {
+      conformTrackSurfaceColliders(root);
+      // After the fitting: the pieces kept of a face split here lie in its fitted plane, where the fitting left it
+      clearOffroadOverRoad(root);
+    }
+    options.prepare?.(root);
     root.updateMatrixWorld(true);
     const sources: ColliderLayerSource[] = [];
     const found: { road?: THREE.Object3D } = {};
@@ -682,7 +953,12 @@ export class TrackColliderQuery implements GroundQuery {
     if (!found.road) throw new Error('TrackColliderQuery: Track_Collider_Road not found under the track root');
     sources.unshift({ object: found.road, isRoadCollider: true });
     const drawn = options.drawnGround ? drawnGroundGroups(root, options.drawnGround) : undefined;
-    return new TrackColliderQuery(sources, table, { conformSurfaces: options.conformSurfaces, drawn, cutBoxes: options.drawnGround?.cutBoxes });
+    return new TrackColliderQuery(sources, table, {
+      conformSurfaces: options.conformSurfaces,
+      splitDenseCells: options.splitDenseCells,
+      drawn,
+      cutBoxes: options.drawnGround?.cutBoxes,
+    });
   }
 
   /**
@@ -713,6 +989,8 @@ export class TrackColliderQuery implements GroundQuery {
       nz: this.nz,
       cellStart: this.cellStart,
       cellTris: this.cellTris,
+      cellSplit: this.cellSplit,
+      cellSplitK: this.cellSplitK,
       fitted: this.fitted,
       drawn: this.drawn,
     };
@@ -721,7 +999,8 @@ export class TrackColliderQuery implements GroundQuery {
   constructor(
     sources: ColliderLayerSource[] | TrackColliderBuffers,
     table: SurfaceTable = DEFAULT_SURFACE_TABLE,
-    options: { conformSurfaces?: boolean; drawn?: DrawnGroundGroup[]; cutBoxes?: readonly SceneryCutBox[] } = {}
+    /** `splitDenseCells: false` keeps every grid cell whole (scripts/verify-collider-split.ts compares the two) */
+    options: { conformSurfaces?: boolean; splitDenseCells?: boolean; drawn?: DrawnGroundGroup[]; cutBoxes?: readonly SceneryCutBox[] } = {}
   ) {
     if (!Array.isArray(sources)) {
       this.drawn = sources.drawn ?? null;
@@ -740,6 +1019,8 @@ export class TrackColliderQuery implements GroundQuery {
       this.nz = sources.nz;
       this.cellStart = sources.cellStart;
       this.cellTris = sources.cellTris;
+      this.cellSplit = sources.cellSplit;
+      this.cellSplitK = sources.cellSplitK;
       return;
     }
     const fitted = options.conformSurfaces === true;
@@ -758,7 +1039,8 @@ export class TrackColliderQuery implements GroundQuery {
       const isRoadCollider = src.isRoadCollider ?? ud.collider === 'road';
       const tagged = asSurface(ud.surface);
       const surface = src.surface ?? tagged ?? 'road';
-      const props = table[surface];
+      // A node may cap its own rise (`userData.maxRiseM`): faces renamed from a kerb keep the kerb's (drawn-surfaces.ts)
+      const props = typeof ud.maxRiseM === 'number' ? { ...table[surface], maxRiseM: ud.maxRiseM } : table[surface];
       const grip = src.grip ?? (typeof ud.grip === 'number' ? ud.grip : props.friction);
       const ripple = !isRoadCollider && props.bumpHeightM > 0 && props.bumpLengthM > 0;
       const uvScaleM = ripple ? (typeof ud.uvScaleM === 'number' ? ud.uvScaleM : DEFAULT_UV_SCALE_M) : 0;
@@ -930,8 +1212,14 @@ export class TrackColliderQuery implements GroundQuery {
     this.minZ = minZ;
     this.nx = grid.nx;
     this.nz = grid.nz;
-    this.cellStart = grid.cellStart;
-    this.cellTris = grid.items;
+    const split =
+      options.splitDenseCells === false
+        ? { cellStart: grid.cellStart, items: grid.items, cellSplit: new Int32Array(grid.nx * grid.nz).fill(-1), cellSplitK: new Uint8Array(grid.nx * grid.nz) }
+        : splitDenseCells(grid, minX, minZ, this.tris);
+    this.cellStart = split.cellStart;
+    this.cellTris = split.items;
+    this.cellSplit = split.cellSplit;
+    this.cellSplitK = split.cellSplitK;
     this.drawn = options.drawn?.length ? this.buildDrawn(options.drawn, table, options.cutBoxes ?? [], minX, minZ, maxX, maxZ) : null;
   }
 
@@ -1140,6 +1428,15 @@ export class TrackColliderQuery implements GroundQuery {
   }
 
   /**
+   * `query`'s ground with the kerbs and sausages left out: the road, run-off or other ground they stand on. False
+   * where there is none but a kerb (or nothing).
+   */
+  queryBase(x: number, z: number, probeY: number, out: GroundHit): boolean {
+    if (!this.query(x, z, probeY, out)) return false;
+    return this.resolve(0, out, true, false);
+  }
+
+  /**
    * `query` for up to `GROUND_QUERY_MANY_MAX` nearby points at once (a tyre's contact patch), each answered exactly as
    * `query` would: points in the same grid cell share one pass over its triangles, the bulk of a query's cost.
    * Returns a bit mask, bit i set when point i has ground (written to `outs[i]`); points from `fullCount` on get only
@@ -1302,12 +1599,18 @@ export class TrackColliderQuery implements GroundQuery {
     return layer.tagged && !layer.isRoadCollider && OWN_ROAD_SURFACES.has(layer.surface);
   }
 
-  /** Grid cell of (x, z), or -1 off the grid */
+  /** Grid cell of (x, z), or its finer cell in a split one; -1 off the grid */
   private cellAt(x: number, z: number): number {
     const fx = (x - this.minX) / CELL_SIZE_M;
     const fz = (z - this.minZ) / CELL_SIZE_M;
     if (fx < 0 || fz < 0 || fx >= this.nx || fz >= this.nz) return -1;
-    return Math.floor(fz) * this.nx + Math.floor(fx);
+    const cx = Math.floor(fx);
+    const cz = Math.floor(fz);
+    const cell = cz * this.nx + cx;
+    const first = this.cellSplit[cell];
+    if (first < 0) return cell;
+    const k = this.cellSplitK[cell];
+    return first + Math.min(k - 1, Math.floor((fz - cz) * k)) * k + Math.min(k - 1, Math.floor((fx - cx) * k));
   }
 
   /** Point `p` starts a scan with no candidates */
@@ -1364,9 +1667,9 @@ export class TrackColliderQuery implements GroundQuery {
 
   /**
    * Point `p`'s ground from its scanned candidates (see the class notes), into `out`; false when it has none. Unless
-   * `full`, only its height is written (no normal or surface tags).
+   * `full`, only its height is written (no normal or surface tags). Without `raised`, kerbs and sausages are left out.
    */
-  private resolve(p: number, out: GroundHit, full = true): boolean {
+  private resolve(p: number, out: GroundHit, full = true, raised = true): boolean {
     const c = p * 4;
     const roadH = this.candH[c + CAND_ROAD];
     const roadT = this.candT[c + CAND_ROAD];
@@ -1409,7 +1712,7 @@ export class TrackColliderQuery implements GroundQuery {
     let normalU: number;
     let normalV: number;
     if (baseT >= 0) {
-      if (raisedT >= 0 && raisedH >= baseH - (this.fitted ? SURFACE_MATCH_M : 0) && raisedH <= baseH + 0.6) {
+      if (raised && raisedT >= 0 && raisedH >= baseH - (this.fitted ? SURFACE_MATCH_M : 0) && raisedH <= baseH + 0.6) {
         const maxRise = this.layers[this.triLayer[raisedT]].props.maxRiseM;
         contactT = raisedT;
         contactH = Math.min(Math.max(baseH, raisedH), baseH + maxRise);
@@ -1433,6 +1736,8 @@ export class TrackColliderQuery implements GroundQuery {
         normalU = baseU;
         normalV = baseV;
       }
+    } else if (!raised) {
+      return false;
     } else if (raisedT >= 0) {
       contactT = raisedT;
       contactH = raisedH;
@@ -1580,6 +1885,7 @@ export class TrackColliderQuery implements GroundQuery {
 /** Infinite flat ground (tests, garage) */
 export class FlatGroundQuery implements GroundQuery {
   readonly smooth = true;
+  readonly stateless = true;
 
   constructor(
     private readonly height = 0,
@@ -1621,6 +1927,8 @@ export interface WallQuery {
    * (at most `out.length`).
    */
   near(x: number, z: number, radius: number, out: Int32Array): number;
+  /** `near` answers from its arguments alone, never from earlier queries (as `GroundQuery.stateless`) */
+  readonly stateless?: boolean;
 }
 
 /**
@@ -1651,6 +1959,8 @@ const DRAWN_BARRIER_MAX_NORMAL_Y = 0.5;
 const DRAWN_BARRIER_MIN_FACE_M = 0.5;
 
 export class TrackWallQuery implements WallQuery {
+  /** The stamps only stop a segment being listed twice in one query: no answer depends on an earlier one */
+  readonly stateless = true;
   public readonly segments: Float32Array;
   public readonly segmentCount: number;
   private readonly minX: number;
@@ -1859,26 +2169,43 @@ export function createWallHit(): WallHit {
 }
 
 /**
- * How far the point (px, py, pz) is past the wall segments `ids[0..count)`, seen from the reference point (refX, refZ)
- * on the near side (the car's CG): the deepest segment the point lies alongside (within its length, and within `ySlack`
- * of its height range; a NaN `py` skips the height test) and behind, up to `maxDepth` (anything deeper is another
- * stretch of wall). The normal points back toward the reference side. Returns the depth, 0 when clear.
+ * A corner of a car's barrier outline at (px, py, pz) against the wall segments `ids[0..count)`, the car's centre at
+ * (cgX, cgZ) and the corner at (fromX, fromZ) at the start of the sub-step. A face counts when the corner's path this
+ * sub-step entered it from the centre's side; of several, the first it entered (a post's front, not its back; the side
+ * of a row, not the end it then slid out past). A corner already past a face at the start of the sub-step (left there
+ * by another contact's push) counts the first face between the centre and the corner, when the corner lies behind
+ * that face within its length: a face the corner only got behind by going round its end is not one it is through (the
+ * end is inside the outline then, `wallEndInOutline`). Nothing further away counts: a face beside the corner, or one the
+ * corner is "behind" only as seen from the centre across empty ground, is not a contact. Only segments whose height
+ * range reaches within `ySlack` of `py` count (a NaN `py` skips the height test). The normal points back toward the
+ * centre's side; returns the depth behind the face, 0 when clear.
  */
-export function wallPenetration(
+export function wallCornerContact(
   walls: WallQuery,
   ids: Int32Array,
   count: number,
   px: number,
   py: number,
   pz: number,
-  refX: number,
-  refZ: number,
-  maxDepth: number,
+  fromX: number,
+  fromZ: number,
+  cgX: number,
+  cgZ: number,
   ySlack: number,
   out: WallHit
 ): number {
   const seg = walls.segments;
-  out.depth = 0;
+  // The face normals are left unnormalized (|n| = the face's length): every test below is a sign or a ratio, so only the
+  // face picked needs a square root
+  let firstEntry = Infinity;
+  let entryDepth = 0;
+  let entryNx = 0;
+  let entryNz = 0;
+  let firstOnRay = Infinity;
+  let rayDepth = 0;
+  let rayNx = 0;
+  let rayNz = 0;
+  let rayBehind = false;
   for (let k = 0; k < count; k++) {
     const o = ids[k] * WALL_SEGMENT_STRIDE;
     if (py < seg[o + 4] - ySlack || py > seg[o + 5] + ySlack) continue;
@@ -1888,29 +2215,266 @@ export function wallPenetration(
     const dz = seg[o + 3] - az;
     const len2 = dx * dx + dz * dz;
     if (len2 < 1e-6) continue;
-    const t = ((px - ax) * dx + (pz - az) * dz) / len2;
-    if (t < 0 || t > 1) continue;
-    const len = Math.sqrt(len2);
-    let nx = -dz / len;
-    let nz = dx / len;
-    const sr = (refX - ax) * nx + (refZ - az) * nz;
-    if (Math.abs(sr) < 1e-4) continue;
-    if (sr < 0) {
+    let nx = -dz;
+    let nz = dx;
+    let sc = (cgX - ax) * nx + (cgZ - az) * nz;
+    // The centre within 0.1 mm of the face's line: no side to take
+    if (sc * sc < 1e-8 * len2) continue;
+    if (sc < 0) {
       nx = -nx;
       nz = -nz;
+      sc = -sc;
     }
-    const depth = -((px - ax) * nx + (pz - az) * nz);
-    if (depth <= 0 || depth > maxDepth || depth <= out.depth) continue;
-    out.depth = depth;
-    out.nx = nx;
-    out.nz = nz;
+    const sp = (px - ax) * nx + (pz - az) * nz;
+    if (sp >= 0) continue;
+    // Entered along the corner's own path, from the centre's side
+    const sf = (fromX - ax) * nx + (fromZ - az) * nz;
+    if (sf >= 0) {
+      const g = sf / (sf - sp);
+      const t = ((fromX + (px - fromX) * g - ax) * dx + (fromZ + (pz - fromZ) * g - az) * dz) / len2;
+      if (t >= 0 && t <= 1) {
+        if (g < firstEntry) {
+          const inv = 1 / Math.sqrt(len2);
+          firstEntry = g;
+          entryDepth = -sp * inv;
+          entryNx = nx * inv;
+          entryNz = nz * inv;
+        }
+        continue;
+      }
+    }
+    // Between the centre and the corner: the line from one to the other crosses the face
+    const f = sc / (sc - sp);
+    const t = ((cgX + (px - cgX) * f - ax) * dx + (cgZ + (pz - cgZ) * f - az) * dz) / len2;
+    if (t < 0 || t > 1 || f >= firstOnRay) continue;
+    const inv = 1 / Math.sqrt(len2);
+    firstOnRay = f;
+    const tq = ((px - ax) * dx + (pz - az) * dz) / len2;
+    rayBehind = tq >= 0 && tq <= 1;
+    rayDepth = -sp * inv;
+    rayNx = nx * inv;
+    rayNz = nz * inv;
+  }
+  if (firstEntry !== Infinity) {
+    out.depth = entryDepth;
+    out.nx = entryNx;
+    out.nz = entryNz;
+  } else if (firstOnRay !== Infinity && rayBehind) {
+    out.depth = rayDepth;
+    out.nx = rayNx;
+    out.nz = rayNz;
+  } else out.depth = 0;
+  return out.depth;
+}
+
+/** A wall's end or corner inside a car's outline: as `WallHit` (the normal is the way to push the car), and where it is */
+export interface WallEndHit extends WallHit {
+  x: number;
+  z: number;
+}
+
+export function createWallEndHit(): WallEndHit {
+  return { depth: 0, nx: 0, nz: 0, x: 0, z: 0 };
+}
+
+/** Floats per outline edge in `wallEndInOutline`'s edge lists: the outward unit normal (nx, nz) and its offset c */
+export const OUTLINE_EDGE_STRIDE = 3;
+
+/** The points (x, z) on the convex hull of `pts`, as indices in order round it (points on a straight edge left out) */
+export function convexHullIndices(pts: readonly { x: number; z: number }[]): number[] {
+  const order = pts.map((_, i) => i).sort((i, j) => pts[i].x - pts[j].x || pts[i].z - pts[j].z);
+  const cross = (o: number, a: number, b: number) =>
+    (pts[a].x - pts[o].x) * (pts[b].z - pts[o].z) - (pts[a].z - pts[o].z) * (pts[b].x - pts[o].x);
+  const half = (idx: number[]) => {
+    const h: number[] = [];
+    for (const i of idx) {
+      while (h.length >= 2 && cross(h[h.length - 2], h[h.length - 1], i) <= 0) h.pop();
+      h.push(i);
+    }
+    return h.slice(0, -1);
+  };
+  return half(order).concat(half([...order].reverse()));
+}
+
+/**
+ * A convex outline's edges for `wallEndInOutline`, from its `k` corners in order round it relative to the centre
+ * inside it (`corners`: x, z pairs): edge i runs from corner i − 1 to corner i
+ */
+export function writeOutlineEdges(corners: Float64Array, k: number, out: Float64Array): void {
+  let ax = corners[2 * k - 2];
+  let az = corners[2 * k - 1];
+  for (let i = 0; i < k; i++) {
+    const bx = corners[2 * i];
+    const bz = corners[2 * i + 1];
+    const dx = bx - ax;
+    const dz = bz - az;
+    const len = Math.hypot(dx, dz) || 1;
+    let nx = -dz / len;
+    let nz = dx / len;
+    let c = nx * ax + nz * az;
+    // Outward: away from the centre
+    if (c < 0) {
+      nx = -nx;
+      nz = -nz;
+      c = -c;
+    }
+    const e = i * OUTLINE_EDGE_STRIDE;
+    out[e] = nx;
+    out[e + 1] = nz;
+    out[e + 2] = c;
+    ax = bx;
+    az = bz;
+  }
+}
+
+/** Faces meeting at a wall's joint within this angle of a straight line make a smooth wall there, not a corner */
+const SMOOTH_JOINT_COS = Math.cos((30 * Math.PI) / 180);
+/**
+ * A face passing this close (m) to a wall's end meets it there. More than touching: faces under 5 cm are dropped from
+ * the walls (`TrackWallQuery`), which leaves gaps that size in a traced outline, and a barrier's sections can stand a
+ * few centimetres proud of each other (Monaco's Armco)
+ */
+const JOINT_TOLERANCE_M = 0.06;
+
+/**
+ * The deepest end or corner of the wall segments `ids[0..count)` inside a car's convex barrier outline: a post or a
+ * wall's end between the outline's corners, which no corner touches. The outline is given by its edges relative to its
+ * centre (at cgX, cgZ): `OUTLINE_EDGE_STRIDE` floats each, the outward unit normal n and c = n · (a corner on the edge);
+ * a point r from the centre is inside when r · n < c on every edge. `radius` bounds the outline. Height test against
+ * `py` as in `wallCornerContact`.
+ *
+ * The contact normal is that of the outline's edge nearest the end, and the depth how far it is in past that edge: a
+ * post met by the nose pushes the car straight back by the little it got in during the sub-step, one met by the nose's
+ * corner turns it aside. At a joint of a smooth wall (every face reaching the end within 30° of a straight line) the
+ * faces' own normal is used instead, with the push along it that clears the joint (if that is not much more than
+ * through the edge): a barrier's slight zig-zag, or a section standing a few centimetres proud of the one before,
+ * would otherwise catch a car sliding along it on the edge of its nose. `out` gets the way to push the car and the
+ * end's position; returns the depth, 0 when none is in.
+ */
+export function wallEndInOutline(
+  walls: WallQuery,
+  ids: Int32Array,
+  count: number,
+  cgX: number,
+  cgZ: number,
+  py: number,
+  edges: Float64Array,
+  edgeCount: number,
+  radius: number,
+  ySlack: number,
+  out: WallEndHit
+): number {
+  const seg = walls.segments;
+  const r2 = radius * radius;
+  out.depth = 0;
+  for (let k = 0; k < count; k++) {
+    const o = ids[k] * WALL_SEGMENT_STRIDE;
+    if (py < seg[o + 4] - ySlack || py > seg[o + 5] + ySlack) continue;
+    for (let end = 0; end < 2; end++) {
+      const ex = seg[o + 2 * end];
+      const ez = seg[o + 1 + 2 * end];
+      const rx = ex - cgX;
+      const rz = ez - cgZ;
+      if (rx * rx + rz * rz > r2) continue;
+      let inside = true;
+      let nearest = -Infinity;
+      let nearestEdge = 0;
+      for (let i = 0; i < edgeCount; i++) {
+        const e = i * OUTLINE_EDGE_STRIDE;
+        const d = rx * edges[e] + rz * edges[e + 1] - edges[e + 2];
+        if (d >= 0) {
+          inside = false;
+          break;
+        }
+        if (d > nearest) {
+          nearest = d;
+          nearestEdge = i;
+        }
+      }
+      if (!inside) continue;
+      let depth = -nearest;
+      let ux = -edges[nearestEdge * OUTLINE_EDGE_STRIDE];
+      let uz = -edges[nearestEdge * OUTLINE_EDGE_STRIDE + 1];
+      if (depth <= out.depth) continue;
+      // A joint of a smooth wall: the faces reaching the end, their directions turned to agree; the side the car is on
+      // is read from the face whose line runs furthest from its centre (one pointing at the centre cannot tell)
+      let faces = 0;
+      let smooth = true;
+      let fx = 0;
+      let fz = 0;
+      let sx = 0;
+      let sz = 0;
+      let side = 0;
+      let sideDist = -1;
+      for (let j = 0; j < count && smooth; j++) {
+        const oj = ids[j] * WALL_SEGMENT_STRIDE;
+        if (py < seg[oj + 4] - ySlack || py > seg[oj + 5] + ySlack) continue;
+        const ax = seg[oj];
+        const az = seg[oj + 1];
+        const bx = seg[oj + 2];
+        const bz = seg[oj + 3];
+        const dx = bx - ax;
+        const dz = bz - az;
+        const len2 = dx * dx + dz * dz;
+        if (len2 < 1e-6) continue;
+        const t = Math.min(1, Math.max(0, ((ex - ax) * dx + (ez - az) * dz) / len2));
+        const gx = ax + t * dx - ex;
+        const gz = az + t * dz - ez;
+        if (gx * gx + gz * gz > JOINT_TOLERANCE_M * JOINT_TOLERANCE_M) continue;
+        const len = Math.sqrt(len2);
+        let tx = dx / len;
+        let tz = dz / len;
+        if (faces === 0) {
+          fx = tx;
+          fz = tz;
+        } else if (Math.abs(tx * fx + tz * fz) < SMOOTH_JOINT_COS) smooth = false;
+        else if (tx * fx + tz * fz < 0) {
+          tx = -tx;
+          tz = -tz;
+        }
+        sx += tx;
+        sz += tz;
+        // The centre's distance from this face's line, on the side of the normal (−tz, tx)
+        const sc = (cgX - ax) * -tz + (cgZ - az) * tx;
+        if (Math.abs(sc) > sideDist) {
+          sideDist = Math.abs(sc);
+          side = Math.sign(sc);
+        }
+        faces++;
+      }
+      const sl = Math.hypot(sx, sz);
+      if (faces >= 2 && smooth && sl > 1e-6 && side !== 0) {
+        // The faces' mean normal, toward the car's side
+        const wx = (-sz / sl) * side;
+        const wz = (sx / sl) * side;
+        // How far the car must move along w for the joint to leave the outline: through the first edge it reaches
+        let s = Infinity;
+        for (let i = 0; i < edgeCount; i++) {
+          const e = i * OUTLINE_EDGE_STRIDE;
+          const un = wx * edges[e] + wz * edges[e + 1];
+          if (un >= 0) continue;
+          s = Math.min(s, (rx * edges[e] + rz * edges[e + 1] - edges[e + 2]) / un);
+        }
+        if (s <= 3 * depth + JOINT_TOLERANCE_M) {
+          depth = s;
+          ux = wx;
+          uz = wz;
+        }
+      }
+      if (depth <= out.depth) continue;
+      out.depth = depth;
+      out.nx = ux;
+      out.nz = uz;
+      out.x = ex;
+      out.z = ez;
+    }
   }
   return out.depth;
 }
 
 /**
  * Where the path (ax, az) → (bx, bz) first crosses one of the wall segments `ids[0..count)` (height test as in
- * `wallPenetration`): the fraction along the path, or −1 when it crosses none. `out` gets that wall's normal toward the
+ * `wallCornerContact`): the fraction along the path, or −1 when it crosses none. `out` gets that wall's normal toward the
  * path's start and how far (bx, bz) is past it.
  */
 export function wallSweep(

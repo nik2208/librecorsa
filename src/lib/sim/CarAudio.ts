@@ -15,11 +15,12 @@
  * 3. `calculateTyreSound`:
  *    - Per-wheel (`i = 0..3`) tire squeal & scrub driven by combined slip `s = hypot(sx, sy)`
  *      multiplied by vertical normal load `Fz` (AC's `0.4 * s * Fz * 0.0002 - 0.1`, here with s × 4.5 and −0.12)
- *    - Kerb rumble strip impact resonance and off-track grass/gravel skid layers.
+ *    - A kerb roar swelling at the rate the tyres cross the kerb's ridges, panned to its side, over a low kerb rumble,
+ *      and the off-track grass/gravel skid layers.
  * 4. `ContactAcousticsRig` (`contact-acoustics.ts`) adds road roar, damper thump and chassis rattle, brake squeal
  *    and debris clicks.
  *
- * When a multi-grid sound bank is present (`public/lc26/audio/` or `public/gt3/audio/`, see `vf26-audio.ts`),
+ * When a multi-grid sound bank is present (`public/lc26/audio/` or `public/gt3/audio/`, see `lc26-audio.ts`),
  * engine, turbo, transmission, shifts and backfires come from the multi-layer bank instead of the
  * base samples / oscillators above; tyre, kerb, gravel and wind layers stay procedural unless the bank
  * includes dedicated skid loops.
@@ -30,9 +31,10 @@ import { CameraMode, TelemetryData } from '@/types/f1';
 import { withBasePath } from '@/lib/base-path';
 import { CAMERA_MODES } from '@/lib/render/camera-modes';
 import { ContactAcousticsRig } from './contact-acoustics';
-import { LC26_AUDIO_DIR, Vf26SoundBank } from './vf26-audio';
-import { VF26_ENGINE } from './vf26-data';
+import { LC26_AUDIO_DIR, Lc26SoundBank } from './lc26-audio';
+import { LC26_ENGINE } from './lc26-data';
 import { AMG_GT3_CONFIG } from './gt3/AmgGt3Config';
+import { getActiveSurfaceTable } from '@/lib/track-data';
 
 /** Where a car's converted sound bank lives, and its rev limiter (for the limiter bounce) */
 export interface CarSoundSource {
@@ -47,13 +49,57 @@ export interface CarSoundSource {
   physicsLimiterRpm?: number;
 }
 
-export const LC26_SOUND: CarSoundSource = { id: 'lc26', assetDir: LC26_AUDIO_DIR, limiterRpm: VF26_ENGINE.limiterRpm };
+export const LC26_SOUND: CarSoundSource = { id: 'lc26', assetDir: LC26_AUDIO_DIR, limiterRpm: LC26_ENGINE.limiterRpm };
 export const F1_2026_SOUND: CarSoundSource = { id: 'f12026', assetDir: '/cars/f12026/audio/', limiterRpm: 12500 };
 /** Event branch: the SF-26's bank, an extra restored from git history (scripts/kiosk/restore-extra-content.mjs) */
 export const SF26_SOUND: CarSoundSource = { id: 'sf26', assetDir: '/cars/sf26/audio/', limiterRpm: 12500 };
 /** The AMG GT3 vehicle model's limiter (its gearbox redline) */
 const AMG_GT3_LIMITER_RPM = AMG_GT3_CONFIG.gearbox.gears.redline_rpm;
 export const BMW_M4_GT3_SOUND: CarSoundSource = { id: 'bmw-m4-gt3', assetDir: '/cars/bmw-m4-gt3/audio/', limiterRpm: 7000, physicsLimiterRpm: AMG_GT3_LIMITER_RPM };
+
+/** Kerb ridge spacing (m) for a circuit whose kerbs have no ripple length of their own */
+const KERB_RIDGE_FALLBACK_M = 0.65;
+/** The fastest the kerb's ridges come (Hz), about 330 km/h over the default ones */
+const KERB_MAX_RIDGE_HZ = 140;
+/** A wheel carrying less than this (N) is in the air: its surface is still the one it left, so it strikes nothing */
+const KERB_MIN_LOAD_N = 150;
+/** A side back on the kerbs within this long (s) carries straight on; after longer it strikes the kerb's edge first */
+const KERB_REENTRY_S = 0.12;
+/** How long (s) after a side's edge strike its roar eases back to its own level */
+const KERB_EDGE_S = 0.05;
+/**
+ * The kerb roar's level, one side's wheels both on the kerb, at speed: in the browser about 14 dB under the whole mix
+ * between 400 and 2500 Hz, the compressor barely moving
+ */
+const KERB_ROAR_LEVEL = 0.57;
+/** The part of the kerb roar that rises and falls with each ridge; the rest rolls on between them */
+const KERB_RIDGE_DEPTH = 0.4;
+
+/**
+ * One ridge of the kerb roar's swell as harmonics for a PeriodicWave: a strike rising over 2 % of the cycle, then
+ * dying away with a time constant of 18 % of it (the Fourier series of that decay, through the rise's one-pole
+ * low-pass), in few enough harmonics to stay a swell rather than a click
+ */
+function kerbRidgeWave(ctx: BaseAudioContext): PeriodicWave {
+  const harmonics = 24;
+  const decay = 0.18;
+  const rise = 0.02;
+  const real = new Float32Array(harmonics + 1);
+  const imag = new Float32Array(harmonics + 1);
+  const k = 1 - Math.exp(-1 / decay);
+  for (let h = 1; h <= harmonics; h++) {
+    const w = 2 * Math.PI * h;
+    const den = 1 / (decay * decay) + w * w;
+    const dr = k / decay / den;
+    const di = (-k * w) / den;
+    const rden = 1 + (w * rise) ** 2;
+    const lr = 1 / rden;
+    const li = (-w * rise) / rden;
+    real[h] = 2 * (dr * lr - di * li);
+    imag[h] = -2 * (dr * li + di * lr);
+  }
+  return ctx.createPeriodicWave(real, imag);
+}
 
 
 
@@ -145,6 +191,13 @@ export class CarAudioEngine {
   private kerbFilter: BiquadFilterNode | null = null;
   private kerbGain: GainNode | null = null;
 
+  /** Per side (left, right): the kerb roar's ridge-rate swell oscillator and its level */
+  private kerbRidgeOsc: OscillatorNode[] = [];
+  private kerbRoarLevel: GainNode[] = [];
+  /** Per side: how long it has been on the kerbs, and off them (s) */
+  private readonly kerbOnS = [0, 0];
+  private readonly kerbOffS = [Infinity, Infinity];
+
   private gravelFilter: BiquadFilterNode | null = null;
   private gravelGain: GainNode | null = null;
 
@@ -160,7 +213,7 @@ export class CarAudioEngine {
   private engineVoice: EngineVoice = 'loading';
 
   // Multi-grid sound bank (null until loaded; stays null when the assets are absent)
-  private vf26: Vf26SoundBank | null = null;
+  private lc26: Lc26SoundBank | null = null;
   private contactAcoustics: ContactAcousticsRig | null = null;
   private sound: CarSoundSource = LC26_SOUND;
   private bankDestination: AudioNode | null = null;
@@ -212,7 +265,20 @@ export class CarAudioEngine {
     }
     this.ctx = ctx;
     this.edgesStale = true;
+    // A context can start suspended (the autoplay rules): resumed at once, while the press that made it still counts
+    this.resumeContext();
     void this.loadEngineSounds(ctx);
+  }
+
+  /** Resumes a suspended context; a refusal (no user gesture yet) leaves it for the next press */
+  private resumeContext(): void {
+    const ctx = this.ctx;
+    if (!ctx || ctx.state !== 'suspended') return;
+    try {
+      void Promise.resolve(ctx.resume()).catch(() => {});
+    } catch {
+      // Ignore: the next press tries again
+    }
   }
 
   /** Builds the voices and buses on `ctx` (init() only takes the context once this has finished) */
@@ -225,7 +291,7 @@ export class CarAudioEngine {
     compressor.release.value = 0.12;
 
     const masterGain = ctx.createGain();
-    masterGain.gain.value = this.isMuted || this.isPaused ? 0 : 0.36;
+    masterGain.gain.value = this.outputLevel();
     compressor.connect(masterGain);
     masterGain.connect(ctx.destination);
     this.masterGain = masterGain;
@@ -332,7 +398,7 @@ export class CarAudioEngine {
     this.tyreScrubFilter = scrubFilter;
     this.tyreScrubGain = scrubGain;
 
-    // Kerb serrated rumble strip oscillator (`SURF_KERB` in `CarSoundData.cpp`)
+    // Kerb rumble: a low triangle at the ridge rate under the kerb roar, heard on headphones and larger speakers
     const kerbOsc = ctx.createOscillator();
     kerbOsc.type = 'triangle';
     kerbOsc.frequency.value = 58;
@@ -348,6 +414,63 @@ export class CarAudioEngine {
     this.kerbOsc = kerbOsc;
     this.kerbFilter = kerbFilter;
     this.kerbGain = kerbGain;
+
+    // Kerb roar: what a tyre rolling over a kerb sounds like, a rough low roar (noise under ~700 Hz with a little
+    // ~1.6 kHz rattle, all where laptop and phone speakers still reach) that never stops while a side is on the kerb,
+    // swelling with each ridge it crosses: per side, a wave at the ridge rate sways the roar between 60 % and full.
+    // Each side is panned to its own side
+    const ridgeWave = kerbRidgeWave(ctx);
+    const roar = ctx.createBufferSource();
+    roar.buffer = noiseBuffer;
+    roar.loop = true;
+    const roarLow = ctx.createBiquadFilter();
+    roarLow.type = 'lowpass';
+    roarLow.frequency.value = 700;
+    roarLow.Q.value = 0.7;
+    const roarRattle = ctx.createBiquadFilter();
+    roarRattle.type = 'bandpass';
+    roarRattle.frequency.value = 1600;
+    roarRattle.Q.value = 1.2;
+    const roarBed = ctx.createGain();
+    roarBed.gain.value = 10;
+    const rattleMix = ctx.createGain();
+    rattleMix.gain.value = 7.5;
+    roar.connect(roarLow).connect(roarBed);
+    roar.connect(roarRattle).connect(rattleMix);
+    const ridgeOsc: OscillatorNode[] = [];
+    const roarLevel: GainNode[] = [];
+    for (const pan of [-0.7, 0.7]) {
+      // The swell: the gain sits at 1 − depth and the ridge wave (peak ±1) adds ±depth to it
+      const swell = ctx.createGain();
+      swell.gain.value = 1 - KERB_RIDGE_DEPTH;
+      roarBed.connect(swell);
+      rattleMix.connect(swell);
+      const osc = ctx.createOscillator();
+      osc.setPeriodicWave(ridgeWave);
+      osc.frequency.value = 40;
+      const depth = ctx.createGain();
+      depth.gain.value = KERB_RIDGE_DEPTH;
+      osc.connect(depth);
+      depth.connect(swell.gain);
+      const level = ctx.createGain();
+      level.gain.value = 0;
+      swell.connect(level);
+      // Every current browser has the stereo panner; without one the roar plays in the middle
+      if (typeof ctx.createStereoPanner === 'function') {
+        const panner = ctx.createStereoPanner();
+        panner.pan.value = pan;
+        level.connect(panner).connect(compressor);
+      } else {
+        level.connect(compressor);
+      }
+      osc.start();
+      ridgeOsc.push(osc);
+      roarLevel.push(level);
+    }
+    // An eighth into the shared buffer, where no other loop of it starts (they start at 0, ¼, ½ and ¾)
+    roar.start(0, 0.125 * noiseBuffer.duration);
+    this.kerbRidgeOsc = ridgeOsc;
+    this.kerbRoarLevel = roarLevel;
 
     // Off-track Grass / Gravel noise (`SURF_GRASS` / `SURF_SAND` in `CarSoundData.cpp`)
     const gravelSource = ctx.createBufferSource();
@@ -391,15 +514,15 @@ export class CarAudioEngine {
 
   /** The car whose sound bank plays; swaps the bank when the car changes */
   public setCar(sound: CarSoundSource): void {
-    // Also when the sound stays: the vf26 and f12026-car physics share one
+    // Also when the sound stays: the lc26 and f12026-car physics share one
     this.contactAcoustics?.reset();
     // Another car: its gear and pedal are not the last car's
     this.edgesStale = true;
     if (sound.id === this.sound.id) return;
     this.sound = sound;
     if (!this.ctx) return;
-    this.vf26?.dispose();
-    this.vf26 = null;
+    this.lc26?.dispose();
+    this.lc26 = null;
     void this.loadEngineSounds(this.ctx);
   }
 
@@ -426,7 +549,7 @@ export class CarAudioEngine {
   private async loadEngineSounds(ctx: AudioContext): Promise<void> {
     const loadId = ++this.bankLoadId;
     this.setEngineVoice('loading');
-    const bank = new Vf26SoundBank(ctx, this.bankDestination ?? ctx.destination, this.sound.assetDir);
+    const bank = new Lc26SoundBank(ctx, this.bankDestination ?? this.masterGain ?? ctx.destination, this.sound.assetDir);
     const ok = await bank.load(CAMERA_MODES[this.cameraMode].interiorAudio ? 'int' : 'ext');
     // A later car, or dispose() (a closed context): this load is not wanted any more
     if (loadId !== this.bankLoadId || this.ctx !== ctx) {
@@ -434,7 +557,7 @@ export class CarAudioEngine {
       return;
     }
     if (ok) {
-      this.vf26 = bank;
+      this.lc26 = bank;
       this.setEngineVoice('bank');
       return;
     }
@@ -445,7 +568,7 @@ export class CarAudioEngine {
     }
     // The synthesised voices until the WAV loops are in (loadRealSamples switches to them)
     this.setEngineVoice('synth');
-    await this.loadRealSamples(ctx, this.fallbackDestination ?? ctx.destination);
+    await this.loadRealSamples(ctx, this.fallbackDestination ?? this.masterGain ?? ctx.destination);
   }
 
   /** Current camera, used to pick the interior or exterior engine sound */
@@ -463,8 +586,8 @@ export class CarAudioEngine {
     return this.masterGain;
   }
 
-  /** True when the VF26 mod sound bank is playing instead of the bundled samples */
-  public get usingVf26Sounds(): boolean {
+  /** True when the LC26 mod sound bank is playing instead of the bundled samples */
+  public get usingLc26Sounds(): boolean {
     return this.engineVoice === 'bank';
   }
 
@@ -539,15 +662,36 @@ export class CarAudioEngine {
     if (!this.isInitialized) {
       this.init();
     }
-    if (this.ctx && this.ctx.state === 'suspended') {
-      void this.ctx.resume();
+    this.resumeContext();
+  }
+
+  /** Master volume, 0 to 1 (Settings > Audio): every sound reaches the speakers through the master gain */
+  private volume = 1;
+  /** The kerb roar and rumble's level, 0 to 1.5 (Settings > Audio > Kerbs) */
+  private kerbVolume = 1;
+
+  public setKerbVolume(volume: number): void {
+    this.kerbVolume = Math.min(1.5, Math.max(0, volume));
+  }
+
+  /** The master gain's level: silent while muted or paused, else the mix level times the master volume */
+  private outputLevel(): number {
+    return this.isMuted || this.isPaused ? 0 : 0.36 * this.volume;
+  }
+
+  public setVolume(volume: number): void {
+    const v = Math.min(1, Math.max(0, volume));
+    if (v === this.volume) return;
+    this.volume = v;
+    if (this.ctx && this.masterGain) {
+      this.masterGain.gain.setTargetAtTime(this.outputLevel(), this.ctx.currentTime, 0.04);
     }
   }
 
   public setMuted(muted: boolean): void {
     this.isMuted = muted;
     if (this.ctx && this.masterGain) {
-      this.masterGain.gain.setTargetAtTime(this.isMuted || this.isPaused ? 0 : 0.36, this.ctx.currentTime, 0.04);
+      this.masterGain.gain.setTargetAtTime(this.outputLevel(), this.ctx.currentTime, 0.04);
     }
   }
 
@@ -559,7 +703,7 @@ export class CarAudioEngine {
     if (this.isPaused === paused) return;
     this.isPaused = paused;
     if (this.ctx && this.masterGain) {
-      this.masterGain.gain.setTargetAtTime(this.isMuted || this.isPaused ? 0 : 0.36, this.ctx.currentTime, 0.025);
+      this.masterGain.gain.setTargetAtTime(this.outputLevel(), this.ctx.currentTime, 0.025);
     }
   }
 
@@ -632,20 +776,21 @@ export class CarAudioEngine {
       this.edgesStale = false;
       this.prevGear = telemetry.gear;
       this.shiftCutTimer = 0;
-      this.vf26?.resync();
+      this.lc26?.resync();
+      this.resetKerbRoar(this.ctx.currentTime);
     }
 
     const now = this.ctx.currentTime;
     const tau = 0.024;
     const legacyDt = THREE.MathUtils.clamp(Number.isFinite(dtSeconds) ? (dtSeconds as number) : 1 / 60, 0, 0.1);
 
-    const vf26 = this.engineVoice === 'bank' ? this.vf26 : null;
+    const lc26 = this.engineVoice === 'bank' ? this.lc26 : null;
     const squeal = this.tyreSqueal(telemetry);
     // A bank with its own skid recordings plays them in place of the synthesised squeal and scrub
-    const bankSkid = vf26?.hasSkid === true;
-    if (vf26) {
+    const bankSkid = lc26?.hasSkid === true;
+    if (lc26) {
       const rpmScale = this.sound.physicsLimiterRpm ? this.sound.limiterRpm / this.sound.physicsLimiterRpm : 1;
-      vf26.update(
+      lc26.update(
         {
           rpm: telemetry.rpm * rpmScale,
           // The load the engine delivers: the pedal less the traction control's cut, so the cut is heard
@@ -660,6 +805,11 @@ export class CarAudioEngine {
           skid: bankSkid ? 0.55 * Math.sqrt(squeal.amp) : 0,
           skidRate: 0.85 + 0.25 * squeal.pitch,
           tcActive: telemetry.f12026?.tcActive ?? false,
+          // Heard only by banks that carry a driveline section or an electric machine loop
+          driveshaftRadS: telemetry.driveshaftRadS,
+          driveshaftTorqueNm: telemetry.driveshaftTorqueNm,
+          mguPowerKw: telemetry.mgukPowerKw,
+          mguRpm: telemetry.mguRpm,
         },
         legacyDt
       );
@@ -790,11 +940,13 @@ export class CarAudioEngine {
       this.tyreScrubGain.gain.setTargetAtTime(maxSquealA * 0.065, now, tau);
     }
 
-    // Kerb serrated rumble (`SURF_KERB` in `CarSoundData.cpp` lines 290-296)
+    // Kerbs: a roar swelling with each ridge the tyres cross, on the side they are on, and the low rumble under it
+    const kerbSides = speedMs > 4 ? this.kerbSides(telemetry) : ([0, 0] as const);
+    const ridgeHz = this.updateKerbRoar(kerbSides, speedMs, legacyDt, now, CAMERA_MODES[this.cameraMode].interiorAudio);
     if (this.kerbOsc && this.kerbFilter && this.kerbGain) {
-      const isKerb = telemetry.surface === 'kerb' && speedMs > 4;
-      const kerbFreq = THREE.MathUtils.clamp(28 + speedMs * 1.35, 30, 145);
-      const kerbAmp = isKerb ? THREE.MathUtils.clamp(speedMs * 0.0018, 0.02, 0.085) : 0;
+      const isKerb = kerbSides[0] > 0 || kerbSides[1] > 0;
+      const kerbFreq = THREE.MathUtils.clamp(ridgeHz, 30, 145);
+      const kerbAmp = isKerb ? THREE.MathUtils.clamp(speedMs * 0.00227, 0.025, 0.107) * this.kerbVolume : 0;
       this.kerbOsc.frequency.setTargetAtTime(kerbFreq, now, 0.015);
       this.kerbFilter.frequency.setTargetAtTime(kerbFreq * 2.2, now, 0.015);
       this.kerbGain.gain.setTargetAtTime(kerbAmp, now, 0.015);
@@ -811,6 +963,73 @@ export class CarAudioEngine {
     }
 
     this.contactAcoustics?.update(telemetry, legacyDt, CAMERA_MODES[this.cameraMode].interiorAudio);
+  }
+
+  /**
+   * How far each side (left, right) is on the kerbs, 0..1: 0.8 for one of its wheels on one, 1 for both. A wheel
+   * counts while it carries load, since an airborne wheel still reports the surface it left
+   */
+  private kerbSides(t: TelemetryData): [number, number] {
+    const on = (i: number) => t.wheelSurfaces?.[i] === 'kerb' && !((t.wheelLoadsN?.[i] ?? Infinity) < KERB_MIN_LOAD_N);
+    const side = (front: number, rear: number) => {
+      const f = on(front);
+      const r = on(rear);
+      return f && r ? 1 : f || r ? 0.8 : 0;
+    };
+    // FL, FR, RL, RR
+    return [side(0, 2), side(1, 3)];
+  }
+
+  /**
+   * One frame of the kerb roar; returns the ridge rate (Hz). Each side's roar comes in while it is on the kerbs and
+   * goes as it leaves them; a side coming onto the kerbs strikes the edge first, a short burst over the roar
+   */
+  private updateKerbRoar(
+    sides: readonly [number, number],
+    speedMs: number,
+    dt: number,
+    now: number,
+    interior: boolean
+  ): number {
+    const ridgeM = getActiveSurfaceTable().kerb.bumpLengthM;
+    const ridgeHz = Math.min(KERB_MAX_RIDGE_HZ, speedMs / (ridgeM > 0.2 ? ridgeM : KERB_RIDGE_FALLBACK_M));
+    // Softer at a crawl, and a little quieter from outside the car
+    const strength =
+      KERB_ROAR_LEVEL * this.kerbVolume * (0.7 + 0.3 * THREE.MathUtils.clamp((speedMs - 4) / 36, 0, 1)) * (interior ? 1 : 0.8);
+    for (let side = 0; side < 2; side++) {
+      const osc = this.kerbRidgeOsc[side];
+      const gain = this.kerbRoarLevel[side]?.gain;
+      if (!osc || !gain) continue;
+      // Slightly apart, so two sides on kerbs beat against each other rather than stacking into one tone
+      osc.frequency.setTargetAtTime(Math.max(5, ridgeHz) * (side === 1 ? 1.015 : 1), now, 0.03);
+      const on = sides[side];
+      if (on > 0) {
+        const level = on * strength;
+        if (this.kerbOffS[side] > KERB_REENTRY_S) {
+          this.kerbOnS[side] = 0;
+          gain.setTargetAtTime(level * 1.8, now, 0.003);
+        } else {
+          gain.setTargetAtTime(level, now, this.kerbOnS[side] < KERB_EDGE_S ? 0.025 : 0.012);
+        }
+        this.kerbOnS[side] += dt;
+        this.kerbOffS[side] = 0;
+      } else {
+        gain.setTargetAtTime(0, now, 0.03);
+        this.kerbOffS[side] += dt;
+      }
+    }
+    return ridgeHz;
+  }
+
+  /** Silences the kerb roar and drops its history: the next frame heard starts from its own kerbs */
+  private resetKerbRoar(now: number): void {
+    for (let side = 0; side < 2; side++) {
+      this.kerbOnS[side] = 0;
+      this.kerbOffS[side] = Infinity;
+      const gain = this.kerbRoarLevel[side]?.gain;
+      gain?.cancelScheduledValues(now);
+      gain?.setValueAtTime(0, now);
+    }
   }
 
   /**
@@ -868,8 +1087,8 @@ export class CarAudioEngine {
     this.edgesStale = true;
     // Closing the context below stops the rig's voices with everything else
     this.contactAcoustics = null;
-    this.vf26?.dispose();
-    this.vf26 = null;
+    this.lc26?.dispose();
+    this.lc26 = null;
     if (this.ctx) {
       void this.ctx.close();
       this.ctx = null;

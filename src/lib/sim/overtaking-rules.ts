@@ -11,7 +11,8 @@
  *   laps. Free use in practice.
  *
  * Wet tracks shut the flaps in both eras (`isRearFlapAllowedInWet`). There is no safety car in the sim, so its
- * lockout does not apply.
+ * lockout does not apply. Under the open-wheel rules a yellow zone shuts the flaps and holds Overtake Mode back
+ * (`OvertakingRaceControl.aidsLocked`).
  */
 import type { DrsZoneDef } from '@/lib/track-data';
 
@@ -39,6 +40,8 @@ export interface OvertakingRaceControl {
   readonly racing: boolean;
   /** At a detection point: did this car earn the aid (the gap and lap rules)? Asked only while racing */
   earnedAtDetection(zoneId: string): boolean;
+  /** Inside a yellow zone under rules that close the aids there: flaps shut, no Overtake Mode */
+  readonly aidsLocked?: boolean;
 }
 
 /** What race control knows about a car at a detection point */
@@ -117,20 +120,25 @@ export class OvertakeGrant {
     this.earned = false;
   }
 
-  /** Call once per step with the lap progress before and after it */
-  observe(prev: number, p: number, zones: readonly DrsZoneDef[], control: OvertakingRaceControl | null | undefined): void {
+  /**
+   * Call once per step with the lap progress before and after it. True when race control judged the car at the
+   * detection point this step (`earned` holds the verdict); practice is never judged
+   */
+  observe(prev: number, p: number, zones: readonly DrsZoneDef[], control: OvertakingRaceControl | null | undefined): boolean {
     const zone = overtakeDetectionZone(zones);
-    if (!zone || !crossedForward(prev, p, zone.detection)) return;
+    if (!zone || !crossedForward(prev, p, zone.detection)) return false;
     this.earned = control?.racing ? control.earnedAtDetection(zone.id) : false;
+    return control?.racing === true;
   }
 
   /** The override may be used: always in practice, in a race only once earned */
   available(control: OvertakingRaceControl | null | undefined): boolean {
+    if (control?.racing && control.aidsLocked) return false;
     return !control?.racing || this.earned;
   }
 
   /** Extra deploy allowance this lap (J): only an Overtake earned in a race */
   extraDeployJ(control: OvertakingRaceControl | null | undefined): number {
-    return control?.racing && this.earned ? OVERTAKE_EXTRA_DEPLOY_J : 0;
+    return control?.racing && this.earned && !control.aidsLocked ? OVERTAKE_EXTRA_DEPLOY_J : 0;
   }
 }

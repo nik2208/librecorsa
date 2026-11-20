@@ -6,9 +6,28 @@ import { RenderProfiler } from "@/components/dev/RenderProfiler";
 import { activateTrack, getTrackInfo, loadStoredTrackId, DEFAULT_TRACK_ID } from "@/lib/track-registry";
 import { registerAssetCache } from "@/lib/service-worker";
 import type { KioskMode } from "@/lib/kiosk/kiosk-bridge";
+import { watchForUpdates } from "@/lib/build-update";
+import { useLiveHeartbeat } from "@/lib/net/live-heartbeat";
+import { Toast } from "@/components/ui";
+import { browserStore, takeSafeStart } from "@/lib/render/gpu-health";
+import { loadPlayerSettings, savePlayerSettings } from "@/lib/settings/player-settings";
 
 /** How long the "couldn't load" notice stays up (ms) */
 const ERROR_NOTICE_MS = 6000;
+/** How long the safe-start line stays up (ms) */
+const SAFE_START_NOTICE_MS = 9000;
+
+/**
+ * The first start after a WebGL context loss the player did not answer (they closed the page on the notice): the
+ * saved preset goes to Low once, and the line says why. Null when there is nothing to say.
+ */
+function applySafeStart(): string | null {
+  if (!takeSafeStart(browserStore(), Date.now()).switchToLow) return null;
+  const saved = loadPlayerSettings();
+  if (saved.graphics.quality === "low") return "Your graphics driver stopped responding last time, so the game loads more gently.";
+  savePlayerSettings({ ...saved, graphics: { ...saved.graphics, quality: "low" } });
+  return "Your graphics driver stopped responding last time, so the game starts on Low graphics.";
+}
 
 export interface TrackGateProps {
   /** Kiosk mode (event branch): passed on to the simulator */
@@ -22,10 +41,17 @@ export interface TrackGateProps {
  * menus) when the player picks another one from the title menu.
  */
 export const TrackGate: React.FC<TrackGateProps> = ({ kiosk, trackId: wantedTrackId }) => {
+  // The live count on the title screen: a heartbeat a minute while this page is in view, across circuit reloads
+  // (nothing without an online side, as on the kiosk)
+  useLiveHeartbeat();
   const [trackId, setTrackId] = useState<string | null>(null);
   /** The circuit the simulator is mounted on (null before the first load lands) */
   const trackIdRef = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [safeStartNotice, setSafeStartNotice] = useState<string | null>(null);
+  /** Bumped to mount the circuit again from scratch (a new canvas and WebGL context, after the old one was lost) */
+  const [mount, setMount] = useState(0);
+  const restart = useCallback(() => setMount((m) => m + 1), []);
 
   // Only the latest pick counts: a slower load of a circuit picked earlier must not land after it
   const requestRef = useRef(0);
@@ -64,10 +90,23 @@ export const TrackGate: React.FC<TrackGateProps> = ({ kiosk, trackId: wantedTrac
 
   useEffect(() => {
     registerAssetCache();
+    // Before the simulator reads the settings. The kiosk keeps the gentler start but not the notice (in English, over
+    // the stand's screens)
+    const notice = applySafeStart();
+    if (notice && !kiosk) setSafeStartNotice(notice);
   }, []);
   useEffect(() => {
     void select(wantedTrackId ?? loadStoredTrackId());
   }, [select, wantedTrackId]);
+
+  useEffect(() => {
+    if (!safeStartNotice) return;
+    const id = window.setTimeout(() => setSafeStartNotice(null), SAFE_START_NOTICE_MS);
+    return () => window.clearTimeout(id);
+  }, [safeStartNotice]);
+
+  // A newer build deployed while the game is open: the menus offer the reload (build-update.ts)
+  useEffect(() => watchForUpdates(), []);
 
   useEffect(() => {
     if (!error) return;
@@ -79,17 +118,22 @@ export const TrackGate: React.FC<TrackGateProps> = ({ kiosk, trackId: wantedTrac
   return (
     <>
       <RenderProfiler id="sim">
-        <LibreCorsaSimulator key={trackId} trackId={trackId} onSelectTrack={select} kiosk={kiosk} />
+        <LibreCorsaSimulator key={`${trackId}:${mount}`} trackId={trackId} onSelectTrack={select} onRestart={restart} kiosk={kiosk} />
       </RenderProfiler>
-      {error ? (
-        <div
-          role="alert"
-          className="lc-ui-zoom pointer-events-none fixed bottom-[calc(env(safe-area-inset-bottom,0px)+1rem)] left-[max(1rem,env(safe-area-inset-left))] right-[max(1rem,env(safe-area-inset-right))] mx-auto z-50 flex w-fit items-center gap-2.5 rounded-full border border-[#FF2A3C]/45 bg-[#08090D]/85 px-4 py-2 font-f1-mono text-[12px] font-bold text-[#F5F7FA] shadow-[0_14px_40px_rgba(0,0,0,0.5)] backdrop-blur-md"
-        >
-          <span aria-hidden className="h-2 w-2 shrink-0 rounded-full bg-[#FF2A3C]" />
-          {error}
-        </div>
-      ) : null}
+      {/* Over the menus: a failed circuit load is said wherever the player is */}
+      <div
+        role="alert"
+        className="lc-ui-zoom pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[calc(env(safe-area-inset-bottom,0px)+1rem)] left-[max(1rem,env(safe-area-inset-left))] z-(--z-lc-notice) mx-auto flex w-fit max-w-[calc(100%-2rem)] justify-center"
+      >
+        {error ? <Toast tone="bad">{error}</Toast> : null}
+      </div>
+      {/* At the top: the loading screen's own prompt sits along the bottom */}
+      <div
+        role="status"
+        className="lc-ui-zoom pointer-events-none fixed top-[calc(env(safe-area-inset-top,0px)+1rem)] right-[max(1rem,env(safe-area-inset-right))] left-[max(1rem,env(safe-area-inset-left))] z-(--z-lc-notice) mx-auto flex w-fit max-w-[calc(100%-2rem)] justify-center"
+      >
+        {safeStartNotice ? <Toast tone="info">{safeStartNotice}</Toast> : null}
+      </div>
     </>
   );
 };

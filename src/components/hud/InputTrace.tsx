@@ -2,7 +2,9 @@
 
 import React, { useEffect, useRef } from "react";
 import { useHudModeRef } from "./hud-mode";
-import { HUD_CYAN, HUD_GLASS, HUD_GREEN, HUD_RED } from "./hud-format";
+import { tokenColor } from "@/components/ui/token-color";
+import { HUD_BRAKE, HUD_GLASS, HUD_INFO, HUD_LBL, HUD_THROTTLE } from "./hud-format";
+import { skinCss, SkinPanel, useHudSkin } from "./styles/third-party-skin";
 
 /** Canvas size in CSS pixels */
 const WIDTH = 260;
@@ -17,7 +19,10 @@ const CAPACITY = 512;
 interface InputSample {
   throttle: number;
   brake: number;
+  /** Road-wheel angle over the lock, −1..1 */
   steering: number;
+  /** The player's own steering (keys, stick or wheel), −1..1: drawn dashed behind the road-wheel angle */
+  steerInput?: number;
   throttleOut?: number;
   brakeOut?: number;
   ffbClip?: boolean;
@@ -41,13 +46,22 @@ interface InputTraceProps {
   width?: number;
   /** Live gauges beside the trace (the dual-layer pedal bars); replaces the built-in current-value strip */
   aside?: React.ReactNode;
+  /** Road-wheel angle at full lock (deg): the legend then reads the road-wheel angle in degrees */
+  steerLockDeg?: number;
+  /** Omit the built-in glass container when embedded directly inside a third-party panel */
+  frameless?: boolean;
 }
 
-/** Scrolling throttle / brake / steering trace (newest at the right) with current-value gauges */
-export const InputTrace: React.FC<InputTraceProps> = ({ sample, seconds = 5, width = WIDTH, aside }) => {
+/**
+ * Scrolling throttle / brake / steering trace (newest at the right) with current-value gauges. Dashed lines are what
+ * the player asked for where the car gave something else: the pedal under TC or ABS, and the steering input against
+ * the road-wheel angle (a held key against the angle the steering assist holds the tyres at).
+ */
+export const InputTrace: React.FC<InputTraceProps> = ({ sample, seconds = 5, width = WIDTH, aside, steerLockDeg, frameless = false }) => {
+  const skin = useHudSkin();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ringRef = useRef<Ring>({ buf: new Array<Point | undefined>(CAPACITY), head: 0, count: 0 });
-  const { throttle, brake, steering, throttleOut, brakeOut, ffbClip } = sample;
+  const { throttle, brake, steering, steerInput, throttleOut, brakeOut, ffbClip } = sample;
   const hasAside = aside !== undefined && aside !== null;
   // The HUD stays mounted under the pause menu: the trace idles there instead of redrawing an invisible canvas
   const hudModeRef = useHudModeRef();
@@ -55,10 +69,10 @@ export const InputTrace: React.FC<InputTraceProps> = ({ sample, seconds = 5, wid
   // Record a point whenever an input changes; between changes the trace holds the last value
   useEffect(() => {
     const ring = ringRef.current;
-    ring.buf[ring.head] = { t: performance.now(), throttle, brake, steering, throttleOut, brakeOut, ffbClip };
+    ring.buf[ring.head] = { t: performance.now(), throttle, brake, steering, steerInput, throttleOut, brakeOut, ffbClip };
     ring.head = (ring.head + 1) % CAPACITY;
     ring.count = Math.min(CAPACITY, ring.count + 1);
-  }, [throttle, brake, steering, throttleOut, brakeOut, ffbClip]);
+  }, [throttle, brake, steering, steerInput, throttleOut, brakeOut, ffbClip]);
 
   // Redraw every frame while mounted
   useEffect(() => {
@@ -85,9 +99,11 @@ export const InputTrace: React.FC<InputTraceProps> = ({ sample, seconds = 5, wid
       xOf: (t: number) => number,
       yOf: (p: Point) => number,
       dashed = false,
+      alpha = 1,
     ) => {
       if (pts.length === 0) return;
       ctx.save();
+      ctx.globalAlpha = alpha;
       if (dashed) ctx.setLineDash([3, 2]);
       ctx.beginPath();
       pts.forEach((p, i) => {
@@ -118,6 +134,12 @@ export const InputTrace: React.FC<InputTraceProps> = ({ sample, seconds = 5, wid
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, WIDTH, HEIGHT);
+      // The palette's colours, read where they are drawn (cached per palette, so a colour-blind palette applies at once)
+      const throttleC = tokenColor("throttle");
+      const brakeC = tokenColor("brake");
+      const steerC = tokenColor("info");
+      const cautionC = tokenColor("caution");
+      const lossC = tokenColor("loss");
 
       // Background guides: pedal band divider and steering centre line
       ctx.fillStyle = "rgba(255,255,255,0.04)";
@@ -153,18 +175,24 @@ export const InputTrace: React.FC<InputTraceProps> = ({ sample, seconds = 5, wid
       const xOf = (t: number) => Math.max(0, ((t - cutoff) / windowMs) * traceW);
       const anyTcCut = pts.some((p) => p.throttleOut !== undefined && p.throttle - p.throttleOut > 0.01);
       const anyAbsCut = pts.some((p) => p.brakeOut !== undefined && p.brake - p.brakeOut > 0.01);
+      // What an aid cut, dashed in the caution colour above what got through (as on the pedal bars)
       if (anyTcCut) {
-        strokeSeries("rgba(255, 179, 0, 0.55)", pts, xOf, (p) => yPedal(p.throttle), true);
+        strokeSeries(cautionC, pts, xOf, (p) => yPedal(p.throttle), true, 0.55);
       }
       if (anyAbsCut) {
-        strokeSeries("rgba(255, 61, 203, 0.55)", pts, xOf, (p) => yPedal(p.brake), true);
+        strokeSeries(cautionC, pts, xOf, (p) => yPedal(p.brake), true, 0.55);
       }
-      strokeSeries(HUD_GREEN, pts, xOf, (p) => yPedal(p.throttleOut ?? p.throttle));
-      strokeSeries(HUD_RED, pts, xOf, (p) => yPedal(p.brakeOut ?? p.brake));
-      strokeSeries(HUD_CYAN, pts, xOf, (p) => ySteer(p.steering));
+      // The player's steering where it differs from the road wheels' (no input recorded: the wheels' own)
+      const anySteerGap = pts.some((p) => p.steerInput !== undefined && Math.abs(p.steerInput - p.steering) > 0.01);
+      if (anySteerGap) {
+        strokeSeries(steerC, pts, xOf, (p) => ySteer(p.steerInput ?? p.steering), true, 0.5);
+      }
+      strokeSeries(throttleC, pts, xOf, (p) => yPedal(p.throttleOut ?? p.throttle));
+      strokeSeries(brakeC, pts, xOf, (p) => yPedal(p.brakeOut ?? p.brake));
+      strokeSeries(steerC, pts, xOf, (p) => ySteer(p.steering));
 
       // FFB clipping top-edge indicator ticks
-      ctx.fillStyle = HUD_RED;
+      ctx.fillStyle = lossC;
       for (let i = 0; i < pts.length; i++) {
         if (!pts[i].ffbClip) continue;
         const x0 = xOf(pts[i].t);
@@ -186,8 +214,8 @@ export const InputTrace: React.FC<InputTraceProps> = ({ sample, seconds = 5, wid
         ctx.fillStyle = color;
         ctx.fillRect(x, pedalTrackTop + pedalTrackH - h, 4, h);
       };
-      drawPedalBar(WIDTH - 18, cur.throttleOut ?? cur.throttle, HUD_GREEN);
-      drawPedalBar(WIDTH - 11, cur.brakeOut ?? cur.brake, HUD_RED);
+      drawPedalBar(WIDTH - 18, cur.throttleOut ?? cur.throttle, throttleC);
+      drawPedalBar(WIDTH - 11, cur.brakeOut ?? cur.brake, brakeC);
 
       // Steering: horizontal bar from centre
       const barX0 = WIDTH - 20;
@@ -196,7 +224,7 @@ export const InputTrace: React.FC<InputTraceProps> = ({ sample, seconds = 5, wid
       ctx.fillStyle = "rgba(255,255,255,0.08)";
       ctx.fillRect(barX0, steerMid - 2, barW, 4);
       const s = Math.max(-1, Math.min(1, cur.steering));
-      ctx.fillStyle = HUD_CYAN;
+      ctx.fillStyle = steerC;
       ctx.fillRect(Math.min(barCx, barCx + s * (barW / 2)), steerMid - 2, Math.abs(s) * (barW / 2), 4);
     };
 
@@ -204,29 +232,54 @@ export const InputTrace: React.FC<InputTraceProps> = ({ sample, seconds = 5, wid
     return () => cancelAnimationFrame(raf);
   }, [seconds, width, hasAside]);
 
-  return (
-    <section aria-label="Inputs" className={`inline-flex flex-col gap-1.5 rounded-[18px] px-3 pt-2 pb-2.5 ${HUD_GLASS}`}>
-      <div className="flex items-center justify-between">
-        <span className="lc-data inline-flex items-center gap-2 text-[10px] tracking-[0.12em] text-[#F5F7FA]">
-          <span className="h-1.5 w-1.5 rounded-full bg-[#CCFF00]" />
-          INPUTS
-        </span>
-        <span className="flex items-center gap-2 font-f1-mono text-[9px] font-extrabold tracking-[0.12em]">
-          <span style={{ color: HUD_GREEN }}>THR</span>
-          <span style={{ color: HUD_RED }}>BRK</span>
-          <span style={{ color: HUD_CYAN }}>STR</span>
+  const legendClass = `flex items-center gap-2.5 text-[9px] font-bold tracking-[0.12em] uppercase ${skin || frameless ? skinCss.inkDim : "text-lc-slate"}`;
+  const inner = (
+    <>
+      {/* The legend names the traces; the panel needs no title of its own */}
+      <div className={legendClass}>
+        <span style={{ color: HUD_THROTTLE }}>Thr</span>
+        <span style={{ color: HUD_BRAKE }}>Brk</span>
+        <span style={{ color: HUD_INFO }} title="Road wheels solid, your input dashed">
+          Str
+          {steerLockDeg !== undefined ? (
+            <span className="lc-mono ml-1 inline-block min-w-[5ch] text-right">{`${Math.abs(steering * steerLockDeg).toFixed(1)}°`}</span>
+          ) : null}
         </span>
       </div>
       <div className="flex items-end gap-2.5">
         <canvas
           ref={canvasRef}
           role="img"
-          aria-label="Throttle, brake and steering trace"
-          className="block rounded-[8px]"
+          aria-label="Throttle, brake and steering trace: dashed steering is your input, solid the road-wheel angle"
+          className={`block ${skin && !frameless ? skinCss.radiusSm : frameless ? "rounded-sm" : "rounded-lg"}`}
           style={{ width, height: HEIGHT }}
         />
         {aside}
       </div>
+    </>
+  );
+
+  if (frameless) {
+    return (
+      <section aria-label="Inputs" className="inline-flex flex-col gap-1.5">
+        {inner}
+      </section>
+    );
+  }
+
+  if (skin) {
+    return (
+      <SkinPanel cut="sm" innerClassName="inline-flex flex-col gap-1.5 px-3 pt-2 pb-2.5">
+        <section aria-label="Inputs" className="contents">
+          {inner}
+        </section>
+      </SkinPanel>
+    );
+  }
+
+  return (
+    <section aria-label="Inputs" className={`inline-flex flex-col gap-1.5 rounded-lc-tile px-3 pt-2 pb-2.5 ${HUD_GLASS}`}>
+      {inner}
     </section>
   );
 };

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+out/
+.DS_Store
+*.dmg
+*.zip
+*.exe
+*.AppImage
+*.blockmap
+latest*.yml

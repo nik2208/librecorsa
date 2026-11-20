@@ -7,7 +7,8 @@ import { useCallback, useEffect, useRef } from "react";
 import type { AssistPreset, VehicleModelId } from "@/types/f1";
 import { lapConditionsNow, WET_LAP_WATER_MM } from "@/lib/sim/lap-types";
 import type { SimRealism } from "@/lib/sim/sim-realism";
-import { getOnlineConfig } from "./online-config";
+import { pageBuild } from "@/lib/build-id";
+import { getOnlineConfig, watchOnlineConfig } from "./online-config";
 import { sendUsage, UsageClock, type UsageExtras, type UsageMode } from "./usage";
 import { USAGE_BUILD_RE } from "./usage-modes";
 import { challengeAt, challengeCompound, fitsChallenge } from "./weekly-challenge";
@@ -45,10 +46,9 @@ function deviceNow(): UsageExtras["device"] {
   return usageDevice(window.matchMedia("(pointer: coarse)").matches, Math.min(window.screen.width, window.screen.height));
 }
 
-/** The deployed build: its commit from the page's lc-build meta tag (src/app/layout.tsx); a local build has none */
+/** The deployed build: its commit from the page (src/lib/build-id.ts); a local build has none */
 function buildNow(): string | undefined {
-  if (typeof document === "undefined") return undefined;
-  const id = document.querySelector('meta[name="lc-build"]')?.getAttribute("content") ?? "";
+  const id = pageBuild();
   return USAGE_BUILD_RE.test(id) ? id : undefined;
 }
 
@@ -69,12 +69,20 @@ type Settled = Omit<UsageState, "lineWaterMm"> & { wet: boolean };
 /** True when practice so driven is the weekly challenge (the test its board uses) */
 export function onChallenge(s: Pick<Settled, "trackId" | "vehicle" | "assists" | "realism" | "wet">): boolean {
   // The tyre is taken as the challenge's: the counter asks which mode was driven, not whether a lap would count
-  const conditions = lapConditionsNow({ assists: s.assists, compound: challengeCompound(s.vehicle), lineWaterMm: s.wet ? WET_LAP_WATER_MM : 0, realism: s.realism, vehicle: s.vehicle });
+  const conditions = lapConditionsNow({ assists: s.assists, compound: challengeCompound(s.vehicle), lineWaterMm: s.wet ? WET_LAP_WATER_MM : 0, realism: s.realism, vehicle: s.vehicle, trackId: s.trackId });
   return fitsChallenge({ trackId: s.trackId, vehicle: s.vehicle, conditions }, challengeAt(Date.now()));
 }
 
 /** The counter's switch as last read; read again with each new stretch (the config keeps its answer a while) */
 let usageOn = false;
+
+/** The clock of the counter mounted now (the game has one) */
+let activeClock: UsageClock | null = null;
+
+/** A lap the player completed (not the autopilot): counted in the stretch under way, sent with it when it ends */
+export function countUsageLap(): void {
+  activeClock?.lap();
+}
 
 export function useUsageCounter(state: UsageState): void {
   const stateRef = useRef<Settled | null>(null);
@@ -108,6 +116,12 @@ export function useUsageCounter(state: UsageState): void {
       if (usageOn) sendUsage({ ...line, ...extrasRef.current });
     });
     clockRef.current = clock;
+    activeClock = clock;
+    // The switch as the server has it, followed: a server out of reach when the stretch began still gets its report
+    // once it answers (a change of state in between reads it again as well)
+    const unwatch = watchOnlineConfig((online) => {
+      usageOn = online.config.usage;
+    });
     // Hidden or closed ends the stretch; back on the page starts a new one
     const onPageHide = () => clock.end();
     document.addEventListener("visibilitychange", apply);
@@ -115,11 +129,13 @@ export function useUsageCounter(state: UsageState): void {
     window.addEventListener("pageshow", apply);
     apply();
     return () => {
+      unwatch();
       document.removeEventListener("visibilitychange", apply);
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", apply);
       clock.end();
       clockRef.current = null;
+      if (activeClock === clock) activeClock = null;
     };
   }, [apply]);
 

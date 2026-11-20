@@ -55,7 +55,7 @@ async function main() {
   let nowMs = NOON;
   const deps: UsageDeps = { db, now: () => nowMs };
   const rows = async () => (await db.prepare('SELECT * FROM usage_daily ORDER BY day, track_id, vehicle, mode, country').all<Row>()).results;
-  const good = { trackId: 'rwanda_official_short', vehicle: 'vf26', mode: 'practice', minutes: 12.34 };
+  const good = { trackId: 'rwanda_official_short', vehicle: 'lc26', mode: 'practice', minutes: 12.34 };
 
   {
     const res = await recordUsage(deps, report(good, 'RW'));
@@ -179,7 +179,7 @@ async function main() {
     const env = { ONLINE_USAGE: 'on', BOARD_DB: db, ADMIN_KEY: KEY } as unknown as Env;
     const stats = (e: Env, key?: string, query = '') => {
       const url = new URL(`https://librecorsa.org/api/admin/stats${query}`);
-      return handleApi(new Request(url, { headers: key === undefined ? {} : { 'X-Admin-Key': key } }), e, url);
+      return handleApi(new Request(url, { headers: key === undefined ? {} : { Authorization: `Bearer ${key}` } }), e, url);
     };
     const notFound = await (await handleApi(new Request('https://librecorsa.org/api/nothing'), env, new URL('https://librecorsa.org/api/nothing'))).text();
     const hidden = async (what: string, res: Promise<Response>) => {
@@ -192,6 +192,9 @@ async function main() {
     await hidden('no secret set', stats({ ...env, ADMIN_KEY: undefined }, KEY));
     await hidden('an empty secret and an empty key', stats({ ...env, ADMIN_KEY: '' }, ''));
     await hidden('the key in the URL instead of the header', stats(env, undefined, `?key=${KEY}`));
+    const url = new URL('https://librecorsa.org/api/admin/stats');
+    await hidden('the key in the old X-Admin-Key header', handleApi(new Request(url, { headers: { 'X-Admin-Key': KEY } }), env, url));
+    await hidden('the key without "Bearer"', handleApi(new Request(url, { headers: { Authorization: KEY } }), env, url));
     check('admin: equal keys match, others do not', (await adminKeyMatches(KEY, KEY)) && !(await adminKeyMatches(`${KEY} `, KEY)) && !(await adminKeyMatches(null, KEY)));
     check('admin: days 1 to 90, else 30', statsDays('7') === 7 && statsDays('90') === 90 && statsDays('91') === 30 && statsDays('0') === 30 && statsDays('2.5') === 30 && statsDays(null) === 30);
 
@@ -201,16 +204,17 @@ async function main() {
       { ...env, DEV_ORIGINS: 'http://127.0.0.1:3315' } as Env,
       new URL('https://librecorsa.org/api/admin/stats'),
     );
-    check('admin: the preflight allows the X-Admin-Key header', preflight.status === 204 && /X-Admin-Key/.test(preflight.headers.get('Access-Control-Allow-Headers') ?? ''));
+    const allowed = preflight.headers.get('Access-Control-Allow-Headers') ?? '';
+    check('admin: the preflight allows the Authorization header and names no admin key', preflight.status === 204 && /Authorization/.test(allowed) && !/admin/i.test(allowed), allowed);
 
     // Some board rows to count
     // 'a' claimed long ago and seen in the range (returning), 'b' long ago and not seen, 'c' new in the range
     await db.prepare("INSERT INTO drivers (name_key, key_hash, claimed_at, last_seen) VALUES ('a', 'x', 0, ?), ('b', 'y', 0, 0), ('c', 'z', ?, ?)").bind(NOON, NOON, NOON).run();
-    const lap = "INSERT INTO laps (id, track_id, vehicle, physics, event, assists, realism, surface, compound, name_key, driver_name, driver_code, lap_time_ms, s1_ms, s2_ms, s3_ms, recorded_at, created_at) VALUES (?, ?, 'vf26', 3, '', 'pro', 'full', 'dry', 'soft', 'a', 'A', 'AAA', 90000, 30000, 30000, 30000, 0, ?)";
+    const lap = "INSERT INTO laps (id, track_id, vehicle, physics, event, assists, realism, surface, compound, name_key, driver_name, driver_code, lap_time_ms, s1_ms, s2_ms, s3_ms, recorded_at, created_at) VALUES (?, ?, 'lc26', 3, '', 'pro', 'full', 'dry', 'soft', 'a', 'A', 'AAA', 90000, 30000, 30000, 30000, 0, ?)";
     await db.prepare(lap).bind('l1', 'rwanda_official_short', NOON).run();
     await db.prepare(lap).bind('l2', 'rwanda_official', NOON - 200 * DAY_MS).run();
     // Usage before the range, for the comparison with the days before it
-    await db.prepare("INSERT INTO usage_daily (day, track_id, vehicle, mode, country, sessions, minutes) VALUES ('2026-11-04', 'rwanda_official', 'vf26', 'practice', 'RW', 3, 30)").run();
+    await db.prepare("INSERT INTO usage_daily (day, track_id, vehicle, mode, country, sessions, minutes) VALUES ('2026-11-04', 'rwanda_official', 'lc26', 'practice', 'RW', 3, 30)").run();
 
     // Through the API on the real clock; the numbers themselves on this test's clock
     const res = await stats(env, KEY, '?days=7');
@@ -232,7 +236,7 @@ async function main() {
     check('admin: board counts (names, active names, laps, laps in range)', body.board.drivers === 3 && body.board.driversActive === 2 && body.board.laps === 2 && body.board.lapsInRange === 1, JSON.stringify({ ...body.board, boards: undefined }));
     check('admin: new names and returning ones', body.board.driversNew === 1 && body.board.driversReturning === 1 && body.board.namesPerDay.map((d) => `${d.id}:${d.n}`).join() === '2026-11-11:1', JSON.stringify(body.board.namesPerDay));
     check('admin: times set per day, and what with', body.board.lapsPerDay.map((d) => `${d.id}:${d.n}`).join() === '2026-11-11:1' && body.board.lapsBy.assists[0]?.id === 'pro' && body.board.lapsBy.surface[0]?.id === 'dry' && body.board.lapsBy.compound[0]?.n === 1 && body.board.lapsBy.realism[0]?.id === 'full', JSON.stringify(body.board.lapsBy));
-    check('admin: laps and drivers per board', body.board.boards.length === 2 && body.board.boards.every((b) => b.laps === 1 && b.drivers === 1 && b.vehicle === 'vf26' && b.physics === 3));
+    check('admin: laps and drivers per board', body.board.boards.length === 2 && body.board.boards.every((b) => b.laps === 1 && b.drivers === 1 && b.vehicle === 'lc26' && b.physics === 3));
     check('admin: most times set in the range, by name', body.board.topDrivers.length === 1 && body.board.topDrivers[0].name === 'A' && body.board.topDrivers[0].laps === 1 && body.board.topDrivers[0].boards === 1);
     check('admin: no weekly challenge laps yet: none listed', body.board.challenges.length === 0);
     check('admin: no race results table: races is null', body.races === null);
@@ -249,7 +253,7 @@ async function main() {
 
     // With the race results stored (migration 0002_race_results.sql): finished races in the range, by kind
     for (const statement of sql('0002_race_results.sql').replace(/--.*$/gm, '').split(';').filter((q) => q.trim())) await db.prepare(statement).run();
-    const race = "INSERT INTO races (id, week, kind, track_id, vehicle, laps, finished_ms) VALUES (?, '2026-W46', ?, 'rwanda_official_short', 'vf26', 5, ?)";
+    const race = "INSERT INTO races (id, week, kind, track_id, vehicle, laps, finished_ms) VALUES (?, '2026-W46', ?, 'rwanda_official_short', 'lc26', 5, ?)";
     await db.prepare(race).bind('r1', 'open', NOON).run();
     await db.prepare(race).bind('r2', 'room', NOON + DAY_MS).run();
     await db.prepare(race).bind('r3', 'open', NOON - 100 * DAY_MS).run();
@@ -271,23 +275,28 @@ async function main() {
     let t = 0;
     const sent: UsageLine[] = [];
     const clock = new UsageClock((line) => sent.push(line), () => t);
-    const at = { trackId: 'rwanda_official_short', vehicle: 'vf26' as const, mode: 'practice' as const };
+    const at = { trackId: 'rwanda_official_short', vehicle: 'lc26' as const, mode: 'practice' as const };
     const MIN = 60_000;
     clock.set(at, true);
     t += 20_000;
     clock.set(null, false);
     check('game: a stretch under 30 seconds is not sent', sent.length === 0);
+    clock.lap();
     clock.set(at, true);
     t += 5 * MIN;
+    clock.lap();
+    clock.lap();
     clock.set(at, false);
     t += 30 * MIN;
     clock.set(at, true);
     t += 2 * MIN;
+    clock.lap();
     clock.set({ ...at, vehicle: 'amg-gt3' }, true);
-    check('game: a change of car ends the stretch, paused time left out', sent.length === 1 && sent[0].minutes === 7 && sent[0].vehicle === 'vf26', JSON.stringify(sent));
+    check('game: a change of car ends the stretch, paused time left out', sent.length === 1 && sent[0].minutes === 7 && sent[0].vehicle === 'lc26', JSON.stringify(sent));
+    check('game: the laps of a stretch go with it, a lap outside one with none', sent[0].laps === 3, String(sent[0].laps));
     t += MIN;
     clock.set({ ...at, vehicle: 'amg-gt3' }, true, 'flag');
-    check('game: taking the flag ends the stretch', sent.length === 2 && sent[1].minutes === 1 && sent[1].vehicle === 'amg-gt3');
+    check('game: taking the flag ends the stretch', sent.length === 2 && sent[1].minutes === 1 && sent[1].vehicle === 'amg-gt3' && sent[1].laps === 0);
     t += 300 * MIN;
     clock.end();
     check('game: a stretch is sent with at most 240 minutes', sent.length === 3 && sent[2].minutes === 240);
@@ -309,14 +318,14 @@ async function main() {
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async (url: string, init: RequestInit) => (calls.push({ url, init }), new Response('{}'))) as typeof fetch;
     try {
-      sendUsage({ ...at, minutes: 3, input: 'wheel', device: 'desktop', weather: 'dry', assists: 'pro' }, 'https://librecorsa.test/api/usage');
-      sendUsage({ ...at, minutes: 3 }, null);
+      sendUsage({ ...at, minutes: 3, laps: 2, input: 'wheel', device: 'desktop', weather: 'dry', assists: 'pro' }, 'https://librecorsa.test/api/usage');
+      sendUsage({ ...at, minutes: 3, laps: 0 }, null);
     } finally {
       globalThis.fetch = realFetch;
     }
     const call = calls[0];
     check('game: one request, keepalive, no cookies, a string body', calls.length === 1 && call.init.keepalive === true && call.init.credentials === 'omit' && typeof call.init.body === 'string' && JSON.parse(call.init.body).minutes === 3, JSON.stringify(call));
-    check('game: nothing but circuit, car, mode, minutes and the extras', Object.keys(JSON.parse(String(call?.init.body))).sort().join() === 'assists,device,input,minutes,mode,trackId,vehicle,weather');
+    check('game: nothing but circuit, car, mode, minutes, laps and the extras', Object.keys(JSON.parse(String(call?.init.body))).sort().join() === 'assists,device,input,laps,minutes,mode,trackId,vehicle,weather');
     check('game: no online side, nothing sent', calls.length === 1);
   }
 
@@ -361,7 +370,7 @@ async function main() {
     try {
       const route = (e: Env, key?: string) => {
         const url = new URL('https://librecorsa.org/api/admin/cloudflare');
-        return handleApi(new Request(url, { headers: key === undefined ? {} : { 'X-Admin-Key': key } }), e, url);
+        return handleApi(new Request(url, { headers: key === undefined ? {} : { Authorization: `Bearer ${key}` } }), e, url);
       };
       const notFound = await (await handleApi(new Request('https://librecorsa.org/api/nothing'), env, new URL('https://librecorsa.org/api/nothing'))).text();
       for (const [what, res] of [['no key', route(env)], ['a wrong key', route(env, 'nope')], ['no token set', route({ ...env, CF_ANALYTICS_TOKEN: undefined } as Env, KEY)]] as const) {

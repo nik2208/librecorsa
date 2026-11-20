@@ -1,14 +1,14 @@
 /**
  * Lap-time optimal racing line of a car class on a circuit: the fastest line for that car, not the geometric
- * (minimum-curvature) one. The F1 cars (VF26, f12026-car) share one line (`ro`); the GT3, with far less grip and
+ * (minimum-curvature) one. The F1 cars (LC26, f12026-car) share one line (`ro`); the GT3, with far less grip and
  * downforce, gets its own (`roGt3`).
  *
  * 1. Start from the track's current line of that class (for the GT3, the F1 line where it has none yet). A track
  *    fresh from the pipelines starts from their minimum-curvature line.
  * 2. Parameterise the lateral offset as a periodic cubic B-spline (one control point every K samples)
- *    and minimise the quasi-steady lap time of the car's planning model (`computeSpeedProfile`: the VF26's or the
+ *    and minimise the quasi-steady lap time of the car's planning model (`computeSpeedProfile`: the LC26's or the
  *    GT3's) with a shrinking-step pattern search, inside the usable width (kerbs may take two wheels).
- * 3. Validate both lines with the full physics on a flying lap (the VF26 AI / the GT3 autopilot); keep the
+ * 3. Validate both lines with the full physics on a flying lap (the LC26 AI / the GT3 autopilot); keep the
  *    faster clean one. The GT3's optimised line only has to stay clean and within `GT3_LAP_TOL` (0.5 s) of the
  *    starting line's physics lap. A line the physics car runs off is re-optimised with wider edge margins (twice
  *    at most) before the starting line is kept.
@@ -21,11 +21,15 @@
  *   npx tsx scripts/optimize-racing-line.ts --track suzuka --car gt3
  *   npx tsx scripts/optimize-racing-line.ts --all                 # every circuit, both lines
  *   ... --dry-run                                                 # optimise + validate only
+ *
+ * On a point-to-point course (a hill climb, `metadata.pointToPoint`) the time is the run's, from rest at the start line
+ * to the finish line, the line keeps to the centre on the stretch with no road, and the physics check is one run from
+ * the grid.
  */
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
-import { DEFAULT_TRACK_ID, getActiveTrackData, setActiveTrack, type RawTrackJson } from '../src/lib/track-data';
+import { DEFAULT_TRACK_ID, getActiveTrackData, inDeadZone, setActiveTrack, type RawTrackJson } from '../src/lib/track-data';
 import { F1Physics2026 } from '../src/lib/f1-physics-2026';
 import { AMG_GT3_PROFILE_CAR, AMG_GT3_SIM_PROFILE } from '../src/lib/sim/gt3/AmgGt3Sim';
 import { F12026CarSim } from '../src/lib/sim/f12026-car/F12026CarSim';
@@ -34,7 +38,7 @@ import {
   aiLineOffsetM,
   AI_LINE_WIDTH_SCALE,
   computeSpeedProfile,
-  createVf26ProfileCarModel,
+  createLc26ProfileCarModel,
   type SpeedProfile,
 } from '../src/lib/sim/speed-profile';
 
@@ -71,7 +75,7 @@ if (LINE !== 'f1' && LINE !== 'gt3') throw new Error(`--car must be f1 or gt3, n
 const dataUrl = TRACK_INDEX.find((e) => e.id === TRACK_ID)?.dataUrl ?? `/tracks/${TRACK_ID}/track_data.json`;
 const JSON_PATH = path.join(ROOT, 'public', dataUrl.replace(/^\//, ''));
 setActiveTrack(TRACK_ID, JSON.parse(fs.readFileSync(JSON_PATH, 'utf8')) as RawTrackJson);
-console.log(`${TRACK_ID}: ${LINE === 'f1' ? 'F1 line (VF26 / f12026-car)' : 'GT3 line'}`);
+console.log(`${TRACK_ID}: ${LINE === 'f1' ? 'F1 line (LC26 / f12026-car)' : 'GT3 line'}`);
 
 /** Car-centre margin to the asphalt edge (m): plain edge / kerb side (two wheels on the kerb) */
 const EDGE_MARGIN_M = Number(process.env.EDGE_M ?? 1.25);
@@ -92,7 +96,12 @@ const OPT_MU_SCALE = Number(process.env.OPT_MU ?? 0.95);
 const track = getActiveTrackData(1200);
 const samples = track.samples;
 const n = samples.length;
-const car = LINE === 'gt3' ? AMG_GT3_PROFILE_CAR : createVf26ProfileCarModel('balanced');
+const car = LINE === 'gt3' ? AMG_GT3_PROFILE_CAR : createLc26ProfileCarModel('balanced');
+/** A hill climb: its run, and the samples of the stretch with no road */
+const p2p = track.pointToPoint;
+const dead = new Uint8Array(n);
+if (p2p) for (let i = 0; i < n; i++) dead[i] = inDeadZone(p2p, (i / n) * track.totalLengthM) ? 1 : 0;
+const inRun = (i: number) => !p2p || (i / n) * track.totalLengthM < p2p.finishS;
 const optCar = { ...car, muLat: car.muLat * OPT_MU_SCALE, muLong: car.muLong * OPT_MU_SCALE };
 
 // ---------- bounds ----------
@@ -110,6 +119,8 @@ for (let i = 0; i < n; i++) {
   }
   lo[i] = -(half - (kL ? KERB_MARGIN_M : EDGE_MARGIN_M));
   hi[i] = half - (kR ? KERB_MARGIN_M : EDGE_MARGIN_M);
+  // No road: the line keeps to the centre
+  if (dead[i]) lo[i] = hi[i] = 0;
 }
 
 // ---------- lap time of a line ----------
@@ -123,6 +134,7 @@ function applyLine(e: Float64Array): void {
 function lapTimeOf(profile: SpeedProfile): number {
   let t = 0;
   for (let i = 0; i < n; i++) {
+    if (!inRun(i)) continue;
     const j = (i + 1) % n;
     t += (2 * profile.segLenM[i]) / Math.max(1, profile.speedMs[i] + profile.speedMs[j]);
   }
@@ -130,7 +142,8 @@ function lapTimeOf(profile: SpeedProfile): number {
 }
 function evalLine(e: Float64Array, model = car): { lap: number; profile: SpeedProfile } {
   applyLine(e);
-  const profile = computeSpeedProfile(samples, model, LINE);
+  // A hill climb's run starts from rest at the line (sample 0)
+  const profile = computeSpeedProfile(samples, model, LINE, p2p ? { standingStartAt: 0 } : {});
   return { lap: lapTimeOf(profile), profile };
 }
 
@@ -289,7 +302,7 @@ const LOCK = (arg('--lock') ?? '').split(',').filter(Boolean).map((r) => r.split
 const locked = new Uint8Array(m);
 for (let j = 0; j < m; j++) {
   const sj = (Math.round(j * kSpan) / n) * track.totalLengthM;
-  locked[j] = LOCK.some(([a, b]) => sj >= a && sj <= b) ? 1 : 0;
+  locked[j] = LOCK.some(([a, b]) => sj >= a && sj <= b) || dead[Math.round(j * kSpan) % n] ? 1 : 0;
 }
 if (LOCK.length) console.log(`Locked to the seed: ${LOCK.map(([a, b]) => `${a}-${b} m`).join(', ')} (${locked.reduce((x, y) => x + y, 0)} control points)`);
 
@@ -484,15 +497,19 @@ function physicsLap(e: Float64Array): PhysicsLap {
     gt3.aiPaceScale = GT3_PACE;
     sim = gt3;
   } else {
-    const vf26 = new F1Physics2026(track);
-    vf26.setAssistPreset('pro');
-    sim = vf26;
+    const lc26 = new F1Physics2026(track);
+    lc26.setAssistPreset('pro');
+    sim = lc26;
   }
   // From the grid, not a flying start: that drops the car 450 m before the line at 270 km/h, which on circuits
   // whose last corner lies within those 450 m (Suzuka, for one) throws a GT3 into the run-off. The first lap
   // is the out-lap; the second, flying, lap is the one timed
   sim.resetToStartGrid(false);
   sim.aiAutopilot = true;
+  // A hill climb is timed on its one run from the grid: its "lap" is the first time set
+  const timedLap = p2p ? 0 : 1;
+  let runStarted = !p2p;
+  let prevS = sim.sMeters;
   let laps = 0;
   let offTrack = 0;
   let lapS: number | null = null;
@@ -509,7 +526,9 @@ function physicsLap(e: Float64Array): PhysicsLap {
       lastDbg = i;
       console.log(`    [debug] t=${(i / 60).toFixed(1)} s=${sim.sMeters.toFixed(0)} v=${sim.telemetry.speedKmh.toFixed(0)} lat=${sim.lateralOffsetM.toFixed(2)} off=${sim.telemetry.offTrack}`);
     }
-    if (laps === 1) {
+    if (p2p && !runStarted && prevS > track.totalLengthM * 0.85 && sim.sMeters < track.totalLengthM * 0.15) runStarted = true;
+    prevS = sim.sMeters;
+    if (laps === timedLap && runStarted) {
       // the F1 AI's off-track flag; for the GT3 its CG past the asphalt edge (as verify-gt3 checks it)
       const off =
         LINE === 'gt3'
@@ -523,7 +542,7 @@ function physicsLap(e: Float64Array): PhysicsLap {
     }
     if (sim.telemetry.lastLapTimeMs !== null && sim.telemetry.lastLapTimeMs !== prev) {
       laps++;
-      if (laps === 2) {
+      if (laps === timedLap + 1) {
         lapS = sim.telemetry.lastLapTimeMs / 1000;
         break;
       }
@@ -538,7 +557,7 @@ function physicsLap(e: Float64Array): PhysicsLap {
 const physStart = physicsLap(e0);
 const physOpt = physicsLap(eOpt);
 console.log(
-  `Physics ${LINE === 'gt3' ? `GT3 autopilot (pace ${GT3_PACE})` : 'AI'} flying lap: starting line ${physStart.lapS?.toFixed(3)} s (offTrack ${physStart.offTrack}), ` +
+  `Physics ${LINE === 'gt3' ? `GT3 autopilot (pace ${GT3_PACE})` : 'AI'} ${p2p ? 'run from the grid' : 'flying lap'}: starting line ${physStart.lapS?.toFixed(3)} s (offTrack ${physStart.offTrack}), ` +
     `optimised ${physOpt.lapS?.toFixed(3)} s (offTrack ${physOpt.offTrack})`
 );
 
@@ -610,6 +629,8 @@ const zones: Zone[] = [];
       } else { i = (i + 1) % n; cnt++; }
     }
   }
+  // A hill climb's braking zones are the run's
+  if (p2p) for (let k = zones.length - 1; k >= 0; k--) if (zones[k].startS > p2p.finishS) zones.splice(k, 1);
   zones.sort((a, b) => a.startS - b.startS);
   // Stops separated by a short coast are one braking zone (one set of boards)
   for (let k = zones.length - 1; k > 0; k--) {
@@ -663,7 +684,7 @@ if (LINE === 'gt3') {
   // The GT3's own line beside the F1 one; the samples' speeds and the turn data stay the F1 line's
   for (const js of json.samples) js.roGt3 = r3(atS(eFinal, js.s));
   json.metadata.racingLineGt3 = {
-    method: `lap-time optimised (quasi-steady AMG GT3 model, B-spline pattern search${SEED && optWins ? ' from a min-time seed' : ''}), GT3-autopilot validated`,
+    method: `${p2p ? 'run-time' : 'lap-time'} optimised (quasi-steady AMG GT3 model, B-spline pattern search${SEED && optWins ? ' from a min-time seed' : ''}), GT3-autopilot validated`,
     modelLapS: Math.round(final.lap * 1000) / 1000,
     physicsLapS: phys.lapS !== null ? Math.round(phys.lapS * 1000) / 1000 : null,
     brakingZones: zoneJson,
@@ -707,7 +728,7 @@ if (LINE === 'gt3') {
   }
 
   json.metadata.racingLine = {
-    method: `lap-time optimised (quasi-steady VF26 model, B-spline pattern search${SEED && optWins ? ' from a min-time seed' : ''}), physics-AI validated`,
+    method: `${p2p ? 'run-time' : 'lap-time'} optimised (quasi-steady LC26 model, B-spline pattern search${SEED && optWins ? ' from a min-time seed' : ''}), physics-AI validated`,
     modelLapS: Math.round(final.lap * 1000) / 1000,
     physicsAiLapS: phys.lapS !== null ? Math.round(phys.lapS * 1000) / 1000 : null,
     brakingZones: zoneJson,

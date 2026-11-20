@@ -2,7 +2,8 @@
 
 import React, { useEffect, useId, useRef, useState } from "react";
 import type { RaceStatus } from "@/types/f1";
-import { HUD_GLASS, HUD_RED, HUD_VOLT, raceState } from "./hud-format";
+import { HUD_GLASS, HUD_RED, raceState } from "./hud-format";
+import { skinCss, SkinPanel, useHudSkin } from "./styles/third-party-skin";
 
 const LIGHT_COLUMNS = [0, 1, 2, 3, 4];
 /** Waving chequer strip outline (520 × 60 viewBox) */
@@ -14,9 +15,9 @@ const ChequerStrip: React.FC<{ patternId: string; defs?: boolean }> = ({ pattern
     {defs ? (
       <defs>
         <pattern id={patternId} width="20" height="20" patternUnits="userSpaceOnUse">
-          <rect width="20" height="20" fill="#F5F7FA" />
-          <rect width="10" height="10" fill="#08090D" />
-          <rect x="10" y="10" width="10" height="10" fill="#08090D" />
+          <rect width="20" height="20" fill="var(--color-lc-chalk)" />
+          <rect width="10" height="10" fill="var(--color-lc-void)" />
+          <rect x="10" y="10" width="10" height="10" fill="var(--color-lc-void)" />
         </pattern>
       </defs>
     ) : null}
@@ -24,8 +25,9 @@ const ChequerStrip: React.FC<{ patternId: string; defs?: boolean }> = ({ pattern
   </svg>
 );
 
-/** Five-light LibreCorsa start gantry overlay; "LIGHTS OUT" flashes in Corsa Volt when the race starts, "CHEQUERED FLAG" when the player finishes */
+/** Five-light start gantry overlay (the lights are red: identity, not state); "Lights out" when the race starts, "Chequered flag" when the player finishes */
 export const StartLights: React.FC<{ race: RaceStatus | undefined }> = ({ race }) => {
+  const skin = useHudSkin();
   const [starts, setStarts] = useState(0);
   const [flags, setFlags] = useState(0);
   // Which banner has finished fading: it is then removed, so it stops holding space above the delta bar
@@ -47,13 +49,46 @@ export const StartLights: React.FC<{ race: RaceStatus | undefined }> = ({ race }
   if (race?.phase === "lights") {
     const countdown =
       typeof race.countdownS === "number" && race.countdownS > 0 ? Math.ceil(race.countdownS) : null;
+    if (skin !== null) {
+      return (
+        <div className="flex flex-col items-center gap-3">
+          {countdown !== null ? (
+            <span className={`hud-text-shadow text-[24px] font-bold uppercase sm:text-[28px] ${skinCss.ink}`}>
+              Race starts in <span className="lc-data not-italic">{countdown}</span>
+            </span>
+          ) : null}
+          <SkinPanel
+            cut="md"
+            className={skinCss.pill}
+            innerClassName="flex gap-2 px-3 py-3 sm:gap-3.5 sm:px-5 sm:py-4 short:gap-2 short:py-2"
+            role="img"
+            aria-label={`Start lights: ${race.lightsOn} of 5 lit`}
+          >
+            {LIGHT_COLUMNS.map((i) => {
+              const on = i < race.lightsOn;
+              return (
+                <span key={i} className={`flex flex-col gap-2 p-2 sm:gap-2.5 sm:p-2.5 short:gap-1.5 short:p-1.5 ${skinCss.deepBox}`}>
+                  {[0, 1].map((row) => (
+                    <span
+                      key={row}
+                      className="block size-8 rounded-full sm:size-10 short:size-7"
+                      style={{
+                        backgroundColor: on ? HUD_RED : "color-mix(in srgb, var(--color-lc-crimson) 10%, var(--color-lc-void))",
+                        boxShadow: on ? `0 0 22px ${HUD_RED}, 0 0 4px ${HUD_RED}` : "inset 0 2px 6px rgb(0 0 0 / 0.9)",
+                      }}
+                    />
+                  ))}
+                </span>
+              );
+            })}
+          </SkinPanel>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-col items-center gap-3">
         {countdown !== null ? (
-          <span
-            className="lc-disp text-[26px] sm:text-[30px]"
-            style={{ color: HUD_VOLT, textShadow: `0 0 18px ${HUD_VOLT}66` }}
-          >
+          <span className="lc-disp hud-text-shadow text-[26px] text-lc-chalk sm:text-[30px]">
             Race starts in <span className="lc-data not-italic">{countdown}</span>
           </span>
         ) : null}
@@ -67,15 +102,15 @@ export const StartLights: React.FC<{ race: RaceStatus | undefined }> = ({ race }
             return (
               <span
                 key={i}
-                className="flex flex-col gap-2 rounded-full bg-[#050608] p-2 shadow-[inset_0_0_0_1px_#1B1F2B] sm:gap-2.5 sm:p-2.5 short:gap-1.5 short:p-1.5"
+                className="flex flex-col gap-2 rounded-full bg-lc-well p-2 inset-ring inset-ring-lc-titanium sm:gap-2.5 sm:p-2.5 short:gap-1.5 short:p-1.5"
               >
                 {[0, 1].map((row) => (
                   <span
                     key={row}
-                    className="block h-8 w-8 rounded-full transition-all duration-150 sm:h-10 sm:w-10 short:h-7 short:w-7"
+                    className="block size-8 rounded-full sm:size-10 short:size-7"
                     style={{
-                      backgroundColor: on ? HUD_RED : "#1E1014",
-                      boxShadow: on ? `0 0 22px ${HUD_RED}, 0 0 4px ${HUD_RED}` : "inset 0 2px 6px rgba(0,0,0,0.9)",
+                      backgroundColor: on ? HUD_RED : "color-mix(in srgb, var(--color-lc-crimson) 10%, var(--color-lc-void))",
+                      boxShadow: on ? `0 0 22px ${HUD_RED}, 0 0 4px ${HUD_RED}` : "inset 0 2px 6px rgb(0 0 0 / 0.9)",
                     }}
                   />
                 ))}
@@ -88,20 +123,31 @@ export const StartLights: React.FC<{ race: RaceStatus | undefined }> = ({ race }
   }
   if (starts > 0 && race?.phase === "racing") {
     if (faded === `go${starts}`) return null;
+    if (skin !== null) {
+      return (
+        <div key={starts} onAnimationEnd={fadeEnd(`go${starts}`)} className="hud-fade-out relative flex items-center justify-center">
+          <SkinPanel cut="lg" tone="accent" innerClassName="flex flex-col items-center gap-3 px-8 py-4 sm:gap-4 sm:px-14 sm:py-6">
+            <div className="flex gap-2" aria-hidden="true">
+              {LIGHT_COLUMNS.map((i) => (
+                <span key={i} className={`size-3.5 rounded-full ${skinCss.fillDim}`} />
+              ))}
+            </div>
+            <span className="text-[40px] leading-none font-bold whitespace-nowrap uppercase sm:text-[68px]">Lights out</span>
+          </SkinPanel>
+        </div>
+      );
+    }
     return (
       <div key={starts} onAnimationEnd={fadeEnd(`go${starts}`)} className="hud-fade-out relative flex items-center justify-center">
         {/* Ripples leaving the banner */}
-        <span className="lc-ripple absolute inset-0 rounded-full border-2 border-[#CCFF00]/60" aria-hidden="true" />
-        <div className="relative flex flex-col items-center gap-3 rounded-full border-2 border-[#CCFF00] bg-[#08090D]/[0.82] px-8 py-4 shadow-[0_0_60px_rgba(204,255,0,0.35)] sm:gap-4 sm:px-14 sm:py-6">
+        <span className="lc-ripple absolute inset-0 rounded-full border-2 border-lc-chalk/45" aria-hidden="true" />
+        <div className="relative flex flex-col items-center gap-3 rounded-full border-2 border-lc-chalk/45 bg-lc-void/84 px-8 py-4 shadow-lc-pop sm:gap-4 sm:px-14 sm:py-6">
           <div className="flex gap-2" aria-hidden="true">
             {LIGHT_COLUMNS.map((i) => (
-              <span key={i} className="h-3.5 w-3.5 rounded-full bg-[#1B1F2B]" />
+              <span key={i} className="h-3.5 w-3.5 rounded-full bg-lc-titanium" />
             ))}
           </div>
-          <span
-            className="lc-disp text-[44px] whitespace-nowrap sm:text-[76px]"
-            style={{ color: HUD_VOLT, textShadow: "0 0 30px rgba(204,255,0,0.6)" }}
-          >
+          <span className="lc-disp text-[44px] whitespace-nowrap text-lc-chalk sm:text-[76px]">
             Lights out
           </span>
         </div>
@@ -110,11 +156,24 @@ export const StartLights: React.FC<{ race: RaceStatus | undefined }> = ({ race }
   }
   if (flags > 0 && flagged) {
     if (faded === `flag${flags}`) return null;
+    if (skin !== null) {
+      return (
+        <div key={flags} onAnimationEnd={fadeEnd(`flag${flags}`)} className="hud-fade-out flex flex-col items-center gap-3.5">
+          <ChequerStrip patternId={patternId} defs />
+          <SkinPanel cut="lg" innerClassName="px-8 py-4 sm:px-13 sm:py-5.5">
+            <span className="block text-center text-[34px] leading-none font-bold whitespace-nowrap uppercase sm:text-[60px]">
+              Chequered flag
+            </span>
+          </SkinPanel>
+          <ChequerStrip patternId={patternId} />
+        </div>
+      );
+    }
     return (
       <div key={flags} onAnimationEnd={fadeEnd(`flag${flags}`)} className="hud-fade-out flex flex-col items-center gap-3.5">
         <ChequerStrip patternId={patternId} defs />
-        <div className="rounded-full border-2 border-[#F5F7FA]/45 bg-[#08090D]/[0.84] px-8 py-4 sm:px-[52px] sm:py-[22px]">
-          <span className="lc-disp block text-center text-[36px] whitespace-nowrap text-[#F5F7FA] sm:text-[66px]">
+        <div className="rounded-full border-2 border-lc-chalk/45 bg-lc-void/84 px-8 py-4 shadow-lc-pop sm:px-13 sm:py-5.5">
+          <span className="lc-disp block text-center text-[36px] whitespace-nowrap text-lc-chalk sm:text-[66px]">
             Chequered flag
           </span>
         </div>

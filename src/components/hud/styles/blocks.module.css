@@ -1,0 +1,33 @@
+/*
+ * Blocks: the colours of C1XTZ's HUD (https://github.com/C1XTZ/ac-rennsporthud, GPL-3.0), scoped to the layout's root.
+ * Flat black blocks at the source's opacities, white type. State colours (gain, loss, best, tyre heat, the shift
+ * point) are the game's semantic tokens, not these, so the colour-blind palettes apply.
+ */
+.palette {
+  /* The source's black at 50 % for a block, 40 % for the delta rows, 60 % for bar tracks */
+  --blk-block: rgb(0 0 0 / 0.5);
+  --blk-soft: rgb(0 0 0 / 0.4);
+  --blk-deep: rgb(0 0 0 / 0.6);
+  /* Table header rows and label cells: near-solid black */
+  --blk-head: rgb(0 0 0 / 0.82);
+  /* White type, and the black it inverts to over a white fill */
+  --blk-ink: #ffffff;
+  --blk-ink-dim: #bfbfbf;
+  --blk-ink-on: #000000;
+  /* Pedal and rpm fills */
+  --blk-fill: #ffffff;
+  /* The source's ui green: an aid acting, the fuel bar */
+  --blk-active: #05a666;
+  /* The source's ui red: the player's row tick */
+  --blk-player: #d93333;
+  /* The flags' own colours on the status row */
+  --blk-flag-yellow: #ffff00;
+  --blk-flag-white: #ffffff;
+  --blk-flag-black: #000000;
+  /* The blue flag in the game's own blue, as its flag icon draws it */
+  --blk-flag-blue: var(--color-lc-cyan);
+
+  color: var(--blk-ink);
+  font-family: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}

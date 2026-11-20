@@ -10,13 +10,14 @@
  * and the page takes the car back where the simulation had it.
  */
 import * as THREE from 'three';
-import { setVf26OnRigidBody } from '../src/lib/cars/vf26-engine';
+import { setLc26OnRigidBody } from '../src/lib/cars/lc26-engine';
 import { vehicleModelSpec } from '../src/lib/cars/vehicle-models';
 import { F12026CarSim } from '../src/lib/sim/f12026-car/F12026CarSim';
 import { createGroundHit } from '../src/lib/sim/f12026-car/TrackColliderQuery';
 import { simMode } from '../src/lib/sim/runtime/sim-mode';
 import { F1Physics2026 } from '../src/lib/f1-physics-2026';
 import { SIM_TICK_S } from '../src/lib/sim/runtime/sim-protocol';
+import { TrackLimitsMonitor } from '../src/lib/sim/track-limits';
 import { createSimHost, loopbackTransport } from '../src/lib/sim/runtime/sim-host';
 import type { SimulatorCar } from '../src/lib/sim/simulator-car';
 import { getActiveTrackData } from '../src/lib/track-data';
@@ -99,20 +100,28 @@ function frame(r: Rig, inputs: Partial<ControlInputs>, driving = true): void {
 
 console.log('== Each car through the messages, against a car stepped directly');
 const MODELS: [string, VehicleModelId, boolean][] = [
-  ['VF26', 'vf26', false],
-  ['VF26 (rigid-body)', 'vf26', true],
+  ['LC26', 'lc26', false],
+  ['LC26 (rigid-body)', 'lc26', true],
   ['f12026-car', 'f12026-car', false],
   ['AMG GT3', 'amg-gt3', false],
   ['MTR 496R', 'mtr-496r', false],
+  ['LC-LMDH', 'lc-lmdh', false],
+  ['Nissan R33 JGTC', 'nissan-r33-jgtc', false],
+  ['Nissan R32 JTCC', 'nissan-r32-jtcc', false],
+  ['BMW M1 Procar', 'bmw-m1-procar', false],
+  ['VW Scirocco GTX 16V', 'vw-scirocco-gtx', false],
+  ['Chaparral 2D', 'chaparral-2d', false],
+  ['Chaparral 2D 1967', 'chaparral-2d-67', false],
+  ['Porsche 934 Turbo RSR', 'porsche-934-rsr', false],
   ['Liana', 'liana', false],
 ];
 for (const [name, vehicle, rigid] of MODELS) {
-  setVf26OnRigidBody(rigid);
+  setLc26OnRigidBody(rigid);
   const r = rig(vehicle);
   // The simulation takes the car over before it moves
   r.host.endFrame(true);
   const sim = r.loop.runtime.simulatedCar!;
-  if (vehicle === 'vf26') {
+  if (vehicle === 'lc26') {
     check(
       `${name}: the simulation built the engine the page chose`,
       rigid ? sim instanceof F12026CarSim : sim instanceof F1Physics2026,
@@ -161,7 +170,7 @@ for (const [name, vehicle, rigid] of MODELS) {
   check(`${name}: telemetry reaches the game`, Math.abs(r.car.telemetry.speedKmh - sim.telemetry.speedKmh) < 1 && r.car.telemetry.gear === sim.telemetry.gear, `${r.car.telemetry.speedKmh.toFixed(1)} km/h, gear ${r.car.telemetry.gear}`);
   check(`${name}: the page's own car stood still meanwhile`, Math.abs(r.twin.vxMs) < 0.5 && r.twin.sMeters !== sim.sMeters);
 }
-setVf26OnRigidBody(false);
+setLc26OnRigidBody(false);
 
 console.log('\n== Set-up, placement and hand-over (f12026-car)');
 {
@@ -251,8 +260,8 @@ console.log('\n== Set-up, placement and hand-over (f12026-car)');
 console.log('\n== On the circuit\'s own colliders (autopilot)');
 // The track mesh loads on the page; its colliders cross to the simulation as data, and the car there drives on them
 const root = loadGlbGeometry('public/tracks/rwanda_official/rwanda_official.glb');
-for (const [name, vehicle] of [['f12026-car', 'f12026-car'], ['VF26 as it ships', 'vf26']] as const) {
-  setVf26OnRigidBody(true);
+for (const [name, vehicle] of [['f12026-car', 'f12026-car'], ['LC26 as it ships', 'lc26']] as const) {
+  setLc26OnRigidBody(true);
   const r = rig(vehicle);
   r.car.attachTrackRoot?.(root);
   r.car.resetToStartGrid(true);
@@ -280,7 +289,38 @@ for (const [name, vehicle] of [['f12026-car', 'f12026-car'], ['VF26 as it ships'
   for (let t = 0; t < 20 - 1e-9; t += SIM_TICK_S) flat.step(SIM_TICK_S, {});
   check(`${name}: (a car on the track samples' ground ends elsewhere)`, worstDifference(poseOf(flat), poseOf(direct)) > 1e-3);
 
-  if (vehicle === 'vf26') {
+  if (vehicle === 'f12026-car') {
+    // Barrier contact, summed over every tick in the simulation, crosses to the game with the telemetry (race control's
+    // wall rules read it): the car steered into the left barrier before turn 1
+    r.car.aiAutopilot = false;
+    r.car.teleportToDistance(225, 25, -7);
+    for (let f = 0; f < 120 && (sim.telemetry.f12026?.wallContactS ?? 0) === 0; f++) frame(r, { throttle: 0.5, analogSteer: -1 });
+    for (let f = 0; f < 30; f++) frame(r, { throttle: 0.5, analogSteer: -1 });
+    const there = sim.telemetry.f12026?.wallContactS ?? 0;
+    const here = r.car.telemetry.f12026?.wallContactS ?? 0;
+    check(`${name}: barrier contact, summed in the simulation, reaches the game`, there > 0 && Math.abs(here - there) < 0.02, `${there.toFixed(3)} s there, ${here.toFixed(3)} s here`);
+    // A restart puts the car somewhere else: the sum starts again on both cars, so race control, judging a hill climb's
+    // touch from what the game reads, sees no contact while the hand-over settles
+    const control = new TrackLimitsMonitor();
+    control.reset('practice');
+    const judge = (n: number) => {
+      const seen: number[] = [];
+      for (let f = 0; f < n; f++) {
+        const t = r.car.telemetry;
+        seen.push(t.f12026?.wallContactS ?? 0);
+        const ev = control.update({ nowMs: f * 16, dtS: FRAME_S, lapCount: t.lapCount, distM: r.car.sMeters, offTrack: false, throttle: 0.4, brake: 0, lateralM: 0, curvature: 0, deltaS: null, active: true, wallContactS: t.f12026?.wallContactS, wallRule: 'touch' });
+        if (ev) return { ev, seen };
+        frame(r, { throttle: 0.4 });
+      }
+      return { ev: null, seen };
+    };
+    judge(3);
+    r.car.teleportToDistance(400, 20, 0);
+    const after = judge(30);
+    check(`${name}: after a restart the game's contact sum starts again, and no touch is judged`, after.ev === null && Math.max(...after.seen) < 1e-9, `${after.seen.slice(0, 6).map((v) => v.toFixed(3)).join(' ')} …`);
+  }
+
+  if (vehicle === 'lc26') {
     // The kerbs' blocks (the circuit's surface table, read off the kerb meshes' texture coordinates) are the same under
     // the simulation's car as under the page's: every kerb the track data flags, 0.7 m out from the road's edge
     const here = r.twin.groundQuery!;
@@ -335,6 +375,26 @@ console.log('\n== Where the simulation runs');
   check('on the page when asked for in the address, kept for the browser, and undone the same way',
     asked.mode === 'main' && asked.kept === 'main' && inBrowser('', 'main').mode === 'main' && back.mode === 'worker' && back.kept === 'worker');
   check('on the page where there are no workers, and off the browser', inBrowser('', undefined, false).mode === 'main' && simMode() === 'main');
+}
+
+console.log("\n== The driver's clutch pedal through the messages");
+{
+  setLc26OnRigidBody(false);
+  const r = rig('bmw-m1-procar');
+  for (let f = 0; f < 150; f++) frame(r, { throttle: 0.6, clutch: 1 });
+  const heldKmh = r.car.telemetry.speedKmh;
+  const heldRpm = r.car.telemetry.rpm;
+  check("clutch held: the simulation's car revs on the spot", heldKmh < 1 && heldRpm > 2500, `${heldKmh.toFixed(2)} km/h, ${Math.round(heldRpm)} rpm`);
+  for (let f = 0; f < 150; f++) frame(r, { throttle: 0.6 });
+  check('clutch let go: it drives off', r.car.telemetry.speedKmh > 10, `${r.car.telemetry.speedKmh.toFixed(1)} km/h`);
+  // A neutral press is one press through the messages, and the gear for the speed goes back in on a paddle
+  r.car.autoGearbox = false;
+  frame(r, { throttle: 0, neutral: true });
+  for (let f = 0; f < 30; f++) frame(r, { throttle: 0 });
+  check('neutral press: out of gear in the simulation', r.car.telemetry.gear === 0, `gear ${r.car.telemetry.gear}`);
+  frame(r, { throttle: 0, shiftUp: true });
+  for (let f = 0; f < 10; f++) frame(r, { throttle: 0 });
+  check('a paddle out of neutral on the move: a gear for the speed', r.car.telemetry.gear >= 1, `gear ${r.car.telemetry.gear}, ${r.car.telemetry.speedKmh.toFixed(0)} km/h`);
 }
 
 if (failures.length) {

@@ -49,6 +49,7 @@ EXCLUDE = [
     "**/*.lighting", "**/*.physicMaterial",
     "**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock", "**/packages.lock.json",
     "**/*.min.js", "**/*.min.css", "**/*.map",
+    "src/lib/home/whats-new.json",
 ]
 
 SYSTEM_PROMPT = """\

@@ -1,0 +1,28 @@
+/*
+ * The RaceVision layout's own colours (after mpavich2/RaceVision, MIT): black overlay windows at 80 %, white
+ * position boxes, mid-grey rounded rows, gold for the player, the relative's pink and blue for cars a lap up or down.
+ * States (best lap, personal best, gain / loss, aids at work, throttle / brake) use the game's semantic tokens.
+ */
+.palette {
+  /* The overlay windows: black at the source's 0.8 opacity */
+  --tp-panel: rgb(0 0 0 / 0.8);
+  /* Every other relative row */
+  --tp-row: rgb(61 61 61 / 0.8);
+  --tp-text: #ffffff;
+  --tp-ink: #000000;
+  /* The position box */
+  --tp-box: #ffffff;
+  /* The player: gold */
+  --tp-user: #ffd959;
+  /* The car class header pill (the source's fastest-class yellow) */
+  --tp-class: #ffd959;
+  /* A car lapping the player / a car the player is lapping */
+  --tp-lapping: #ff82a6;
+  --tp-lapped: #5a9bd6;
+  /* Out of the race, in the pits */
+  --tp-dim: #848484;
+  /* The gear dial and the unlit shift lights */
+  --tp-gear: #3b3b3b;
+  --tp-gear-ring: #4b4b4b;
+  --tp-light-off: #3b3b3b;
+}

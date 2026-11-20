@@ -85,10 +85,23 @@ export interface TrackInfo {
   type?: CircuitType;
   /** Where its model comes from (index.json) */
   quality: CircuitQuality;
+  /**
+   * Left out of every list (circuit browser, home page, lap board picker, credits) unless the page's link names it
+   * (`?track=<id>`), e.g. a new circuit its modder tries on the live site before it is listed. It still loads by id
+   * everywhere: a stored choice, a room's circuit, a board.
+   */
+  unlisted?: boolean;
 }
 
-export type CircuitType = "permanent" | "street" | "oval";
-export const CIRCUIT_TYPE_LABELS: Record<CircuitType, string> = { permanent: "Permanent", street: "Street", oval: "Oval" };
+/** "hillclimb": a road from a start line to a finish line somewhere else, driven as one timed run */
+export type CircuitType = "permanent" | "street" | "oval" | "hillclimb";
+export const CIRCUIT_TYPES: readonly CircuitType[] = ["permanent", "street", "oval", "hillclimb"];
+export const CIRCUIT_TYPE_LABELS: Record<CircuitType, string> = {
+  permanent: "Permanent",
+  street: "Street",
+  oval: "Oval",
+  hillclimb: "Hill climb",
+};
 
 export const circuitQualityMeta = (t: Pick<TrackInfo, "quality">): CircuitQualityMeta => CIRCUIT_QUALITY_META[t.quality];
 
@@ -133,6 +146,7 @@ const COUNTRY_REGION: Record<string, CircuitRegion> = {
   Hungary: "Europe",
   Netherlands: "Europe",
   Russia: "Europe",
+  Croatia: "Europe",
   Australia: "Oceania",
   "New Zealand": "Oceania",
 };
@@ -140,9 +154,13 @@ const COUNTRY_REGION: Record<string, CircuitRegion> = {
 /** A circuit's region; a country missing from the map lands in "Other" until it is added */
 export const circuitRegion = (t: Pick<TrackInfo, "country">): CircuitRegion => COUNTRY_REGION[t.country] ?? "Other";
 
-/** Permanent, street or oval: the index's own field, else an oval or street layout named as such */
+/** Permanent, street, oval or hill climb: the index's own field, else an oval or street layout named as such */
 export const circuitType = (t: TrackInfo): CircuitType =>
   t.type ?? (/\boval\b/i.test(t.layout) ? "oval" : /\bstreet\b/i.test(`${t.name} ${t.layout}`) ? "street" : "permanent");
+
+/** Who made a circuit's model, for the circuit browser's Modder filter: its credited author, else LibreCorsa itself */
+export const LIBRECORSA_MODDER = "LibreCorsa";
+export const circuitModder = (t: Pick<TrackInfo, "credit">): string => t.credit?.author ?? LIBRECORSA_MODDER;
 
 /** One venue in the circuit browser: its layouts (Daytona's oval and road course) share a card */
 export interface CircuitVenue {
@@ -155,11 +173,30 @@ export interface CircuitVenue {
   layouts: TrackInfo[];
 }
 
-/** On librecorsa.org every circuit; in a clone of the repository only the ones it carries (`hosted-content.ts`) */
+/**
+ * On librecorsa.org every circuit; in a clone of the repository only the ones it carries (`hosted-content.ts`).
+ * Unlisted ones included: an id resolves wherever it comes from, and only the lists leave them out (`LISTED_TRACKS`).
+ */
 export const TRACKS: TrackInfo[] = (trackIndex as TrackInfo[]).filter((t) => trackListed(t.id));
 
-/** The circuits grouped by venue (same name and country), in index order */
-export const CIRCUIT_VENUES: readonly CircuitVenue[] = TRACKS.reduce<CircuitVenue[]>((venues, t) => {
+/** `?track=<id>`: the circuit a link opens. Read in the browser only, so the static pages (home) list without it */
+export const LINKED_TRACK_ID: string | null = (() => {
+  try {
+    return typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("track");
+  } catch {
+    return null;
+  }
+})();
+
+/** The circuits a list offers: every one but the unlisted, except an unlisted one this page's link names */
+export const listedTracks = (tracks: readonly TrackInfo[], linkedId: string | null): TrackInfo[] =>
+  tracks.filter((t) => !t.unlisted || t.id === linkedId);
+
+/** What the circuit browser, the home page, the lap board picker and the credits show */
+export const LISTED_TRACKS: readonly TrackInfo[] = listedTracks(TRACKS, LINKED_TRACK_ID);
+
+/** The listed circuits grouped by venue (same name and country), in index order */
+export const CIRCUIT_VENUES: readonly CircuitVenue[] = LISTED_TRACKS.reduce<CircuitVenue[]>((venues, t) => {
   const venue = venues.find((v) => v.name === t.name && v.country === t.country);
   if (venue) venue.layouts.push(t);
   else venues.push({ id: t.id, name: t.name, country: t.country, city: t.city, region: circuitRegion(t), layouts: [t] });
@@ -177,8 +214,28 @@ export function getTrackInfo(id: string): TrackInfo {
   return TRACKS[0];
 }
 
-/** The circuit picked last time (or the default) */
+/** Whether this page has opened its `?track=` circuit already */
+let linkOpened = false;
+
+/**
+ * The circuit to open: `?track=` in the URL the first time, else the one picked last time, else the default. The link
+ * opens its circuit once and leaves the address: the game remounting on a return from the home page, or a reload,
+ * keeps the circuit the player has picked since (activateTrack stores it).
+ */
 export function loadStoredTrackId(): string {
+  if (!linkOpened && LINKED_TRACK_ID && TRACKS.some((t) => t.id === LINKED_TRACK_ID)) {
+    linkOpened = true;
+    // Stored now, before it loads: a second call (development's doubled effects, an early remount) opens it too
+    storeTrackId(LINKED_TRACK_ID);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("track");
+      window.history.replaceState(window.history.state, "", url);
+    } catch {
+      // An address that can't be rewritten: a reload opens the linked circuit again
+    }
+    return LINKED_TRACK_ID;
+  }
   try {
     const id = localStorage.getItem(TRACK_STORAGE_KEY);
     if (id && TRACKS.some((t) => t.id === id)) return id;

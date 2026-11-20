@@ -2,10 +2,11 @@
  * The anonymous usage counter: POST /api/usage adds one stretch of driving (circuit, car, mode, minutes) to the day's
  * totals (migrations/0003_usage.sql). Anyone can call it, so every field is checked and the minutes are capped; the
  * address only feeds the rate limit (USAGE_LIMIT) and is never stored, and nothing ties one report to another.
- * Optional extras (input, device, weather, assists, build) are added up each on their own (migrations/0004).
+ * Optional extras (input, device, weather, assists, build) are added up each on their own (migrations/0004). The laps
+ * the stretch completed go with its minutes (migrations/0006), capped at six a minute (usage-modes.ts).
  */
 import { isVehicleModelId } from "../../src/types/f1";
-import { MAX_USAGE_MINUTES, MIN_USAGE_MINUTES, isUsageMode, usageExtrasOf } from "../../src/lib/net/usage-modes";
+import { MAX_USAGE_MINUTES, MIN_USAGE_MINUTES, isUsageMode, usageExtrasOf, usageLapsOf } from "../../src/lib/net/usage-modes";
 import { TRACK_ID_RE } from "./lap-check";
 import type { D1Database } from "./types";
 
@@ -48,14 +49,26 @@ export async function recordUsage(deps: UsageDeps, request: Request): Promise<An
   if (!isUsageMode(mode)) return fail("Invalid mode");
   if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes < MIN_USAGE_MINUTES) return fail("Invalid minutes");
   const counted = Math.round(Math.min(minutes, MAX_USAGE_MINUTES) * 10) / 10;
+  const laps = usageLapsOf(fields.laps, minutes);
   const day = utcDay(deps.now());
+  const country = requestCountry(request);
 
-  await deps.db
-    .prepare(
-      "INSERT INTO usage_daily (day, track_id, vehicle, mode, country, sessions, minutes) VALUES (?, ?, ?, ?, ?, 1, ?) ON CONFLICT (day, track_id, vehicle, mode, country) DO UPDATE SET sessions = sessions + 1, minutes = minutes + excluded.minutes",
-    )
-    .bind(day, trackId, vehicle, mode, requestCountry(request), counted)
-    .run();
+  try {
+    await deps.db
+      .prepare(
+        "INSERT INTO usage_daily (day, track_id, vehicle, mode, country, sessions, minutes, laps) VALUES (?, ?, ?, ?, ?, 1, ?, ?) ON CONFLICT (day, track_id, vehicle, mode, country) DO UPDATE SET sessions = sessions + 1, minutes = minutes + excluded.minutes, laps = laps + excluded.laps",
+      )
+      .bind(day, trackId, vehicle, mode, country, counted, laps)
+      .run();
+  } catch {
+    // Before migration 0006 there is no laps column: the session and its minutes still count
+    await deps.db
+      .prepare(
+        "INSERT INTO usage_daily (day, track_id, vehicle, mode, country, sessions, minutes) VALUES (?, ?, ?, ?, ?, 1, ?) ON CONFLICT (day, track_id, vehicle, mode, country) DO UPDATE SET sessions = sessions + 1, minutes = minutes + excluded.minutes",
+      )
+      .bind(day, trackId, vehicle, mode, country, counted)
+      .run();
+  }
 
   // The extras, each on its own row; before migration 0004 there is no table for them and the report still counts
   const extras = Object.entries(usageExtrasOf(fields));

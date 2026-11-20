@@ -1,13 +1,16 @@
+import { setDriverBodyShown } from "@/lib/render/driver-figure";
 import * as THREE from "three";
-import { LIVERIES, TURN_METADATA, type BuiltTrackData } from "@/lib/track-data";
+import { LIVERIES, TURN_METADATA, getActiveTrackMetadata, inDeadZone, type BuiltTrackData } from "@/lib/track-data";
+import { AUTOPILOT_REF_BASE, LINE_CHECK_REF_BASE, QualifyingSession } from "@/lib/sim/qualifying";
 import { F1Physics2026, type ControlInputs } from "@/lib/f1-physics-2026";
 import { trackColliders } from "@/lib/sim/track-colliders";
 import type { SimulatorCar } from "@/lib/sim/simulator-car";
 import type { WheelSeating } from "@/lib/render/corner-rig";
 import { F1AudioEngine2026 } from "@/lib/f1-audio-2026";
-import { createF1Car2026, type SimCarRig } from "@/lib/car-builder-2026";
+import { createF1Car2026, type PortedSkin, type SimCarRig } from "@/lib/car-builder-2026";
 import { createGt3CarRig, gt3RigCameraAnchors } from "@/lib/gt3-car-model";
 import { disposeTree } from "@/lib/render/dispose-tree";
+import { setKtx2Renderer } from "@/lib/render/ktx2";
 import { Gt3DashDisplay, gt3MirrorPatches } from "@/lib/render/gt3-dash-display";
 import { createPortedCarRig } from "@/lib/ported-car-model";
 import { staticFloorOf } from "@/lib/render/body-floor";
@@ -29,34 +32,40 @@ import {
 } from "@/lib/render/golden-hour-environment";
 import { SteeringWheelDisplay } from "@/lib/render/steering-display";
 import { PortedWheelDash } from "@/lib/render/ported-wheel-dash";
-import { revRangeFor } from "@/lib/sim/rev-range";
+import { revRangeFor, SHIFT_BEEP_BELOW_LIMITER_RPM } from "@/lib/sim/rev-range";
 import { WingMirrors } from "@/lib/render/wing-mirrors";
 import { VirtualMirror } from "@/lib/render/virtual-mirror";
 import { type ChassisSetup, DEFAULT_CHASSIS_SETUP, loadChassisSetup } from "@/lib/sim/car-setup";
 import { CameraRig } from "@/lib/render/camera-rig";
 import { LapDeltaTracker } from "@/lib/sim/lap-delta";
-import { TrackLimitsMonitor } from "@/lib/sim/track-limits";
+import { LEGACY_TRACK_LIMITS, TrackLimitsMonitor, type TrackLimitsRules } from "@/lib/sim/track-limits";
+import { stretchTimeS } from "@/lib/sim/course-limits";
 import { SimVisualFxManager } from "@/lib/sim/visual-fx";
 import { AiOpponentField, aiDriversFor, resolvePlayerVsRemoteCar } from "@/lib/sim/ai-opponents";
-import { startAiRace } from "@/lib/sim/race-setup";
+import { rulesForSetup, startAiRace, type RaceSetup } from "@/lib/sim/race-setup";
+import { JumpStartWatch } from "@/lib/sim/race-start";
 import { peerWakeEmitters, TrackEnvironment } from "@/lib/sim/track-environment";
 import type { WakeEmitterCar } from "@/lib/sim/aero-wake";
 import { GamepadHaptics } from "@/lib/sim/gamepad-haptics";
+import { DualSenseDriver } from "@/lib/input/dualsense-driver";
+import { dualSenseHid } from "@/lib/input/webhid-dualsense";
 import { getMultiplayerManager, type InterpolatedPeerState, type P2PConnectionStatus } from "@/lib/sim/multiplayer-sync";
 import { flagMultiplayerRace } from "@/lib/sim/mp-flags"; // polish:D
-import { MultiplayerRace, type MultiplayerRaceFrame } from "@/lib/sim/race-session";
+import { MultiplayerRace, placePeersWhereDrawn, type MultiplayerRaceFrame } from "@/lib/sim/race-session";
 import { CoolDown } from "@/lib/sim/cool-down";
 import { PodiumDirector } from "@/lib/render/podium-shot";
 import { GhostPlayer, LapRecorder } from "@/lib/sim/lap-recorder";
 import { ReplayBuffer } from "@/lib/sim/replay-buffer";
 import { GHOST_CAR_COLOR, steerAngleOf, steerNormOf, wheelRpmAtSpeed, wheelRpmOf } from "@/lib/sim/car-pose";
-import { lapConditionsNow, type LapRecording, type LapSummaryData, type ReplayCarState } from "@/lib/sim/lap-types";
+import { drivingInputOf, lapConditionsNow, type LapRecording, type LapSummaryData, type ReplayCarState } from "@/lib/sim/lap-types";
 import { buildTelemetryPacket } from "@/lib/input/telemetry-out";
 import { touchInput } from "@/lib/input/touch-input";
 import { createRainFx, RAIN_VISOR_LAYER } from "@/lib/render/rain-fx";
 import { DRIVER_HEAD_LAYER, OVERLAY_LAYER } from "@/lib/render/layers";
 import { KeyboardPedalAssist } from "@/lib/input/keyboard-pedals";
 import { shapeStick } from "@/lib/input/stick-shape";
+import { combineStickAndGyro, gyroSteerValue } from "@/lib/input/gyro-steer";
+import { gyroSource } from "@/lib/input/gyro-source";
 import { advanceAsphaltRain, setAsphaltWetness } from "@/lib/render/asphalt-sheen";
 import {
   isRainCompound,
@@ -69,21 +78,64 @@ import { OnboardViews } from "@/lib/render/onboard-views";
 import { isNudgeView, NUDGE_FOV_STEP_DEG, nudgeStepForKey, stepNudge } from "@/lib/settings/camera-nudges";
 import { loadTyreSetup } from "@/lib/sim/tyre-setup";
 import { assetProgress } from "@/lib/loading/asset-progress";
-import { prefetchSoundBank } from "@/lib/sim/vf26-audio";
+import { prefetchSoundBank } from "@/lib/sim/lc26-audio";
 import { CarReflectionProbe } from "@/lib/render/car-reflection-probe";
 import { StartupMonitor } from "@/lib/render/startup-monitor";
+import { browserStore, classifyRenderer, noteRenderer, readLossMemory, recordContextLoss, rendererName, safeStartPlan } from "@/lib/render/gpu-health";
+import { gpuFinished, partsByNewKeys, slicesByBytes, textureBytes } from "@/lib/render/gpu-pace";
+import { SessionPerfMonitor, type PerfPhase } from "@/lib/render/session-perf";
+import { FramePacer } from "@/lib/render/frame-pacer";
+import {
+  carriedLevel,
+  DisplayRate,
+  frameBudgetMs,
+  ladderFor,
+  loweredSummary,
+  planAt,
+  presetPlan,
+  QualityGovernor,
+  rememberLevel,
+  type GovernorEvent,
+} from "@/lib/render/adaptive-quality";
+import { pageBuild } from "@/lib/build-id";
 import { addContactShadow, seatContactShadow } from "@/lib/render/contact-shadow";
-import { buildKeyLookup, HUD_TOGGLE_EVENT, type KeyAction } from "@/lib/input/bindings";
+import {
+  buildKeyLookup,
+  HUD_TOGGLE_EVENT,
+  keyLabel,
+  PAD_BRAKE_BUTTON,
+  PAD_THROTTLE_BUTTON,
+  pedalsOnTriggers,
+  pedalSourceText,
+  type KeyAction,
+} from "@/lib/input/bindings";
 import { carWheelLockDeg, connectedPads, DeviceInputReader, findPad } from "@/lib/input/device-input";
+import { MenuIdleWatch } from "@/lib/input/menu-idle";
+import { AERIAL_IDLE_MS } from "@/lib/render/menu-aerial";
 import { webHidFfb, wheelFfb } from "@/lib/input/wheel-ffb";
 import { simMode } from "@/lib/sim/runtime/sim-mode";
 import { createSimHost } from "@/lib/sim/runtime/sim-host";
+import { WorkerAiField } from "@/lib/sim/runtime/worker-ai-field";
+import type { AiRace } from "@/lib/sim/ai-race";
 import { startSimWorker } from "@/lib/sim/runtime/worker-sim-host";
 import { steeringAssistSettings } from "@/lib/sim/steering-assist";
 import { applyTimeTrial, lowestFuelSetup, timeTrialRealism, type TimeTrialRules } from "@/lib/sim/time-trial";
 import { axleSlipFromTelemetry, createAxleSlipSample } from "@/lib/sim/tyre-slip";
-import { clampFov, DEFAULT_KEYBOARD_TUNING, DEFAULT_PLAYER_SETTINGS, type PlayerSettings } from "@/lib/settings/player-settings";
-import type { AeroSetupPreset, CameraMode, CarTelemetry, LiveTunerPatch, RadarBlip, TireCompound, TyreSetup, VehicleModelId } from "@/types/f1";
+import { clampFov, DEFAULT_KEYBOARD_TUNING, type PlayerSettings } from "@/lib/settings/player-settings";
+import { sharedMusic, type NowPlaying } from "@/lib/audio/bgm-controller";
+import { MusicDirector } from "@/lib/audio/music-director";
+import { noteDrivingFrame, noteDrivingInput, noteFrameGraphics } from "@/lib/render/frame-stats";
+import type {
+  AeroSetupPreset,
+  CameraMode,
+  CarTelemetry,
+  LiveTunerPatch,
+  RadarBlip,
+  StartClutchControl,
+  TireCompound,
+  TyreSetup,
+  VehicleModelId,
+} from "@/types/f1";
 
 /** Matches the aero package the track's target speeds / braking markers are computed for */
 export const DEFAULT_AERO_PRESET: AeroSetupPreset = "balanced";
@@ -91,12 +143,15 @@ export const DEFAULT_AERO_PRESET: AeroSetupPreset = "balanced";
 const MAX_FRAME_CATCH_UP_S = F1Physics2026.MAX_CATCH_UP_S;
 
 // Keyboard-only input shaping: a key press becomes a pedal squeeze, not a step
-/** A replay / flashback opens this far before the present, paused (s) */
+/** A replay opens this far before the present, paused (s) */
 const REPLAY_OPEN_BACK_S = 3;
 const KB_THROTTLE_RISE_S = DEFAULT_KEYBOARD_TUNING.throttleRiseS;
 const KB_THROTTLE_FALL_S = 0.1;
 const KB_BRAKE_RISE_S = DEFAULT_KEYBOARD_TUNING.brakeRiseS;
 const KB_BRAKE_FALL_S = 0.08;
+/** A clutch key presses the pedal at once and lets it out over this long: a launch on it slips, it doesn't dump */
+const KB_CLUTCH_IN_S = 0.08;
+const KB_CLUTCH_OUT_S = 0.4;
 /** Holding the camera key or button this long opens the seat panel; a shorter press changes the view */
 const SEAT_PANEL_HOLD_MS = 450;
 
@@ -107,13 +162,17 @@ const SEAT_PANEL_HOLD_MS = 450;
 export type AppPhase = "loading" | "title" | "wizard" | "driving";
 
 /** The race on track with the player: none (practice), the AI field, or a multiplayer race; never two at once */
-export type SessionRace = { kind: "practice" } | { kind: "ai"; field: AiOpponentField } | { kind: "mp"; race: MultiplayerRace };
+export type SessionRace =
+  | { kind: "practice" }
+  /** `rules`: sporting rules fixed for this race (the weekly challenge's), over the player's race setup */
+  | { kind: "ai"; field: AiRace; rules?: Pick<RaceSetup, "rulePreset" | "trackLimits"> }
+  | { kind: "mp"; race: MultiplayerRace };
 /** The AI field on track, when the session is a race against it */
-export const aiFieldOf = (race: SessionRace): AiOpponentField | null => (race.kind === "ai" ? race.field : null);
+export const aiFieldOf = (race: SessionRace): AiRace | null => (race.kind === "ai" ? race.field : null);
 /** The multiplayer race on track, when the session is an online race */
 export const mpRaceOf = (race: SessionRace): MultiplayerRace | null => (race.kind === "mp" ? race.race : null);
 /** Why the run on track starts over (see resetRun) */
-export type RunResetReason = "session" | "restart" | "teleport" | "car" | "race" | "flashback";
+export type RunResetReason = "session" | "restart" | "teleport" | "car" | "race";
 /** The VR headset: off, being asked for a session, or presenting */
 export type VrState = "off" | "requesting" | "on";
 
@@ -124,12 +183,14 @@ const HELD_KEYS = {
   steerLeft: "left",
   steerRight: "right",
   throttleHalf: "half",
+  brakeHalf: "halfBrake",
+  clutch: "clutch",
   boostHold: "boostHold",
 } as const satisfies Partial<Record<KeyAction, string>>;
 type HeldKeyAction = keyof typeof HELD_KEYS;
 const isHeldKeyAction = (action: KeyAction): action is HeldKeyAction => Object.hasOwn(HELD_KEYS, action);
 /** Held keys that take the car back from the autopilot (holding boost does not) */
-const DRIVER_KEYS: ReadonlySet<HeldKeyAction> = new Set(["throttle", "brake", "steerLeft", "steerRight", "throttleHalf"]);
+const DRIVER_KEYS: ReadonlySet<HeldKeyAction> = new Set(["throttle", "brake", "steerLeft", "steerRight", "throttleHalf", "brakeHalf"]);
 
 /** One-shot driving actions: the same whether they come from a key, a pad button or a touch pad */
 export type DriveAction = Exclude<KeyAction, HeldKeyAction> | "mfd" | "hud";
@@ -142,6 +203,19 @@ const MP_CLOCK_UNSYNCED_FRAME: MultiplayerRaceFrame = { phase: "countdown", ligh
 
 /** A loading task with no progress for this long is given up on (the procedural stand-in stays) */
 const ASSET_STALL_MS = 25_000;
+/**
+ * The loading warm-up's texture uploads go to the GPU in runs of about this many bytes, each finished before the next:
+ * a few runs for a circuit on a fast GPU, smaller ones on a gentle start
+ */
+const WARMUP_UPLOAD_BYTES = 96 * 1024 * 1024;
+const WARMUP_UPLOAD_BYTES_GENTLE = 24 * 1024 * 1024;
+/** A context loss heard of this soon after the page came back into view counts as one in the background (ms) */
+const BACKGROUND_LOSS_GRACE_MS = 5000;
+/** On a gentle start the warm-up frame is drawn in parts first, each with this many materials' first draws at most */
+const WARMUP_GENTLE_NEW_MATERIALS = 3;
+
+/** The HUD says the graphics were lowered at most this often (ms); later steps in the meantime go by quietly */
+const QUALITY_NOTICE_GAP_MS = 60_000;
 
 /** Slicks or rain tyres for the line's water; a car on slicks keeps its own slick */
 export const autoCompoundFor = (lineWaterMm: number, current: TireCompound | undefined): TireCompound =>
@@ -152,11 +226,16 @@ const approach = (value: number, target: number, maxStep: number) =>
 
 /** The sound bank each car plays (the F1 cars share one bank) */
 const soundFor = (car: CarId): CarSoundSource => carById(car).sound;
-/** Runs `fn` when the browser is idle (Safari has no requestIdleCallback: a short timer instead) */
-const scheduleIdle = (fn: (deadline?: IdleDeadline) => void) => {
+/**
+ * Runs `fn` when the browser is idle (Safari has no requestIdleCallback: a timer instead, `fallbackDelayMs` from now,
+ * a frame by default)
+ */
+const scheduleIdle = (fn: (deadline?: IdleDeadline) => void, fallbackDelayMs = 16) => {
   if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(fn, { timeout: 500 });
-  else window.setTimeout(() => fn(), 16);
+  else window.setTimeout(() => fn(), fallbackDelayMs);
 };
+/** Safari's wait between the spare AI field's build steps (a few frames for the menus between two AI cars) */
+const AI_PREP_GAP_MS = 150;
 
 /** What the drive shows the UI: one snapshot, replaced whenever any part changes (see DriveSession.subscribe) */
 export interface DriveSnapshot {
@@ -192,9 +271,32 @@ export interface DriveSnapshot {
   chassisSetup: ChassisSetup;
   /** The time trial being driven (the weekly challenge's fixed conditions), or none */
   timeTrial: TimeTrialRules | null;
+  /**
+   * What the automatic quality has lowered on top of the player's graphics ("resolution 70%, car reflections off"),
+   * or null with nothing lowered
+   */
+  autoQualityLowered: string | null;
+  /**
+   * The HUD's quiet note about it, a new `id` each time: "lowered" after a step down (at most one a minute), "floor"
+   * once when every step is taken and the frames are still slow
+   */
+  qualityNotice: { id: number; kind: "lowered" | "floor" } | null;
+  /**
+   * The browser took the WebGL context away (a GPU reset, a driver crash, or a phone reclaiming a background tab): the
+   * drive is frozen and draws nothing until the component remounts it. `hidden`: it went while the page was hidden
+   */
+  gpuLost: GpuLoss | null;
+  /** The music track playing, as last announced (the toast shows each new one, the pause menu names it) */
+  nowPlaying: NowPlaying | null;
 }
 
-/** The snapshot before the drive exists: a throwaway VF26's numbers, as the menus need something to show */
+/** A lost WebGL context: whether the page was hidden at the time, and where the player was */
+export interface GpuLoss {
+  hidden: boolean;
+  phase: AppPhase;
+}
+
+/** The snapshot before the drive exists: a throwaway LC26's numbers, as the menus need something to show */
 export function idleDriveSnapshot(track: BuiltTrackData): DriveSnapshot {
   const car = new F1Physics2026(track);
   return {
@@ -223,7 +325,19 @@ export function idleDriveSnapshot(track: BuiltTrackData): DriveSnapshot {
     defaultTyreSetup: car.getTyreSetup(),
     chassisSetup: DEFAULT_CHASSIS_SETUP,
     timeTrial: null,
+    autoQualityLowered: null,
+    qualityNotice: null,
+    gpuLost: null,
+    nowPlaying: null,
   };
+}
+
+/** The browser gave no WebGL context: switched off, unsupported, or refused for the page after a GPU reset */
+export class WebGLUnavailableError extends Error {
+  constructor(reason: unknown) {
+    super(`WebGL is not available: ${reason instanceof Error ? reason.message : String(reason)}`);
+    this.name = "WebGLUnavailableError";
+  }
 }
 
 /** A React state setter */
@@ -240,6 +354,12 @@ export interface DriveKeys {
   shiftDown: boolean;
   toggleX: boolean;
   half: boolean;
+  /** The Half brake key */
+  halfBrake: boolean;
+  clutch: boolean;
+  neutral: boolean;
+  /** The Gear up key is down (it is one-shot, but a manual start holds it as the clutch) */
+  gearUpHeld: boolean;
 }
 
 /** The instant replay: the recording, and where it is shown from while open */
@@ -279,6 +399,11 @@ export interface DriveSessionHost {
   onRunReset: (reason: RunResetReason) => void;
   track: BuiltTrackData;
   trackId: string;
+  /**
+   * The player's saved settings at the start. The renderer, the sky and the warm-up are built for their graphics
+   * preset: started on the defaults (High on a desktop) the physical sky's GPU precompute ran even on Low (issue #123)
+   */
+  settings: PlayerSettings;
 }
 
 /**
@@ -299,17 +424,16 @@ export class DriveSession {
   /** The race on track with the player: practice, the AI field or an online race (setRace is its only writer) */
   private currentRace: SessionRace = { kind: "practice" };
   /**
-   * The run starts over: a new session, a restart or reset, a corner jump, a car change, AI opponents on or off, a
-   * flashback. It never moves the car: the caller places it afterwards, so leaving the replay (which puts the drawn
-   * car back where the replay found it) comes first and can't undo the move. A flashback keeps its own trimmed
-   * replay and the race results.
+   * The run starts over: a new session, a restart or reset, a corner jump, a car change, AI opponents on or off. It
+   * never moves the car: the caller places it afterwards, so leaving the replay (which puts the drawn car back where
+   * the replay found it) comes first and can't undo the move.
    */
   readonly resetRun: (reason: RunResetReason) => void;
   /** Puts a race on track with the player (or none): the AI field and a multiplayer race never run together */
   readonly setRace: (next: SessionRace) => void;
   /** The autopilot takes or hands back the player's car; never in a multiplayer race */
   readonly toggleAutopilot: () => void;
-  /** The player's car: the VF26 (F1Physics2026) or the f12026-car (F12026CarSim); a car swap replaces it */
+  /** The player's car: the LC26 (F1Physics2026) or the f12026-car (F12026CarSim); a car swap replaces it */
   get car(): SimulatorCar {
     return this.carNow();
   }
@@ -341,10 +465,21 @@ export class DriveSession {
   /** Creates and starts the car audio on a user gesture (the browser keeps audio locked until one) */
   readonly unlockAudio: () => void;
   readonly toggleMute: () => void;
+  /** The next track of the music playing (the music key, the pause menu's Skip track) */
+  readonly nextTrack: () => void;
   /** Builds the next race's AI field while the browser is idle in the menus (never while driving or loading) */
   readonly prepareAiField: () => void;
-  /** The AI field for a race: the one built ahead when it was built for this car, else a new one */
-  readonly takeAiField: () => AiOpponentField;
+  /**
+   * The AI field for a race: in the simulation worker when it can run one, else on the page (the one built ahead when
+   * it was built for this car, or a new one)
+   */
+  readonly takeAiField: () => AiRace;
+  /**
+   * Qualifying for an AI race (qualifying.ts): the player drives alone, on a flying lap, for `minutes`; then the field
+   * lines up from it and the race starts. Anything else that sets the session (another race, practice, a car change)
+   * ends it
+   */
+  readonly startQualifying: (field: AiRace, minutes: number) => void;
   /** The player's preferences: kept for the frame loop, and the ones that act on the car or the scene applied */
   readonly applySettings: (settings: PlayerSettings) => void;
   /** Puts the tyre compound on the car and its model */
@@ -366,16 +501,23 @@ export class DriveSession {
   readonly replaySpeed: (speed: number) => void;
   /** Swaps the player's car in the running scene (the run starts over with it) */
   readonly setCar: (car: CarId) => void;
-  /** Applies the graphics preset to the running renderer */
-  readonly applyGraphics: (quality: "low" | "medium" | "high", renderScale: number) => void;
+  /** Applies the player's graphics to the running renderer, with what the automatic quality has lowered on top */
+  readonly applyGraphics: () => void;
+  /** The HUD's off-track edge glow, drawn in the last render pass in the HUD's loss colour (the palette's) */
+  readonly setOffTrackGlow: (on: boolean) => void;
+  /** `?perf=1`: the whole-session performance report as text, to copy or save; null without `?perf=1` */
+  readonly perfReport: (() => string) | null;
+  /**
+   * The next drawn frame as a PNG, at most `maxWidth` pixels wide, for a bug report (the scene only: the HUD and the
+   * menus are page elements on top of it). Null with no frame drawn within 1.5 s (a lost GPU context, a headset).
+   */
+  readonly captureFrame: (maxWidth?: number) => Promise<Blob | null>;
   /** Asks the headset for a VR session (one request at a time) */
   readonly enterVr: () => void;
   /** Opens the instant replay a moment back, paused, or closes it */
   readonly toggleReplay: () => void;
   /** Leaves the replay: the drawn car goes back to the live pose */
   readonly exitReplay: () => void;
-  /** Starts the run over from the replay's current point */
-  readonly flashbackReplay: () => void;
   /** polish:B the podium shot after a race, and the overlay's view of it */
   readonly podium: PodiumDirector;
 
@@ -390,6 +532,7 @@ export class DriveSession {
       onRunReset,
       track,
       trackId,
+      settings: initialSettings,
     } = host;
 
     let disposed = false;
@@ -432,6 +575,11 @@ export class DriveSession {
     };
     /** The player car's dry autopilot pace, which the weather scales each frame */
     let autopilotPace: { car: unknown; pace: number } = { car: null, pace: 1 };
+    /**
+     * A point-to-point course (a hill climb): how long the car has stood still past the finish, and a hold after
+     * putting it back on the start line (the worker's car reports its new place a frame or two later)
+     */
+    const runEnd = { stoppedS: 0, holdS: 0 };
     // polish:B the cool-down lap after the player's flag: the autopilot has the car, the player's inputs are ignored
     const coolDown = new CoolDown();
     /** The boost latch, for the frame loop and the HUD at once */
@@ -449,9 +597,19 @@ export class DriveSession {
       shiftDown: false,
       toggleX: false,
       half: false,
+      halfBrake: false,
+      clutch: false,
+      neutral: false,
+      gearUpHeld: false,
     };
     /** Ramped keyboard pedals 0..1 (the steering keys are shaped by the car's steering assist) */
-    const kbInput = { throttle: 0, brake: 0 };
+    const kbInput = { throttle: 0, brake: 0, clutch: 0, padClutch: 0 };
+    /** A manual start: the clutch watched through the lights, and Gear up held as the clutch when none is bound */
+    const jumpWatch = new JumpStartWatch();
+    const startClutch = { active: false };
+    let gridHeldLastFrame = false;
+    /** How far the player held the clutch in on the last step (0..1), for the start cue */
+    let startClutchIn = 0;
     /** Slip help on the keyboard's pedals while the car's ABS / traction control is off */
     const kbPedalAssist = new KeyboardPedalAssist();
     /** The mouse's steering, -1..1, while mouse steering is on */
@@ -461,8 +619,11 @@ export class DriveSession {
     /** Lets go of every held driving key: on pause, and when the window loses focus (its keyups never arrive) */
     const releaseHeldKeys = () => {
       for (const flag of Object.values(HELD_KEYS)) heldKeys[flag] = false;
+      heldKeys.gearUpHeld = false;
       kbInput.throttle = 0;
       kbInput.brake = 0;
+      kbInput.clutch = 0;
+      kbInput.padClutch = 0;
       kbPedalAssist.reset();
     };
     this.togglePause = () => {
@@ -490,29 +651,64 @@ export class DriveSession {
 
     /** The car sounds: created by the first unlockAudio, then paused and resumed by the frame loop alone */
     let audio: F1AudioEngine2026 | null = null;
+    /**
+     * The music: one player for the page (it plays on across circuits, which each get a new session), told each frame
+     * what to play (music-director.ts); this session shows what it announces
+     */
+    const music = sharedMusic();
+    const musicDirector = new MusicDirector();
+    const applyMusicSettings = (s: PlayerSettings) => {
+      const a = s.audio;
+      music.setLevels({
+        volume: a.volume,
+        muted: a.muted,
+        musicMuted: a.musicMuted,
+        menu: a.menuMusic,
+        race: a.raceMusic,
+        results: a.replayMusic,
+      });
+      music.setDisabled(new Set(a.musicOff));
+    };
+    const stopNowPlaying = music.subscribe((nowPlaying) => this.publish({ nowPlaying }));
+    this.nextTrack = () => music.playNextInPool();
     this.unlockAudio = () => {
       if (disposed) return;
-      if (!audio) {
-        audio = new F1AudioEngine2026();
-        audio.setCar(soundFor(carIdNow));
-        // Created paused unless the car is being driven; from then on the frame loop alone pauses and resumes it
-        audio.setPaused(this.snapshot.paused || appPhaseNow !== "driving");
+      // The music unlocks on the same press, apart from the car audio (which a browser can refuse on its own)
+      try {
+        music.unlock();
+        applyMusicSettings(settings);
+      } catch (err) {
+        console.warn("Music could not start", err);
       }
-      if (!audio.isInitialized) {
-        audio.init();
-        audio.setMuted(this.snapshot.muted);
-      } else {
-        audio.resume();
+      // Called inside the press that leaves the loading screen or starts a race: a browser that refuses Web Audio
+      // leaves the game silent, never stuck on that press
+      try {
+        if (!audio) {
+          audio = new F1AudioEngine2026();
+          audio.setCar(soundFor(carIdNow));
+          // Created paused unless the car is being driven; from then on the frame loop alone pauses and resumes it
+          audio.setPaused(this.snapshot.paused || appPhaseNow !== "driving");
+        }
+        if (!audio.isInitialized) {
+          audio.init();
+          // Master volume and mute are saved settings (Settings > Audio)
+          audio.setMuted(settings.audio.muted);
+          audio.setVolume(settings.audio.volume);
+          audio.setKerbVolume(settings.audio.kerbs);
+        } else {
+          audio.resume();
+        }
+      } catch (err) {
+        console.warn("Audio could not start; driving without sound", err);
       }
     };
+    // The Mute key flips the saved mute; applySettings passes it to the sound and the snapshot
     this.toggleMute = () => {
       this.unlockAudio();
-      const muted = !this.snapshot.muted;
-      this.publish({ muted });
-      audio?.setMuted(muted);
+      setSettings((prev) => ({ ...prev, audio: { ...prev.audio, muted: !prev.audio.muted } }));
     };
-    /** The player's preferences (applySettings), and what the frame loop derives from them */
-    let settings: PlayerSettings = DEFAULT_PLAYER_SETTINGS;
+    /** The player's preferences (applySettings), and what the frame loop derives from them: the saved ones at first */
+    let settings: PlayerSettings = initialSettings;
     let keyLookup = buildKeyLookup(settings.keys);
     let assistSettings = steeringAssistSettings(settings.padTuning, settings.keyboardTuning);
     const liveryFor = (id: string | null) => LIVERIES.find((l) => l.id === id) ?? LIVERIES[0];
@@ -561,12 +757,103 @@ export class DriveSession {
       fuelHeld = { car: physics, flags };
     };
     /** Race control's session for a race on track (or practice) */
+    /**
+     * Qualifying before an AI race: the field waiting for its grid, the session's clock and laps, and the reference lap
+     * the AI cars' times are taken from (a circuit's AI line check where it has one for this car, else a lone autopilot
+     * lap of a copy of the car, driven a slice per frame while the player qualifies)
+     */
+    let quali: {
+      field: AiRace;
+      session: QualifyingSession;
+      ref: { lapMs: number | null; base: number; car: SimulatorCar | null; lap0: number; simS: number };
+    } | null = null;
+    /** Page time per frame for the reference lap (ms), and the step it is driven at (s) */
+    const QUALI_REF_BUDGET_MS = 1.5;
+    const QUALI_REF_DT_S = 1 / 120;
+    /** A reference lap that takes longer than this is given up (s of simulated time) */
+    const QUALI_REF_GIVE_UP_S = 600;
+    /** Page time the reference lap gets at the end of qualifying (ms): one not done by then is given up */
+    const QUALI_REF_FINISH_MS = 200;
+    const endQualifying = () => {
+      quali = null;
+    };
+    /** Drives the reference lap on for up to `budgetMs` of page time (Infinity: to its end) */
+    const stepQualifyingRef = (budgetMs: number) => {
+      const ref = quali?.ref;
+      const car = ref?.car;
+      if (!ref || !car) return;
+      const until = performance.now() + budgetMs;
+      while (performance.now() < until) {
+        car.step(QUALI_REF_DT_S, {});
+        ref.simS += QUALI_REF_DT_S;
+        if (car.telemetry.lapCount > ref.lap0) {
+          ref.lapMs = car.telemetry.lastLapTimeMs ?? null;
+        } else if (ref.simS < QUALI_REF_GIVE_UP_S) {
+          continue;
+        }
+        ref.car = null;
+        return;
+      }
+    };
+    const finishQualifying = () => {
+      const q = quali;
+      if (!q) return;
+      // A reference lap not yet done is driven on now (the moment between qualifying and the grid), for a moment only:
+      // one still not over the line gives no reference, and the race lines up as its setup says (the AI cars by pace)
+      stepQualifyingRef(QUALI_REF_FINISH_MS);
+      quali = null;
+      // In the rain the AI cars lap slower, as they race (the reference laps are dry)
+      const weather = Math.max(0.5, getTrackEnv().weatherPaceScale(physics));
+      q.field.qualifying = {
+        playerMs: q.session.bestMs,
+        refLapMs: q.ref.lapMs !== null ? Math.round(q.ref.lapMs / weather) : null,
+        refBase: q.ref.base,
+      };
+      this.resetRun("race");
+      this.setRace({ kind: "ai", field: q.field });
+      startAiRace(q.field, settings.race, settings.profile);
+    };
+    this.startQualifying = (field, minutes) => {
+      if (disposed) return;
+      this.setRace({ kind: "practice" });
+      const check = getActiveTrackMetadata().aiPlans?.[vehicleNow];
+      let ref: NonNullable<typeof quali>["ref"];
+      if (check?.ok && check.physicsLapS > 0) {
+        ref = { lapMs: Math.round(check.physicsLapS * 1000), base: LINE_CHECK_REF_BASE, car: null, lap0: 0, simS: 0 };
+      } else {
+        // A copy of the car on the page, on its autopilot at full pace, alone on a flying lap
+        const car = vehicleModelSpec(vehicleNow).createSim(track, trackRoot, carById(carIdNow).bodyPlan);
+        car.resetToStartGrid(true);
+        car.aiAutopilot = true;
+        if (car.aiPaceScale !== undefined) car.aiPaceScale = 1;
+        ref = { lapMs: null, base: AUTOPILOT_REF_BASE, car, lap0: car.telemetry.lapCount, simS: 0 };
+      }
+      quali = { field, session: new QualifyingSession(minutes * 60), ref };
+      physics.resetToStartGrid(true);
+    };
     const limitsSessionOf = (race: SessionRace) => (race.kind === "practice" ? "practice" : "race");
+    /** The AI race's rules close the overtaking aids inside a yellow zone (set with the track-limits ladder) */
+    let aidsLockInYellow = true;
+    /**
+     * Race control's track-limits ladder: an AI race's from its rules (the player's car class and the race setup);
+     * online races keep the strike ladder every build judges by, until the rules go over the wire
+     */
+    const limitsRulesOf = (race: SessionRace): TrackLimitsRules => {
+      if (race.kind !== "ai") return LEGACY_TRACK_LIMITS;
+      const rules = rulesForSetup(vehicleModelSpec(vehicleNow).classId, { ...settings.race, ...race.rules });
+      aidsLockInYellow = rules.lockAidsInYellow;
+      return { scoring: rules.trackLimits, pointsAllowed: rules.pointsAllowed };
+    };
     this.setRace = (next) => {
+      endQualifying();
       endTimeTrial();
+      const prev = this.currentRace;
+      // A race the worker runs ends there when the session leaves it
+      if (prev.kind === "ai" && (next.kind !== "ai" || next.field !== prev.field)) prev.field.dispose?.();
       this.currentRace = next;
       setRaceKind(next.kind);
-      trackLimits.reset(limitsSessionOf(next));
+      trackLimits.reset(limitsSessionOf(next), limitsRulesOf(next));
+      wallDeletedLaps.clear();
     };
     this.toggleAutopilot = () => {
       if (disposed || raceNow().kind === "mp" || coolDown.active) return;
@@ -585,9 +872,9 @@ export class DriveSession {
      * (defaults for the first car) and that car's saved tyre setup
      */
     /**
-     * The simulation worker (`sim-mode.ts`): it drives the player's car in practice, through a stand-in the rest of
-     * the session uses as the car (`sim-host.ts`). AI and online races run on the page, and so does everything where
-     * a worker cannot be started.
+     * The simulation worker (`sim-mode.ts`): it drives the player's car in practice and runs AI races, through a
+     * stand-in the rest of the session uses as the car (`sim-host.ts`, `worker-ai-field.ts`). Online races and a
+     * steering wheel's races run on the page, and so does everything where a worker cannot be started.
      */
     let simWorker: ReturnType<typeof startSimWorker> | null = null;
     if (simMode() === "worker") {
@@ -603,8 +890,10 @@ export class DriveSession {
       (reason) => console.warn("[sim] worker unavailable, simulating on the page:", reason)
     );
     const createCar = (vehicle: VehicleModelId, prev: SimulatorCar | null, carId: CarId = carIdNow): SimulatorCar => {
-      const built = vehicleModelSpec(vehicle).createSim(track, trackRoot);
-      const car = simHost ? simHost.adopt(built, vehicle, trackRoot) : built;
+      // A body that is not its vehicle model's own brings its own outline for the barriers
+      const bodyPlan = carById(carId).bodyPlan;
+      const built = vehicleModelSpec(vehicle).createSim(track, trackRoot, bodyPlan);
+      const car = simHost ? simHost.adopt(built, vehicle, trackRoot, bodyPlan) : built;
       // An F1 car's overtaking aids by its year, and race control for them while a race is on (free in practice);
       // other classes have none
       const rules = carOvertakingRules(carById(carId));
@@ -619,6 +908,10 @@ export class DriveSession {
           earnedAtDetection: () => {
             const race = raceNow();
             return race.kind === "mp" ? race.race.detectionEarnedFor(self) : race.kind === "ai" ? race.field.detectionEarnedFor(self) : true;
+          },
+          get aidsLocked() {
+            const race = raceNow();
+            return race.kind === "ai" ? (race.field.aidsLockedFor?.(self) ?? false) : false;
           },
         };
       }
@@ -668,6 +961,10 @@ export class DriveSession {
       boostLatch: false,
       ...carSetup,
       timeTrial: null,
+      autoQualityLowered: null,
+      qualityNotice: null,
+      gpuLost: null,
+      nowPlaying: sharedMusic().current,
     };
 
     /**
@@ -676,20 +973,93 @@ export class DriveSession {
      * it was built for.
      */
     let aiFieldSpare: { field: AiOpponentField; physics: SimulatorCar; opponents: number } | null = null;
+    /**
+     * The AI cars of the next spare field, made one per idle slice before the field goes round them: each settles on
+     * the grid as it is made (the first for real, the rest are given its settle, `settle-memo.ts`). Under `next dev` a
+     * settle took half a second on Safari, so five in one task froze the menus for seconds
+     */
+    let sparePeers: { physics: SimulatorCar; cars: SimulatorCar[] } | null = null;
+    /** The spare AI cars made for this car, used up */
+    const takeSparePeers = (car: SimulatorCar) => {
+      const peers = sparePeers?.physics === car ? sparePeers.cars : undefined;
+      sparePeers = null;
+      return peers;
+    };
     /** A new AI field round the player's car, of the race setup's size, at the player's chosen skill */
     const buildAiField = (car: SimulatorCar) =>
-      new AiOpponentField(track, car, aiDriversFor(settings.race.opponents), getTrackEnv(), { skill: settings.aiSkill });
+      new AiOpponentField(track, car, aiDriversFor(settings.race.opponents), getTrackEnv(), {
+        skill: settings.aiSkill,
+        peers: takeSparePeers(car),
+      });
+    /**
+     * The next race's grid slots, settled ahead on a throwaway AI car each, one per idle slice once the spare field is
+     * built. A new field's AI cars are all alike, so the start then copies these settles (`settle-memo.ts`) instead of
+     * running one per car at the click: only the player's own car still settles there
+     */
+    let gridWarm: { physics: SimulatorCar; key: string; next: number } | null = null;
+    /** One build of the spare field at a time (each call while it runs would start another) */
+    let aiPrepQueued = false;
+    /**
+     * The worker can run the next race: it has the car ready, and the player is not on a wheel (whose force feedback
+     * still goes from the page a frame at a time)
+     */
+    const workerRaceLink = () => (simHost && settings.device !== "wheel" ? simHost.raceLink() : null);
+    /** The car and field size the worker was last asked to build a spare field for */
+    let workerPrepared: { physics: SimulatorCar; opponents: number } | null = null;
     this.prepareAiField = () => {
+      if (aiPrepQueued) return;
+      aiPrepQueued = true;
       const run = () => {
+        aiPrepQueued = false;
         // Never while driving: the build would be a hitch on track instead
         if (disposed || appPhaseNow === "driving" || appPhaseNow === "loading") return;
         const opponents = settings.race.opponents;
-        if (aiFieldSpare?.physics === physics && aiFieldSpare.opponents === opponents) return;
+        // A race in the worker is built there, off this thread: only the request goes from here
+        const link = workerRaceLink();
+        if (link) {
+          if (workerPrepared?.physics !== physics || workerPrepared.opponents !== opponents) {
+            workerPrepared = { physics, opponents };
+            link.post({ type: "race", op: "prepare", opponents: aiDriversFor(opponents).length, skill: settings.aiSkill });
+          }
+          return;
+        }
+        if (aiFieldSpare?.physics === physics && aiFieldSpare.opponents === opponents) {
+          // The field, the player in it, on the race setup's start
+          const cars = aiDriversFor(opponents).length + 1;
+          const rolling = settings.race.startMode === "rolling";
+          const key = `${cars}:${rolling}`;
+          if (gridWarm?.physics !== physics || gridWarm.key !== key) gridWarm = { physics, key, next: 0 };
+          if (!physics.createAiPeerCar || gridWarm.next >= cars) return;
+          physics.createAiPeerCar().resetToStartGrid(rolling, gridWarm.next, rolling ? cars : undefined, true);
+          gridWarm.next++;
+          aiPrepQueued = true;
+          scheduleIdle(run, AI_PREP_GAP_MS);
+          return;
+        }
+        if (sparePeers?.physics !== physics) sparePeers = { physics, cars: [] };
+        if (physics.createAiPeerCar && sparePeers.cars.length < aiDriversFor(opponents).length) {
+          sparePeers.cars.push(physics.createAiPeerCar());
+          // A gap between the cars, for the menus to draw and take input (Safari has no idle callback to wait for)
+          aiPrepQueued = true;
+          scheduleIdle(run, AI_PREP_GAP_MS);
+          return;
+        }
         aiFieldSpare = { field: buildAiField(physics), physics, opponents };
+        // Then its grid slots
+        aiPrepQueued = true;
+        scheduleIdle(run, AI_PREP_GAP_MS);
       };
-      scheduleIdle(run);
+      scheduleIdle(run, AI_PREP_GAP_MS);
     };
     this.takeAiField = () => {
+      const link = workerRaceLink();
+      if (link) {
+        // The worker's spare field goes with this race: the menus ask for another after it
+        workerPrepared = null;
+        aiFieldSpare = null;
+        const car = physics;
+        return new WorkerAiField(link, getTrackEnv(), car, aiDriversFor(settings.race.opponents).length, settings.aiSkill, () => car.groundQuery ?? null);
+      }
       const spare = aiFieldSpare;
       aiFieldSpare = null;
       const skill = settings.aiSkill;
@@ -702,6 +1072,8 @@ export class DriveSession {
 
     this.setCar = (car) => {
       if (disposed) return;
+      // The field waiting on qualifying was built round the old car
+      endQualifying();
       const newCar = car !== carRigCar;
       endTimeTrial();
       // The run starts over before the old car goes: leaving the replay writes its saved pose into `physics`, which
@@ -721,7 +1093,7 @@ export class DriveSession {
         const field = this.takeAiField();
         if (trackRoot) field.attachTrackRoot(trackRoot);
         this.setRace({ kind: "ai", field });
-        startAiRace(field, settings.race);
+        startAiRace(field, settings.race, settings.profile);
       }
       setTelemetry({ ...physics.telemetry });
       // In the menus, the next race's field is built for the new car
@@ -731,8 +1103,11 @@ export class DriveSession {
     };
 
     const haptics = new GamepadHaptics();
+    const dualSense = new DualSenseDriver();
+    const ownedByDualSense = (padId: string) => dualSenseHid.ownsPad(padId);
     this.silenceFeedback = () => {
       haptics.stop();
+      dualSense.stop();
       wheelFfb.stop();
     };
 
@@ -750,17 +1125,63 @@ export class DriveSession {
     // The view camera also draws the driving aids (the racing line), which the probe and mirrors leave out
     camera.layers.enable(OVERLAY_LAYER);
 
-    const renderer = new THREE.WebGLRenderer({
-      // MSAA happens in the post-processing composer's half-float target instead
-      antialias: false,
-      stencil: false,
-      powerPreference: "high-performance",
-      // Float precision across the 0.12 m .. 5.5 km depth range (kerbs, lines and decals stop z-fighting at
-      // distance). three falls back to the standard buffer without EXT_clip_control; ?depth=standard forces it.
-      reversedDepthBuffer: new URLSearchParams(window.location.search).get("depth") !== "standard",
-    });
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        // MSAA happens in the post-processing composer's half-float target instead
+        antialias: false,
+        stencil: false,
+        powerPreference: "high-performance",
+        // Float precision across the 0.12 m .. 5.5 km depth range (kerbs, lines and decals stop z-fighting at
+        // distance). three falls back to the standard buffer without EXT_clip_control; ?depth=standard forces it.
+        reversedDepthBuffer: new URLSearchParams(window.location.search).get("depth") !== "standard",
+      });
+    } catch (reason) {
+      // No WebGL (switched off, or refused after a GPU reset): the worker started above goes with the session
+      simHost?.dispose();
+      throw new WebGLUnavailableError(reason);
+    }
+    // The GPU for the bug form, read now: after a context loss the browser may refuse to tell
+    const gpuName = rendererName(renderer.getContext());
+    noteRenderer(gpuName);
+    /**
+     * A gentle start on a CPU rasteriser, an older Intel HD / UHD chip, or within two weeks of a context loss: no
+     * physical sky (its GPU precompute), and a loading warm-up of what the camera sees rather than the whole circuit
+     */
+    const gpuClass = classifyRenderer(gpuName);
+    const { gentle } = safeStartPlan(readLossMemory(browserStore(), Date.now()), gpuClass);
+    console.info(`[gpu] ${gpuName ?? "renderer not named"} (${gpuClass})${gentle ? ": gentle start" : ""}`);
+    /**
+     * The context is gone: the frame loop keeps the network and the menus going but draws nothing and moves nothing,
+     * and the component offers to load the circuit again on a new context. The old one is never reused: the sky's
+     * lookup tables, the environment bake, the probe and the post-processing targets exist only on the GPU, and no
+     * library here rebuilds its own.
+     */
+    let gpuLost = false;
+    /** When the page last came back into view (performance.now()): a suspended tab may only hear of its loss then */
+    let shownAtMs = -Infinity;
+    const onContextLost = (event: Event) => {
+      // The browser may give the context back only when asked to (three asks too)
+      event.preventDefault();
+      if (disposed || gpuLost) return;
+      gpuLost = true;
+      // Lost in the background (or heard of just after coming back): the browser reclaimed it, nothing to remember
+      const hidden = document.visibilityState === "hidden" || performance.now() - shownAtMs < BACKGROUND_LOSS_GRACE_MS;
+      recordContextLoss(browserStore(), Date.now(), hidden);
+      console.warn(`[gpu] WebGL context lost (${appPhaseNow}${hidden ? ", page hidden" : ""}): the drive is paused`);
+      releaseHeldKeys();
+      this.silenceFeedback();
+      this.publish({ gpuLost: { hidden, phase: appPhaseNow } });
+    };
+    const onContextRestored = () => {
+      if (!disposed) console.info("[gpu] WebGL context restored; the circuit loads again on a new one when the player asks");
+    };
+    renderer.domElement.addEventListener("webglcontextlost", onContextLost);
+    renderer.domElement.addEventListener("webglcontextrestored", onContextRestored);
     // AgX exposure, pixel ratio clamp and shadow type; set before the composer is created
     configureRenderer(renderer);
+    // The GPU formats the circuit's KTX2 textures transcode to (render/ktx2.ts)
+    setKtx2Renderer(renderer);
     renderer.setSize(container.clientWidth, container.clientHeight);
 
     container.innerHTML = "";
@@ -768,19 +1189,63 @@ export class DriveSession {
 
     // Golden-hour sky dome, its baked PMREM environment, horizon fog and the cascaded sun shadow. On Medium and High
     // the physically based sky with volumetric clouds replaces the dome (physical-sky.ts); `?sky=classic` keeps the
-    // dome on every preset
+    // dome on every preset, and so does a gentle start. It is built once the loading's warm-up is done (settleWarmup),
+    // so its precompute never shares the GPU with the circuit's uploads
     const env = createGoldenHourEnvironment(renderer, scene, {
-      physicalSky: new URLSearchParams(window.location.search).get("sky") !== "classic",
+      physicalSky: !gentle && new URLSearchParams(window.location.search).get("sky") !== "classic",
+      deferPhysicalSky: true,
     });
     // Rain streaks around the camera (one GPU-animated draw, hidden in the dry)
     const rainFx = createRainFx(scene);
-    // Scene render + one merged effect pass (mipmap bloom, then AgX tone mapping); applyGraphicsQuality puts the
-    // physical sky's clouds in front of it
+    // Scene render + one merged effect pass (mipmap bloom on High, then AgX tone mapping and the grade);
+    // applyGraphicsQuality puts the physical sky's clouds in front of it
     const postFx = createPostFx(renderer, scene, camera);
     // Live reflections of the world on the cars (High / Medium); Low keeps the sky's
     const reflectionProbe = new CarReflectionProbe(renderer, scene);
-    // `?perf=1`: a report of the first 30 s on track (startup-monitor.ts)
+    // `?perf=1`: a report of the first 30 s on track (startup-monitor.ts), and a line every 10 s for the whole session
+    // (session-perf.ts) with the simulation worker's own timing in it
     const startupMonitor = StartupMonitor.requested() ? new StartupMonitor(renderer) : null;
+    const sessionPerf = SessionPerfMonitor.requested() ? new SessionPerfMonitor(renderer) : null;
+    if (sessionPerf) {
+      (window as unknown as { __lcPerfReport?: SessionPerfMonitor }).__lcPerfReport = sessionPerf;
+      simWorker?.listen((event) => {
+        if (event.type === "perf") sessionPerf.worker(event.spanMs, event.busyMs, event.maxWakeMs);
+      });
+      simWorker?.post({ type: "perf", on: true });
+    }
+    this.perfReport = sessionPerf ? () => sessionPerf.report(pageBuild()) : null;
+    /** A capture waiting for the next drawn frame: read in the same task as the draw (the buffer is not preserved) */
+    let captureWaiting: ((source: HTMLCanvasElement) => void) | null = null;
+    /** The capture under way: a second request meanwhile gets the same picture */
+    let capturePending: Promise<Blob | null> | null = null;
+    this.captureFrame = (maxWidth = 1280) => {
+      if (disposed) return Promise.resolve(null);
+      if (capturePending) return capturePending;
+      capturePending = new Promise<Blob | null>((resolve) => {
+        const timer = setTimeout(() => {
+          captureWaiting = null;
+          resolve(null);
+        }, 1500);
+        captureWaiting = (source) => {
+          clearTimeout(timer);
+          try {
+            const scale = Math.min(1, maxWidth / Math.max(1, source.width));
+            const out = document.createElement("canvas");
+            out.width = Math.max(1, Math.round(source.width * scale));
+            out.height = Math.max(1, Math.round(source.height * scale));
+            const ctx = out.getContext("2d");
+            if (!ctx) return resolve(null);
+            ctx.drawImage(source, 0, 0, out.width, out.height);
+            out.toBlob((blob) => resolve(blob), "image/png");
+          } catch {
+            resolve(null);
+          }
+        };
+      }).finally(() => {
+        capturePending = null;
+      });
+      return capturePending;
+    };
     reflectionProbe.setSky(env.probeSky);
     // Top-centre virtual rear-view mirror for the views without wing mirrors in shot
     const virtualMirror = new VirtualMirror(renderer, scene);
@@ -796,6 +1261,7 @@ export class DriveSession {
       physics.attachTrackRoot?.(root);
       aiFieldOf(raceNow())?.attachTrackRoot(root);
       aiFieldSpare?.field.attachTrackRoot(root);
+      for (const peer of sparePeers?.cars ?? []) peer.attachTrackRoot?.(root);
       // Move broadcast cameras that would film the inside of a grandstand: about a second of raycasts on a scan,
       // spread over idle slices so neither the loading screen nor the menus freeze (until done, the TV view uses
       // the stations as built)
@@ -827,14 +1293,14 @@ export class DriveSession {
     /**
      * The 3D car: a ported car's own GLB on the generic rig, else the vehicle model's own car
      */
-    // The body follows the car's registry model, not `carPhysics`: a ported F1 car switched to the VF26 physics
+    // The body follows the car's registry model, not `carPhysics`: a ported F1 car switched to the LC26 physics
     // keeps the geometry it was fitted to
     const rigModel = (car: CarId) => vehicleModelSpec(carById(car).physics);
-    /** The livery files the player picked for a car with its own (null: the paint its model was made in) */
-    const skinUrlFor = (car: CarId): string | null => {
+    /** The livery the player picked for a car with its own (null: the paint its model was made in) */
+    const skinFor = (car: CarId): PortedSkin | null => {
       const skins = carById(car).skins;
       const skin = carSkinFor(car);
-      return skin && skins && skin.id !== skins[0].id ? carSkinBaseUrl(car, skin.id) : null;
+      return skin && skins && skin.id !== skins[0].id ? { baseUrl: carSkinBaseUrl(car, skin.id), files: skin.files, variant: skin.variant } : null;
     };
     const createCarRig = (car: CarId): SimCarRig => {
       const def = carById(car);
@@ -850,7 +1316,7 @@ export class DriveSession {
             cameraAnchors: model.gt3Cockpit ? gt3RigCameraAnchors : undefined,
             // F1 cars from 2018 on wear the 2026 Pirelli sidewall (the SF71H on its 13" tyres too; the models' own are poor)
             pirelliSidewall: def.classId === "f1" && def.year >= 2018,
-            skinBaseUrl: skinUrlFor(car),
+            skin: skinFor(car),
           })
         : model.gt3Cockpit
           ? createGt3CarRig()
@@ -865,7 +1331,7 @@ export class DriveSession {
     let carRig = createCarRig(carIdNow);
     let carRigCar: CarId = carIdNow;
     // A livery picked in the menus goes onto the car at once
-    const unsubscribeCarSkins = subscribeCarSkins(() => carRig.setSkin?.(skinUrlFor(carRigCar)));
+    const unsubscribeCarSkins = subscribeCarSkins(() => carRig.setSkin?.(skinFor(carRigCar)));
     const swapCarRig = (car: CarId) => {
       if (car === carRigCar) return;
       // The cockpit extras belong to the old body
@@ -873,7 +1339,7 @@ export class DriveSession {
       wheelDisplay = null;
       wingMirrors?.dispose();
       wingMirrors = null;
-      vf26ExtrasFor = null;
+      lc26ExtrasFor = null;
       gt3Dash?.dispose();
       gt3Dash = null;
       portedDash?.dispose();
@@ -916,17 +1382,83 @@ export class DriveSession {
     });
     this.lapRecorder = lapRecorder;
 
-    this.applyGraphics = (quality, renderScale) => {
+    // Automatic quality (adaptive-quality.ts): steps down on top of the player's graphics while the frames stay slow on
+    // track, never touching the saved settings or the simulation. The frame-rate cap (frame-pacer.ts) picks the
+    // frames that draw; input, the simulation, the network and the laps run on every frame.
+    const pacer = new FramePacer(settings.graphics.fpsCap);
+    const displayRate = new DisplayRate();
+    const ladderLength = (g: PlayerSettings["graphics"]) => ladderFor(g.quality, g.renderScale).length;
+    const startLevel = settings.graphics.autoQuality
+      ? carriedLevel(settings.graphics.quality, settings.graphics.renderScale, performance.now())
+      : 0;
+    const governor = new QualityGovernor(ladderLength(settings.graphics), startLevel);
+    // Carried in from the last session: this one ending without a step leaves the next one rung better again
+    if (startLevel > 0) rememberLevel(settings.graphics.quality, settings.graphics.renderScale, startLevel, performance.now());
+    /** The governor was fed last frame (driving), so the frame that stops driving restarts its grace once */
+    let governorFed = false;
+    let qualityNoticeId = 0;
+    let lastQualityNoticeMs = -Infinity;
+    const graphicsLine = (g: PlayerSettings["graphics"], lowered: string | null) =>
+      [
+        `${g.quality[0].toUpperCase()}${g.quality.slice(1)}`,
+        `render ${Math.round(g.renderScale * 100)}%`,
+        `auto quality ${g.autoQuality ? "on" : "off"}`,
+        g.fpsCap ? `${g.fpsCap} fps cap` : "no fps cap",
+        `lowered: ${lowered ?? "nothing"}`,
+        `pixel ratio ${renderer.getPixelRatio().toFixed(2)}`,
+        simWorker ? "sim worker" : "sim on the page",
+      ].join(" · ");
+    this.setOffTrackGlow = (on) => {
       if (disposed) return;
-      applyGraphicsQuality(renderer, postFx, env, quality, renderScale);
-      reflectionProbe.setQuality(quality === "low" ? "off" : quality);
-      postFx.setSize(container.clientWidth, container.clientHeight);
+      // The colour-blind palettes move loss from crimson to tangerine on the page root (palette.css)
+      postFx.setEdgeGlow(on ? getComputedStyle(document.documentElement).getPropertyValue("--lc-sem-loss") || "#ff2a3c" : null);
     };
-    this.applyGraphics(settings.graphics.quality, settings.graphics.renderScale);
+    this.applyGraphics = () => {
+      if (disposed) return;
+      const g = settings.graphics;
+      const level = g.autoQuality ? governor.level : 0;
+      const plan = level > 0 ? planAt(g.quality, g.renderScale, level) : presetPlan(g.quality, g.renderScale);
+      applyGraphicsQuality(renderer, postFx, env, plan);
+      reflectionProbe.setQuality(plan.reflections && g.quality !== "low" ? g.quality : "off");
+      postFx.setSize(container.clientWidth, container.clientHeight);
+      const lowered = level > 0 ? loweredSummary(g.quality, g.renderScale, level) : null;
+      if (lowered !== this.snapshot.autoQualityLowered) this.publish({ autoQualityLowered: lowered });
+      sessionPerf?.setRenderState({ settings: graphicsLine(g, lowered), level });
+      noteFrameGraphics(graphicsLine(g, lowered));
+    };
+    this.applyGraphics();
+    /** The governor's decision on a frame: take the step (and say so, quietly), or note that every step is taken */
+    const onQualityEvent = (event: GovernorEvent, nowMs: number) => {
+      const g = settings.graphics;
+      const why = `90% of frames within ${event.p90Ms.toFixed(1)} ms against a ${event.budgetMs.toFixed(1)} ms budget`;
+      if (event.kind === "floor") {
+        sessionPerf?.note(nowMs, `still slow with every step taken (${why})`);
+        // The one thing left is the player's: 30 fps
+        if (g.fpsCap === 0) this.publish({ qualityNotice: { id: ++qualityNoticeId, kind: "floor" } });
+        return;
+      }
+      rememberLevel(g.quality, g.renderScale, event.level, nowMs);
+      this.applyGraphics();
+      const lowered = loweredSummary(g.quality, g.renderScale, event.level);
+      console.info(`[quality] stepped down (${event.level}/${governor.floor}): ${lowered}; ${why}`);
+      sessionPerf?.note(nowMs, `stepped down ${event.level}/${governor.floor}: ${lowered} (${why})`);
+      if (nowMs - lastQualityNoticeMs >= QUALITY_NOTICE_GAP_MS) {
+        lastQualityNoticeMs = nowMs;
+        this.publish({ qualityNotice: { id: ++qualityNoticeId, kind: "lowered" } });
+      }
+    };
+    setDriverBodyShown(settings.graphics.driverBody);
     this.applySettings = (next) => {
       const prev = settings;
       if (disposed || next === prev) return;
       settings = next;
+      if (next.audio !== prev.audio) {
+        if (next.audio.muted !== this.snapshot.muted) this.publish({ muted: next.audio.muted });
+        audio?.setMuted(next.audio.muted);
+        audio?.setVolume(next.audio.volume);
+        audio?.setKerbVolume(next.audio.kerbs);
+        applyMusicSettings(next);
+      }
       if (next.keys !== prev.keys) keyLookup = buildKeyLookup(next.keys);
       if (next.padTuning !== prev.padTuning || next.keyboardTuning !== prev.keyboardTuning) {
         assistSettings = steeringAssistSettings(next.padTuning, next.keyboardTuning);
@@ -941,9 +1473,23 @@ export class DriveSession {
         livery = liveryFor(next.liveryId);
         carRig.setLivery(livery);
       }
-      if (next.graphics.quality !== prev.graphics.quality || next.graphics.renderScale !== prev.graphics.renderScale) {
-        this.applyGraphics(next.graphics.quality, next.graphics.renderScale);
+      const g = next.graphics;
+      const pg = prev.graphics;
+      if (g.quality !== pg.quality || g.renderScale !== pg.renderScale || g.autoQuality !== pg.autoQuality) {
+        // The player's own choice: the automatic steps start over from it
+        governor.reset(ladderLength(g), 0);
+        rememberLevel(g.quality, g.renderScale, 0, performance.now());
+        this.applyGraphics();
+        sessionPerf?.note(performance.now(), `graphics set to ${g.quality}, render ${Math.round(g.renderScale * 100)}%, auto quality ${g.autoQuality ? "on" : "off"}`);
       }
+      if (g.fpsCap !== pg.fpsCap) {
+        pacer.setCap(g.fpsCap);
+        // A new frame budget: judged afresh
+        governor.interrupt();
+        sessionPerf?.setRenderState({ settings: graphicsLine(g, this.snapshot.autoQualityLowered), level: g.autoQuality ? governor.level : 0 });
+        sessionPerf?.note(performance.now(), g.fpsCap ? `frame rate capped at ${g.fpsCap} fps` : "frame rate cap off");
+      }
+      if (g.driverBody !== pg.driverBody) setDriverBodyShown(g.driverBody);
       // Another field size needs another field: a race running restarts from the lights with it
       if (next.race.opponents !== prev.race.opponents) {
         aiFieldSpare = null;
@@ -952,7 +1498,7 @@ export class DriveSession {
           const field = this.takeAiField();
           if (trackRoot) field.attachTrackRoot(trackRoot);
           this.setRace({ kind: "ai", field });
-          startAiRace(field, next.race);
+          startAiRace(field, next.race, next.profile);
         }
       }
     };
@@ -1070,7 +1616,8 @@ export class DriveSession {
 
       if (code === "Escape") {
         e.preventDefault();
-        this.togglePause();
+        // A held Esc pauses once: its repeats would resume again, or unpause after closing a screen opened from pause
+        if (!e.repeat) this.togglePause();
         return;
       }
       if (this.snapshot.paused) return;
@@ -1153,6 +1700,7 @@ export class DriveSession {
         if (DRIVER_KEYS.has(action) && physics.aiAutopilot && !coolDown.active) physics.aiAutopilot = false;
         return;
       }
+      if (action === "shiftUp") heldKeys.gearUpHeld = true;
       // Held controls ignore auto-repeat anyway; one-shot actions must not flicker while a key is held
       if (e.repeat) return;
       runAction(action);
@@ -1169,6 +1717,9 @@ export class DriveSession {
           break;
         case "shiftDown":
           heldKeys.shiftDown = true;
+          break;
+        case "neutral":
+          heldKeys.neutral = true;
           break;
         case "aero":
           heldKeys.toggleX = true;
@@ -1197,6 +1748,9 @@ export class DriveSession {
         case "mute":
           this.toggleMute();
           break;
+        case "nextTrack":
+          this.nextTrack();
+          break;
         case "autopilot":
           this.toggleAutopilot();
           break;
@@ -1204,6 +1758,7 @@ export class DriveSession {
         case "mfd":
         case "mfdPage":
         case "hud":
+        case "board":
           window.dispatchEvent(new Event(HUD_TOGGLE_EVENT[action]));
           break;
       }
@@ -1216,7 +1771,7 @@ export class DriveSession {
       if (race.kind === "practice") return this.restartFlyingLap();
       // Out of a replay first (the reset does that), then the car moves
       this.resetRun("restart");
-      startAiRace(race.field, settings.race);
+      startAiRace(race.field, settings.race, settings.profile);
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -1234,6 +1789,7 @@ export class DriveSession {
         cameraKeyHold = null;
         if (!this.snapshot.paused && !this.snapshot.seatPanel) cycleCamera();
       }
+      if (action === "shiftUp") heldKeys.gearUpHeld = false;
       if (action && isHeldKeyAction(action)) heldKeys[HELD_KEYS[action]] = false;
     };
 
@@ -1253,9 +1809,14 @@ export class DriveSession {
 
     // A hidden tab stops the frame loop: zero the wheel rather than leave it holding the last force
     const onVisibilityChange = () => {
-      if (!document.hidden) return;
+      if (!document.hidden) {
+        shownAtMs = performance.now();
+        return;
+      }
       wheelFfb.stop();
       releaseHeldKeys();
+      // The first frames back are no measure of the frame rate
+      governor.interrupt();
     };
     // Leaving the page: the WebHID wheel gets its stop commands now (emergencyStop), as no later promise may run
     const onPageHide = () => {
@@ -1281,14 +1842,17 @@ export class DriveSession {
     window.addEventListener("blur", onWindowBlur);
 
     let lastTimeMs = performance.now();
+    /** The frame-rate cap: when the scene was last drawn, and the time since that the next drawn frame shows */
+    let lastDrawMs = lastTimeMs;
+    let pendingDrawS = 0;
+    /** `?perf=1`: the page's own simulation in this frame (ms) */
+    let frameSimMs = 0;
     let lastHudSyncMs = 0;
     let lastTelemetryOutMs = 0;
     // Instant replay: session clock while driving, and the live pose saved while a replay plays
     let replayClockS = 0;
     let lastReplayPushS = -1;
     const replaySaved = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() };
-    const replayFwd = new THREE.Vector3();
-    const replayQuat = new THREE.Quaternion();
     const replayPeerState = (car: ReplayCarState): InterpolatedPeerState => ({
       peerId: car.id,
       driverCode: replayNames.get(car.id)?.code ?? "",
@@ -1319,33 +1883,8 @@ export class DriveSession {
       cameraRig.reset();
       setReplayUi((u) => ({ ...u, active: false }));
     };
-    const flashbackReplay = () => {
-      const rp = replay;
-      if (!rp.active) return;
-      const frame = rp.buffer.frameAt(rp.timeS);
-      const car = frame?.cars.find((c) => c.id === "player");
-      if (car) {
-        // Re-seat the car on the ground at that pose (heading from the recorded orientation), rolling at its speed
-        replayFwd.set(0, 0, 1).applyQuaternion(replayQuat.set(car.qx, car.qy, car.qz, car.qw));
-        const pose = { x: car.x, z: car.z, yawRad: Math.atan2(replayFwd.x, replayFwd.z), speedMs: car.speedKmh / 3.6, s: car.s };
-        if (physics.restorePose) physics.restorePose(pose);
-        else physics.teleportToDistance(car.s ?? physics.sMeters, pose.speedMs);
-      }
-      // A flashback lap never counts
-      physics.invalidateLap?.();
-      rp.buffer.truncateAfter(rp.timeS);
-      replayClockS = rp.timeS;
-      lastReplayPushS = rp.timeS;
-      rp.active = false;
-      setReplayUi((u) => ({ ...u, active: false }));
-      // A new run from here (the lap in progress is dropped; the trimmed replay stays)
-      this.resetRun("flashback");
-    };
     this.exitReplay = () => {
       if (!disposed) exitReplay();
-    };
-    this.flashbackReplay = () => {
-      if (!disposed) flashbackReplay();
     };
     this.toggleReplay = () => {
       if (disposed) return;
@@ -1367,18 +1906,23 @@ export class DriveSession {
     this.resetRun = (reason) => {
       if (disposed) return;
       runId++;
-      if (reason !== "flashback") {
-        exitReplay();
-        replay.buffer.clear();
-      }
+      exitReplay();
+      replay.buffer.clear();
       onRunReset(reason);
+      jumpWatch.reset();
+      startClutch.active = false;
+      gridHeldLastFrame = false;
+      startClutchIn = 0;
+      kbInput.padClutch = 0;
       // Race control and the cameras start over with the run (the car is about to be put somewhere else)
-      trackLimits.reset(limitsSessionOf(raceNow()));
+      trackLimits.reset(limitsSessionOf(raceNow()), limitsRulesOf(raceNow()));
+      wallDeletedLaps.clear();
       cameraRig.reset();
       lapRecorder.reset();
       physics.aiAutopilot = false;
       kbInput.throttle = 0;
       kbInput.brake = 0;
+      kbInput.clutch = 0;
       kbPedalAssist.reset();
     };
     this.replayTogglePlay = () => {
@@ -1400,11 +1944,11 @@ export class DriveSession {
     const renderCarPos = new THREE.Vector3();
     /** The player car's tyres on its ground, at the pose it is drawn at (refreshed in place every frame) */
     const playerWheels: WheelSeating = { ground: null, position: renderCarPos, quaternion: new THREE.Quaternion() };
-    // Cockpit extras, created once the VF26 model has loaded: the wheel's LCD and the live wing mirrors
+    // Cockpit extras, created once the LC26 model has loaded: the wheel's LCD and the live wing mirrors
     let wheelDisplay: SteeringWheelDisplay | null = null;
     let wingMirrors: WingMirrors | null = null;
-    /** The VF26 body the wheel display and mirrors above were built for */
-    let vf26ExtrasFor: THREE.Object3D | null = null;
+    /** The LC26 body the wheel display and mirrors above were built for */
+    let lc26ExtrasFor: THREE.Object3D | null = null;
     // The AMG GT3 Evo body's dash screen, shift lights, mirrors and rear-view monitor, once its GLB has loaded
     let gt3Dash: Gt3DashDisplay | null = null;
     // A ported body's wheel screen and shift lights (the 496R's), once its GLB has loaded under the rig
@@ -1412,17 +1956,32 @@ export class DriveSession {
     let portedProbeFrame = 0;
     let cockpitProbeFrame = 0;
     const lapDelta = new LapDeltaTracker(track.totalLengthM);
+    // Race control measures what a course cut saved against this: the best lap, else the car's own speed profile
+    const stretchRefS = (fromM: number, toM: number): number | null => {
+      const best = lapDelta.referenceGapS(fromM, toM, track.totalLengthM);
+      if (best !== null) return best;
+      const guide = physics.brakingGuide?.speedMs;
+      return guide ? stretchTimeS(guide, track.totalLengthM, fromM, toM) : null;
+    };
     // The dash view's placement and the player's moves of the onboard views
     const onboardViews = new OnboardViews();
     // Race control: judges every excursion past the track limits (see TrackLimitsMonitor); resetRun and setRace start
     // its session over
     const trackLimits = new TrackLimitsMonitor();
+    /** Laps race control deleted for barrier contact: the lap card says so */
+    const wallDeletedLaps = new Set<number>();
     /** The wheel went while it could not pause the game (menus, loading): it pauses once the car is driven again */
     let wheelLostPending = false;
+    /** The player drove last frame: gyro steering takes its centre again when the car is handed back */
+    let gyroWasDriving = false;
     const displayExtra: { deltaMs: number | null } = { deltaMs: null };
     // The view camera: every view's placement, the menus' orbit and the driver's neck; told to start over when the
     // run does and when the replay moves the drawn car
     const cameraRig = new CameraRig(camera, track);
+    // The title screen left alone this long tours the circuit from the air (menu-aerial.ts); reduced motion holds one frame
+    const menuIdle = new MenuIdleWatch(window);
+    const reducedMotion = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+    let aerialOverlayOff = false;
     // polish:B the podium shot takes the camera for a few seconds after a race; the drive's cameras start over after it
     const podium = new PodiumDirector(track, () => {
       cameraRig.reset();
@@ -1435,7 +1994,7 @@ export class DriveSession {
     const kbAxleSlip = createAxleSlipSample();
     // The other cars, heard where they are from the active camera
     const opponentAudio = new OpponentAudio();
-    const opponentSound = (p: InterpolatedPeerState): CarSoundSource => carForVehicle(p.vehicle ?? "vf26").sound;
+    const opponentSound = (p: InterpolatedPeerState): CarSoundSource => carForVehicle(p.vehicle ?? "lc26").sound;
     const trackEnv = getTrackEnv();
     // Time of day / weather look: the sky follows the session's WeatherState at 10 Hz, the HUD badge at 2 Hz
     let lastSkyMs = -Infinity;
@@ -1447,6 +2006,8 @@ export class DriveSession {
     const rainCamVel = new THREE.Vector3();
     const soloCars: SimulatorCar[] = [];
     const remoteWake: WakeEmitterCar[] = [];
+    /** Other players on this circuit last frame (a room's lobby included): the mirror's auto mode shows for them */
+    let peersOnTrack = 0;
     const ghostPos = new THREE.Vector3();
     const guardSelf: GuardBody = { x: 0, z: 0, vx: 0, vz: 0 };
     const guardOther: GuardBody = { x: 0, z: 0, vx: 0, vz: 0 };
@@ -1465,6 +2026,18 @@ export class DriveSession {
     // first frame is drawn, then let the loading screen offer to continue
     const loadStartMs = performance.now();
     let warmupStarted = false;
+    /** The warm-up has let the loading screen go: done, failed, or given up on by the watchdog */
+    let warmupSettled = false;
+    const settleWarmup = () => {
+      if (warmupSettled || disposed) return;
+      warmupSettled = true;
+      setAssetsReady(true);
+      // The loading's GPU work is done: the physical sky may start its precompute (Medium and High)
+      if (!gpuLost) {
+        env.startPhysicalSky();
+        this.applyGraphics();
+      }
+    };
     let loggedFirstFrame = false;
     const checkAssets = () => {
       if (warmupStarted || disposed) return;
@@ -1477,21 +2050,35 @@ export class DriveSession {
       assetProgress.begin("shaders");
       // One frame later the car model has been swapped in by its own (earlier) listener
       requestAnimationFrame(() => {
-        if (disposed) return;
+        // No context to compile on: the circuit loads again on a new one (a compile started on a lost context polls
+        // for programs that never finish)
+        if (disposed || gpuLost) return;
         // The scene is drawn into the composer's half-float target (no tone mapping, linear output), and three keys
         // its programs on the bound target: compiled with none bound, every shader would be the wrong variant and
         // recompile on the first frame after the player presses start. The program build runs synchronously inside
         // compileAsync, so the target only has to be bound for the call itself.
-        compileForComposer()
-          .then(() => {
-            if (disposed) return;
-            warmUpGpu();
-            visualFx.hidePrewarmed();
-            assetProgress.done("shaders");
-          }, () => assetProgress.fail("shaders"))
-          .finally(() => {
-            if (!disposed) setAssetsReady(true);
-          });
+        let compiled: Promise<unknown>;
+        try {
+          compiled = compileForComposer();
+        } catch (err) {
+          compiled = Promise.reject(err);
+        }
+        compiled
+          .then(
+            async () => {
+              // Given up on already: the first frames compile what is left
+              if (disposed || warmupSettled || gpuLost) return;
+              await warmUpGpu();
+              if (disposed) return;
+              visualFx.hidePrewarmed();
+              assetProgress.done("shaders");
+            },
+            (err) => {
+              console.warn("Shader warm-up failed (the first frames will compile instead)", err);
+              assetProgress.fail("shaders");
+            }
+          )
+          .finally(settleWarmup);
       });
     };
     function compileForComposer(): Promise<THREE.Object3D> {
@@ -1504,36 +2091,98 @@ export class DriveSession {
       }
     }
     /**
-     * Behind the opaque loading screen: upload every texture, then draw one full frame through the composer with frustum
-     * culling off, so the shadow-map and post-processing programs and every vertex buffer are ready before the first
-     * visible frame instead of stalling it
+     * Behind the opaque loading screen: upload the textures of everything shown, give the reflection probe its first
+     * turn, then draw one full frame through the composer, so the shadow-map and post-processing programs and every
+     * vertex buffer are ready before the first visible frame instead of stalling it. Handed to the GPU in pieces, each
+     * finished before the next goes (gpu-pace.ts): the textures in runs of WARMUP_UPLOAD_BYTES, then the probe, then
+     * the frame. The probe and the frame have frustum culling off, the whole circuit at once, except on a gentle start:
+     * there they draw what the camera sees, the frame in parts of a few materials each, and the rest comes in as it
+     * shows. It stops where it is once the session goes, the context is lost or the loading screen was let go anyway.
      */
-    const warmUpGpu = () => {
+    const warmUpGpu = async (): Promise<void> => {
       const t0 = performance.now();
+      const gl = renderer.getContext();
+      const stop = () => disposed || gpuLost || warmupSettled;
       const textures = new Set<THREE.Texture>();
-      const unculled: THREE.Object3D[] = [];
-      scene.traverse((o) => {
+      // What this frame draws: a hidden object (or one under a hidden parent) is left for the frame that shows it,
+      // rather than putting its textures on the GPU for nothing
+      scene.traverseVisible((o) => {
         const mat = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
         for (const m of Array.isArray(mat) ? mat : mat ? [mat] : []) {
           for (const v of Object.values(m)) if (v instanceof THREE.Texture) textures.add(v);
         }
-        if (o.frustumCulled) {
-          o.frustumCulled = false;
-          unculled.push(o);
-        }
       });
+      /** Runs `draw` with every shown object's frustum culling off (not on a gentle start) */
+      const unculled = (draw: () => void) => {
+        const objects: THREE.Object3D[] = [];
+        if (!gentle) {
+          scene.traverseVisible((o) => {
+            if (!o.frustumCulled) return;
+            o.frustumCulled = false;
+            objects.push(o);
+          });
+        }
+        try {
+          draw();
+        } finally {
+          for (const o of objects) o.frustumCulled = true;
+        }
+      };
+      const slices = slicesByBytes([...textures], textureBytes, gentle ? WARMUP_UPLOAD_BYTES_GENTLE : WARMUP_UPLOAD_BYTES);
+      let step = "textures";
       try {
-        for (const tex of textures) renderer.initTexture(tex);
-        // The reflection probe's first full turn and prefilter (their shaders compile here, not on lap one)
-        reflectionProbe.update(physics.worldPosition, carRig.root, scene.environmentIntensity);
-        postFx.render(0);
+        for (const slice of slices) {
+          if (stop()) return;
+          for (const tex of slice) renderer.initTexture(tex);
+          await gpuFinished(gl);
+        }
+        if (stop()) return;
+        // The reflection probe's first full turn and prefilter: their programs differ from the main view's (another
+        // target), so they compile here, not on lap one
+        step = "probe";
+        unculled(() => reflectionProbe.update(physics.worldPosition, carRig.root, scene.environmentIntensity));
+        await gpuFinished(gl);
+        if (stop()) return;
+        // A gentle start draws the camera's view in parts first, each finished before the next: an object's first draw
+        // with a material is the costly one (its shader specialised, its textures bound), so each part holds a few
+        // materials' first draws at most rather than one submission holding them all
+        if (gentle) {
+          step = "parts";
+          const drawn: THREE.Object3D[] = [];
+          scene.traverseVisible((o) => {
+            if ((o as THREE.Mesh).isMesh || (o as THREE.Points).isPoints || (o as THREE.Line).isLine) drawn.push(o);
+          });
+          const materialsOf = (o: THREE.Object3D) => {
+            const m = (o as THREE.Mesh).material;
+            return Array.isArray(m) ? m : m ? [m] : [];
+          };
+          for (const run of partsByNewKeys(drawn, materialsOf, WARMUP_GENTLE_NEW_MATERIALS)) {
+            if (stop()) return;
+            const part = new Set(run);
+            const hidden = drawn.filter((o) => !part.has(o));
+            for (const o of hidden) o.visible = false;
+            const prevTarget = renderer.getRenderTarget();
+            try {
+              renderer.setRenderTarget(postFx.composer.inputBuffer);
+              renderer.render(scene, camera);
+            } finally {
+              renderer.setRenderTarget(prevTarget);
+              for (const o of hidden) o.visible = true;
+            }
+            await gpuFinished(gl);
+          }
+          if (stop()) return;
+        }
+        step = "frame";
+        unculled(() => postFx.render(0));
+        await gpuFinished(gl);
       } catch (err) {
-        console.warn("GPU warm-up frame failed (the first frame will do it instead)", err);
-      } finally {
-        for (const o of unculled) o.frustumCulled = true;
+        console.warn(`GPU warm-up failed at the ${step} (the first frames will do it instead)`, err);
       }
       if (process.env.NODE_ENV !== "production") {
-        console.info(`[load] GPU warm-up: ${textures.size} textures, ${(performance.now() - t0).toFixed(0)} ms`);
+        console.info(
+          `[load] GPU warm-up: ${textures.size} textures in ${slices.length} run(s)${gentle ? ", camera's view only" : ""}, ${(performance.now() - t0).toFixed(0)} ms`
+        );
       }
     };
     const unsubscribeAssets = assetProgress.subscribe(checkAssets);
@@ -1545,6 +2194,8 @@ export class DriveSession {
           if (t.id !== "shaders" && t.status === "pending") assetProgress.fail(t.id);
         }
       }
+      // A shader compile that never finishes (a lost GPU context polls forever) has been given up on: continue anyway
+      if (warmupStarted && assetProgress.get().tasks.some((t) => t.id === "shaders" && t.status === "failed")) settleWarmup();
     }, 2000);
     checkAssets();
 
@@ -1556,8 +2207,20 @@ export class DriveSession {
       // A hitch (GC, shader compile, a slow commit) is caught up in full, up to a quarter second, so the car never
       // drops into slow motion; a longer stall (hidden tab, debugger) is not
       const dtSeconds = Math.min((nowMs - lastTimeMs) / 1000, MAX_FRAME_CATCH_UP_S);
+      displayRate.add(nowMs - lastTimeMs);
       lastTimeMs = nowMs;
-      if (appPhaseNow === "driving") startupMonitor?.frame(nowMs);
+      // The frame-rate cap: this frame draws, or only runs input, the simulation, the network and the laps. The
+      // drawing catches up with the time since the last drawn frame. Never in a headset, which sets its own rate. With
+      // the GPU context lost nothing is drawn at all.
+      const draw = !gpuLost && (renderer.xr.isPresenting || pacer.shouldDraw(nowMs));
+      pendingDrawS += dtSeconds;
+      const drawDtS = draw ? pendingDrawS : 0;
+      const drawIntervalMs = draw ? nowMs - lastDrawMs : 0;
+      if (draw) {
+        pendingDrawS = 0;
+        lastDrawMs = nowMs;
+      }
+      if (appPhaseNow === "driving" && draw) startupMonitor?.frame(nowMs);
 
       // Optional Gamepad / Sim Racing Wheel Polling. Controllers with the standard mapping (Xbox,
       // DualShock, DualSense …) send the raw thumbstick through the physics' gamepad steering
@@ -1565,9 +2228,24 @@ export class DriveSession {
       // rack directly.
       // Read every frame (also in menus / paused) so button edges never fire on a stale press
       const pads = connectedPads();
-      const device = deviceInput.read(pads, settings, dtSeconds, vehicleNow);
+      // Gyro steering: the DualSense's or DualShock 4's lean, tracked at the pad's own report rate (gyro-source.ts). The
+      // reader asks for the pad that steers, which gets its own lean, never another Sony pad's
+      const gyroSettings = settings.dualSense;
+      gyroSource.setMotionWanted(gyroSettings.gyroSteer);
+      const gyroSteer = gyroSettings.gyroSteer
+        ? (padId: string) => {
+            const deg = gyroSource.steerDeg(padId);
+            return deg === null ? undefined : gyroSteerValue(deg, gyroSettings.gyroLockDeg, gyroSettings.gyroSensitivity);
+          }
+        : undefined;
+      const device = deviceInput.read(pads, settings, dtSeconds, vehicleNow, gyroSteer);
       const appPhase = appPhaseNow;
       const inMenu = appPhase !== "driving";
+      // Only the title screen counts its idle time: back on it from anywhere else, the clock starts over
+      const menuIdleMs = menuIdle.idleMs(nowMs, pads);
+      if (appPhase !== "title") menuIdle.reset(nowMs);
+      // Never in a headset: a climb of a hundred metres is no backdrop there
+      const menuAerial = appPhase === "title" && menuIdleMs >= AERIAL_IDLE_MS && !renderer.xr.isPresenting;
       const rp = replay;
       if (rp.active && inMenu) exitReplay();
       const replaying = rp.active;
@@ -1590,8 +2268,8 @@ export class DriveSession {
         if (!this.snapshot.paused) this.togglePause();
         setPauseNotice("Steering wheel disconnected. Reconnect it, or resume to drive with what's left.");
       }
-      // The pause menu or the seat panel: the car waits
-      const frozen = this.snapshot.paused || this.snapshot.seatPanel;
+      // The pause menu, the seat panel or a lost GPU context: the car waits
+      const frozen = this.snapshot.paused || this.snapshot.seatPanel || gpuLost;
       const driving = !inMenu && !frozen && !replaying && !device.wheelLost;
       const padTuning = settingsNow.padTuning;
       const kbTuning = settingsNow.keyboardTuning;
@@ -1601,12 +2279,19 @@ export class DriveSession {
       const gamepadSteer = device.analogSteer;
       // The whole curve the setup screen previews (inner and outer dead zone, then linearity), here once: the assist
       // used to apply the inner dead zone after the curve, and without the assist it was never applied
-      const gamepadStick =
+      const padStick =
         device.padSteer === undefined
           ? undefined
           : shapeStick(device.padSteer, padTuning.deadzone, padTuning.outerDeadzone, padTuning.linearity);
+      // The gyro steers only while driving, added to the stick so either one (or both) steers through the same assist.
+      // The pad's lean as the car is handed back (the start, unpausing, the seat panel closed) is straight ahead
+      if (driving && !gyroWasDriving) gyroSource.recentre();
+      const gyroStick = driving && gyroWasDriving ? device.gyroSteer : undefined;
+      gyroWasDriving = driving;
+      const gamepadStick = padStick === undefined ? undefined : combineStickAndGyro(padStick, gyroStick);
       const gamepadBoost = driving && device.boostHeld;
-      if (!inMenu) {
+      // With the GPU lost the notice over the game has the buttons: the pad's Menu must not open the pause menu under it
+      if (!inMenu && !gpuLost) {
         for (const action of device.pressed) {
           // polish:B any pad button skips the podium shot
           if (podium.playing) {
@@ -1655,15 +2340,62 @@ export class DriveSession {
         kbThrottleTarget,
         dtSeconds / (throttleRising ? kbTuning.throttleRiseS || KB_THROTTLE_RISE_S : KB_THROTTLE_FALL_S)
       );
+      // Half-brake key: a fixed part brake, for trail braking or a light lift
+      const kbBrakeTarget = keys.down ? 1 : keys.halfBrake ? kbTuning.halfBrake : 0;
+      const brakeRising = kbBrakeTarget > kb.brake;
       kb.brake = approach(
         kb.brake,
-        keys.down ? 1 : 0,
-        dtSeconds / (keys.down ? kbTuning.brakeRiseS || KB_BRAKE_RISE_S : KB_BRAKE_FALL_S)
+        kbBrakeTarget,
+        dtSeconds / (brakeRising ? kbTuning.brakeRiseS || KB_BRAKE_RISE_S : KB_BRAKE_FALL_S)
       );
+      kb.clutch = approach(kb.clutch, keys.clutch ? 1 : 0, dtSeconds / (keys.clutch ? KB_CLUTCH_IN_S : KB_CLUTCH_OUT_S));
+      // A manual start with no clutch bound: Gear up is the clutch from the lights until it is let go after them, as in
+      // the F1 games, and its presses are not shifts meanwhile
+      const padClutchSource = settingsNow.padTuning.pedalSources.clutch;
+      const clutchBound =
+        settingsNow.keys.clutch.length > 0 ||
+        (device.source === "controller" && padClutchSource !== null) ||
+        (device.source === "wheel" && settingsNow.wheel.clutch !== null);
+      if (gridHeldLastFrame && !clutchBound) startClutch.active = true;
+      // What the start cue tells the player to hold
+      const kbClutchKey = settingsNow.keys.clutch[0];
+      const padGearUp = settingsNow.padButtons.shiftUp;
+      const startClutchControl: StartClutchControl =
+        device.source === "controller" && padClutchSource !== null
+          ? padClutchSource.kind === "button"
+            ? { pad: padClutchSource.button }
+            : { name: pedalSourceText(padClutchSource) }
+          : device.source === "wheel" && settingsNow.wheel.clutch !== null
+            ? { name: "clutch pedal" }
+            : kbClutchKey
+              ? { key: keyLabel(kbClutchKey) }
+              : device.source === "controller"
+                ? padGearUp !== null
+                  ? { pad: padGearUp }
+                  : { name: "Gear up" }
+                : device.source === "wheel"
+                  ? { name: "upshift paddle" }
+                  : { key: keyLabel(settingsNow.keys.shiftUp[0]) };
+      const gearUpHeld = heldKeys.gearUpHeld || device.held?.has("shiftUp") === true;
+      // A button as the clutch (a controller button other than a trigger, Gear up at a start) presses at once and lets
+      // out over the key clutch's time: letting go slips the clutch, it does not dump it
+      const digitalPadClutch =
+        device.source === "controller" &&
+        padClutchSource?.kind === "button" &&
+        padClutchSource.button !== PAD_THROTTLE_BUTTON &&
+        padClutchSource.button !== PAD_BRAKE_BUTTON;
+      const buttonClutchTarget = startClutch.active ? (gearUpHeld ? 1 : 0) : digitalPadClutch ? device.clutch : null;
+      kb.padClutch =
+        buttonClutchTarget === null
+          ? 0
+          : approach(kb.padClutch, buttonClutchTarget, dtSeconds / (buttonClutchTarget > kb.padClutch ? KB_CLUTCH_IN_S : KB_CLUTCH_OUT_S));
+      if (startClutch.active && !gridHeldLastFrame && !gearUpHeld && kb.padClutch === 0) startClutch.active = false;
+      // The clutch pedal from the key, a controller or the wheel's pedal set; none bound leaves the car's own clutch
+      const clutchPedal = driving ? Math.max(kb.clutch, buttonClutchTarget === null ? device.clutch : kb.padClutch) : 0;
       const carAids = physics.telemetry.liveTuner;
       const tyreSlip = axleSlipFromTelemetry(physics.telemetry, kbAxleSlip);
       const kbBrakeScale = kbPedalAssist.brakeScale(
-        keys.down,
+        kbBrakeTarget > 0,
         kb.brake,
         tyreSlip.totalNdSlip,
         dtSeconds,
@@ -1716,23 +2448,47 @@ export class DriveSession {
         manualOverride:
           heldKeys.boostHold || this.snapshot.boostLatch || gamepadBoost,
         toggleXMode: heldKeys.toggleX,
-        shiftUp: heldKeys.shiftUp,
+        shiftUp: heldKeys.shiftUp && !startClutch.active,
         shiftDown: heldKeys.shiftDown,
+        neutral: heldKeys.neutral,
+        ...(clutchPedal > 0 ? { clutch: clutchPedal } : {}),
       };
       heldKeys.toggleX = false;
       heldKeys.shiftUp = false;
       heldKeys.shiftDown = false;
+      heldKeys.neutral = false;
       // The driver takes the car back from the autopilot with any device (the keys do it on key down): a pedal, the
       // stick, the touch steering pad. Not the wheel's rim, which its force feedback turns on its own.
       if (driving && physics.aiAutopilot && !coolDown.active) {
         const pedal = Math.max(gamepadThrottle, gamepadBrake, touch?.throttle ?? 0, touch?.brake ?? 0);
-        const stick = Math.abs(gamepadStick ?? 0);
+        // The stick alone: a pad held at a slant would otherwise hand the car back as soon as the autopilot took it
+        const stick = Math.abs(padStick ?? 0);
         const touchSteer = touchSteering && !settingsNow.touch.tiltSteer ? Math.abs(touch.steer) : 0;
         if (pedal > 0.15 || stick > 0.3 || touchSteer > 0.2) physics.aiAutopilot = false;
       }
+      // What drives the car this frame, for the icon beside the driver's name on the boards (the lap keeps the one used most)
+      const inputNow = drivingInputOf({
+        touch,
+        source: device.source,
+        mouseSteer: settings.mouseSteer,
+        keys: kbSteerDir !== 0 || kbThrottleTarget > 0 || kbBrakeTarget > 0,
+        pad: { throttle: gamepadThrottle, brake: gamepadBrake, steer: gamepadStick ?? gamepadSteer ?? 0 },
+        setting: settingsNow.device,
+      });
+      if (driving && inputNow) noteDrivingInput(inputNow);
 
       // The AI field holds the player on the grid until the lights go out, then runs its cars
+      if (aiFieldOf(raceNow())?.worker?.failed) {
+        // The worker stopped mid-race: the race starts over from the lights on the page, which drives the car now
+        console.warn("[sim] the worker stopped: the race restarts on the page");
+        const field = this.takeAiField();
+        if (trackRoot) field.attachTrackRoot(trackRoot);
+        this.setRace({ kind: "ai", field });
+        startAiRace(field, settings.race, settings.profile);
+      }
       const aiField = aiFieldOf(raceNow());
+      /** The race runs in the worker, the player's car with it: this page only sends the controls and draws it */
+      const raceInWorker = aiField?.worker !== undefined;
       if (physics.steeringAssist.settings !== assistSettings) {
         physics.steeringAssist.settings = assistSettings;
       }
@@ -1771,23 +2527,77 @@ export class DriveSession {
           physics.aiPaceScale = autopilotPace.pace * (physics.aiAutopilot ? trackEnv.weatherPaceScale(physics) : 1) * coolDown.paceScale;
         }
         startupMonitor?.begin();
-        if (!aiField?.playerFrozen && !mpFrozen) physics.step(dtSeconds, coolDown.active ? coolDown.inputs() : inputs);
+        const simStartMs = sessionPerf ? performance.now() : 0;
+        // A manual start holds the car on the grid through the lights with its engine live (a race in the worker holds
+        // its car there: the controls go on, which keep its clock running); an assisted one stops it
+        // (not while an AI race's grid stands before its lights, after qualifying: the car waits still)
+        const gridHeld = raceInWorker
+          ? aiField.playerFrozen && aiField.manualStart && !aiField.gridStanding
+          : (aiField?.playerFrozen === true && aiField.manualStart && !aiField.gridStanding) || (mpFrozen && settingsNow.race.launch === "manual");
+        if (!raceInWorker) physics.gridHold = gridHeld;
+        // A jump start: race control's call once the lights are out (+5 s, +10 s for a big one), into an AI race's
+        // ledger and feed; an online race serves it with the player's own penalties below
+        const startCall = jumpWatch.update(
+          dtSeconds,
+          gridHeld,
+          physics.telemetry.speedMs,
+          physics.telemetry.race?.position,
+          physics.sMeters,
+          track.totalLengthM
+        );
+        if (startCall === "jump") console.info(`[race] jump start`);
+        if (startCall === "verdict") {
+          console.info(`[race] jump start: +${jumpWatch.penaltyS} s at the flag`);
+          aiField?.penalisePlayer(jumpWatch.penaltyS, "jump_start", jumpWatch.big ? "Jump start · well off the grid spot" : "Jump start");
+        }
+        gridHeldLastFrame = gridHeld;
+        startClutchIn = inputs.clutch ?? 0;
+        if (raceInWorker || (!aiField?.playerFrozen && !mpFrozen) || gridHeld) physics.step(dtSeconds, coolDown.active ? coolDown.inputs() : inputs);
         aiField?.update(dtSeconds);
+        if (sessionPerf) frameSimMs = performance.now() - simStartMs;
         startupMonitor?.end("sim");
+        // A hill climb: off the end of its road, or stopped past the finish, the car goes back to the start line
+        const p2p = track.pointToPoint;
+        if (p2p && raceNow().kind === "practice") {
+          runEnd.holdS = Math.max(0, runEnd.holdS - dtSeconds);
+          const s = physics.sMeters;
+          const pastFinish = s > p2p.finishS && s <= p2p.endS;
+          runEnd.stoppedS = pastFinish && Math.abs(physics.vxMs) < 1 ? runEnd.stoppedS + dtSeconds : 0;
+          if (runEnd.holdS === 0 && (inDeadZone(p2p, s) || runEnd.stoppedS > 2)) {
+            runEnd.stoppedS = 0;
+            runEnd.holdS = 1;
+            queueMicrotask(() => this.restartFlyingLap());
+          }
+        }
       }
-      // The worker drives the car in practice; an AI or online race steps it here, with the field around it
+      // The worker drives the car in practice and in an AI race it runs; another race steps it here, with the field
+      // around it
       if (simHost) {
         const was = simHost.remote;
-        // Not with a steering wheel yet: its force feedback is still sent from the page, a frame at a time
-        simHost.endFrame(raceNow().kind === "practice" && settingsNow.device !== "wheel");
+        // Not with a steering wheel yet: its force feedback is still sent from the page, a frame at a time (a race
+        // that started in the worker stays there)
+        simHost.endFrame(raceInWorker || (raceNow().kind === "practice" && settingsNow.device !== "wheel"));
         if (simHost.remote !== was) console.info(simHost.remote ? "[sim] the worker drives the car" : "[sim] the page drives the car");
       }
       if (mpRace && mpFrame && mpFrame.phase === "racing" && !frozen) {
         mpRace.lapClock.update(physics.sMeters, mpFrame.raceTimeS, mpRace.start.laps, mpRace.flagOut);
       }
+      // With the pedals off the triggers (stick pedals) they shift gears: no ABS or wheelspin in them, no brake-pedal
+      // resistance in L2
+      const triggerPedals = pedalsOnTriggers(padTuning.pedalSources);
       haptics.update(physics.telemetry, dtSeconds, rumbleEnabled && driving, {
-        triggerRumble: padTuning.triggerRumble,
+        triggerRumble: padTuning.triggerRumble && triggerPedals,
         triggerSlipAlwaysOn: padTuning.triggerSlipAlwaysOn,
+        skipPad: ownedByDualSense,
+      });
+      dualSense.update(physics.telemetry, dtSeconds, {
+        driving,
+        rumbleOn: rumbleEnabled,
+        settings: settingsNow.dualSense,
+        triggerSlipAlwaysOn: padTuning.triggerSlipAlwaysOn,
+        triggerPedals,
+        driverColor: settingsNow.profile.color,
+        vehicle: vehicleNow,
       });
       // Forces only while driving with the wheel: on a pad or the keyboard a plugged-in wheel stays limp
       wheelFfb.update(
@@ -1799,7 +2609,34 @@ export class DriveSession {
         vehicleNow
       );
       physics.telemetry.race = mpRace && mpFrame ? mpRace.status(mpFrame, physics.vxMs) : aiField?.status();
+      // Qualifying: the clock, the reference lap behind it, and the race once the session is over
+      if (quali && driving) {
+        const t = physics.telemetry;
+        stepQualifyingRef(QUALI_REF_BUDGET_MS);
+        const state = quali.session.update(dtSeconds, {
+          lapCount: t.lapCount,
+          lastLapTimeMs: t.lastLapTimeMs ?? null,
+          lastLapValid: t.lastLapValid !== false,
+          currentLapTimeMs: t.currentLapTimeMs,
+          lapInvalid: t.lapInvalid === true,
+          autopilot: physics.aiAutopilot,
+        });
+        if (state === "done") finishQualifying();
+      }
+      physics.telemetry.qualifying = quali
+        ? {
+            remainingS: quali.session.remainingS,
+            lastLap: quali.session.state === "last_lap",
+            lapCounts: quali.session.lapCounts,
+            bestMs: quali.session.bestMs,
+          }
+        : undefined;
       physics.telemetry.runId = runId;
+      // The manual start's cue: what to hold as the clutch, and a jump start once there is one
+      physics.telemetry.start =
+        gridHeldLastFrame || jumpWatch.jumped || startClutch.active
+          ? { held: gridHeldLastFrame, jumped: jumpWatch.jumped, penaltyS: jumpWatch.penaltyS, clutch: startClutchControl, clutchIn: startClutchIn }
+          : undefined;
 
       // Track limits: in a race, race control judges each excursion once the car is back on the asphalt (warnings,
       // and every third one is a time penalty served at the flag). Any other driving is strict: off is a deleted lap.
@@ -1808,6 +2645,7 @@ export class DriveSession {
         const raceNow = t.race;
         physics.trackLimitsMode = trackLimits.mode === "race" ? "judged" : "strict";
         if (driving) {
+          const here = track.getSampleAtDistance(physics.sMeters);
           const tlEvent = trackLimits.update({
             nowMs,
             dtS: dtSeconds,
@@ -1815,24 +2653,46 @@ export class DriveSession {
             lapTimeMs: t.currentLapTimeMs,
             sector: t.currentSector,
             distM: t.trackDistanceM,
+            lapLengthM: track.totalLengthM,
+            stretchRefS,
             offTrack: t.offTrack,
             throttle: t.throttle,
             brake: t.brake,
             lateralM: physics.lateralOffsetM,
-            curvature: track.getSampleAtDistance(physics.sMeters).curvature,
+            curvature: here.curvature,
+            halfWidthM: here.width / 2,
             deltaS: lapDelta.delta(t),
             racePosition: raceNow?.position,
+            speedMs: physics.vxMs,
+            posX: physics.worldPosition.x,
+            posZ: physics.worldPosition.z,
             active: !physics.aiAutopilot && !mpFrozen && raceNow?.phase !== "lights" && raceNow?.phase !== "finished",
+            // Barriers: a hill climb's run is done on any touch (judged up to its finish line), a circuit's lap only by
+            // riding the wall
+            wallContactS: t.f12026?.wallContactS,
+            wallRule: !track.pointToPoint
+              ? "ride"
+              : physics.sMeters > track.pointToPoint.finishS && physics.sMeters <= track.pointToPoint.endS
+                ? undefined
+                : "touch",
           });
           // A strike also deletes the lap time (it never counts as a best lap)
           if (tlEvent && tlEvent.kind !== "cleared" && tlEvent.kind !== "no_advantage" && tlEvent.lap === t.lapCount) {
             physics.invalidateLap?.();
+            if (tlEvent.reason === "wall_contact") wallDeletedLaps.add(tlEvent.lap);
           }
         }
         physics.trackLimitsHold = trackLimits.judging;
-        if (aiField) aiField.playerPenaltyS = trackLimits.penaltyTotalS;
+        // The player's own calls, served at the flag: track limits, and online a jump start too (in an AI race race
+        // control's calls, a jump start and a pass under yellow among them, are in the field's ledger)
+        const startPenaltyS = jumpWatch.penaltyS;
+        if (aiField) {
+          aiField.lockAidsInYellow = aidsLockInYellow;
+          aiField.playerPenaltyS = trackLimits.penaltyTotalS;
+          if (trackLimits.disqualified) aiField.playerDisqualified = true;
+        }
         if (mpRace) {
-          mpRace.penaltyS = trackLimits.penaltyTotalS;
+          mpRace.penaltyS = trackLimits.penaltyTotalS + startPenaltyS;
           mpRace.compound = physics.tireCompound;
         }
         t.trackLimits = trackLimits.snapshot(nowMs);
@@ -1848,7 +2708,7 @@ export class DriveSession {
       );
 
       // Laps: summary card, personal best (saved, and raced as the ghost) — practice only
-      if (driving && !aiField && !mpRace) {
+      if (driving && !aiField && !mpRace && !quali) {
         const done = lapRecorder.update({
           telemetry: physics.telemetry,
           position: physics.worldPosition,
@@ -1861,11 +2721,17 @@ export class DriveSession {
               compound: physics.tireCompound,
               lineWaterMm: trackEnv.weather.lineWaterMm,
               realism: settingsNow.realism,
+              trackId,
             }),
             autopilot: physics.aiAutopilot,
           },
+          input: inputNow,
         });
-        if (done) for (const listener of lapListeners) listener(done.summary, done.recording);
+        if (done) {
+          if (!done.summary.valid && wallDeletedLaps.has(done.summary.lapNumber)) done.summary.wallContact = true;
+          for (const lap of wallDeletedLaps) if (lap <= done.summary.lapNumber) wallDeletedLaps.delete(lap);
+          for (const listener of lapListeners) listener(done.summary, done.recording);
+        }
       }
 
       // Telemetry out (UDP via the bridge) for dashboards and motion rigs
@@ -1904,9 +2770,10 @@ export class DriveSession {
         lapLengthM: track.totalLengthM,
         offTrack: physics.telemetry.offTrack,
       });
+      // With the GPU lost no state goes out: the others see this car go, not parked where it stopped
       const interpolatedPeers = multiplayerSync.update(
         nowMs,
-        {
+        gpuLost ? null : {
           driverCode: settingsNow.profile.code,
           teamColorHex: settingsNow.profile.color,
           name: settingsNow.profile.name,
@@ -1943,6 +2810,9 @@ export class DriveSession {
 
       // A peer on another circuit has coordinates that mean nothing here
       const samePeers = interpolatedPeers.filter((p) => !p.trackId || p.trackId === trackId);
+      peersOnTrack = samePeers.length;
+      // On the lap where they are drawn, not where their newest packet put them (the tower, the relative, the gaps)
+      placePeersWhereDrawn(samePeers, track.projectWorldToTrack, track.totalLengthM);
       peerWakeEmitters(track, samePeers, remoteWake);
       if (mpRace && mpFrame) {
         mpRace.ingestPeers(samePeers, mpFrame.phase === "racing" ? mpFrame.raceTimeS : 0);
@@ -2049,9 +2919,6 @@ export class DriveSession {
               brake: physics.telemetry.brake,
               gear: physics.telemetry.gear,
               rpm: physics.telemetry.rpm,
-              s: physics.sMeters,
-              vyMs: physics.vyMs,
-              yawRateRadS: physics.yawRateRadS,
             },
           ];
           for (const p of renderPeers) {
@@ -2086,7 +2953,7 @@ export class DriveSession {
           const peers: InterpolatedPeerState[] = [];
           for (const car of frame.cars) {
             if (car.id === "player") {
-              // Only the drawn pose: the car's physics stays as it was until a flashback places it
+              // Only the drawn pose: the car's physics stays where it is
               physics.worldPosition.set(car.x, car.y, car.z);
               physics.worldQuaternion.set(car.qx, car.qy, car.qz, car.qw);
             } else {
@@ -2126,119 +2993,139 @@ export class DriveSession {
       const inVr = renderer.xr.isPresenting;
       const mode: CameraMode = inMenu || podium.playing ? "chase" : inVr ? "cockpit" : (settings.camera ?? "chase");
       const view = CAMERA_MODES[mode];
-      const vf26Cams = carRig.getCameraAnchors();
-      const carFovDeg = vf26Cams ? vf26Cams.cockpit.fovDeg : FALLBACK_COCKPIT_FOV_DEG;
+      const lc26Cams = carRig.getCameraAnchors();
+      const carFovDeg = lc26Cams ? lc26Cams.cockpit.fovDeg : FALLBACK_COCKPIT_FOV_DEG;
       if (carFovDeg !== this.snapshot.carCockpitFovDeg) setCarCockpitFov(carFovDeg);
       const onboardFovShift = settings.cockpitFovDeg === null ? 0 : settings.cockpitFovDeg - carFovDeg;
-      // The procedural helmet goes once the VF26 model (with its own driver) has replaced the procedural car
-      carRig.helmetGroup.visible = !vf26Cams;
+      // The procedural helmet goes once the LC26 model (with its own driver) has replaced the procedural car
+      carRig.helmetGroup.visible = !lc26Cams;
       // From the driver's eye point the helmet would fill the view: the camera leaves its layer out, while the
       // sun's shadow camera keeps it so the head still shadows the cockpit
       if (view.driverEye) camera.layers.disable(DRIVER_HEAD_LAYER);
       else camera.layers.enable(DRIVER_HEAD_LAYER);
 
-      // The fixed-step physics leaves up to 2 ms unstepped each frame: draw the car (and the cameras on it) where it
-      // is at the frame's time, the pose carried forward by its velocity over that remainder
-      renderCarPos
-        .copy(carVelocityWorld)
-        .multiplyScalar(physics.renderLeadS ?? 0)
-        .add(physics.worldPosition);
-      carRig.root.position.copy(renderCarPos);
-      carRig.root.quaternion.copy(physics.worldQuaternion);
-      carRig.chassisGroup.position.y = physics.rideHeightOffsetM;
-      if (physics.tyreVisuals) {
-        playerWheels.tyres = physics.tyreVisuals;
-        playerWheels.ground = physics.groundQuery ?? null;
-        playerWheels.quaternion = physics.worldQuaternion;
-      }
-      carRig.updateFromTelemetry(
-        physics.telemetry,
-        physics.pitchRad,
-        physics.rollRad,
-        physics.wheelRotationRad,
-        dtSeconds,
-        physics.tyreVisuals ? playerWheels : undefined
-      );
-      seatContactShadow(carRig.root, physics.tyreVisuals ? playerWheels : undefined);
-      podium.drawPlayer(carRig, physics.telemetry, physics.groundQuery ?? null, dtSeconds);
+      lapDelta.update(physics.telemetry);
+      // The cars as drawn this frame (the podium shot parks them); the opponents' engines play from where they are drawn
+      const drawnPeers = podium.drawPeers(renderPeers);
 
-      const vf26Body = carRig.getVf26Body();
-      // Built once per body (keyed on the body, not on the wheel display: a body without STEER_BASE has no display,
-      // and keying on it rebuilt the mirrors' render target every frame)
-      if (vf26Body && vf26ExtrasFor !== vf26Body) {
-        vf26ExtrasFor = vf26Body;
-        const steerBase = vf26Body.getObjectByName("STEER_BASE");
-        if (steerBase) wheelDisplay = new SteeringWheelDisplay(steerBase);
-        wingMirrors = new WingMirrors(renderer, scene, vf26Body);
-      }
-      if (!vf26Body && !portedDash && carById(carRigCar).modelUrl && portedProbeFrame++ % 30 === 0) {
-        portedDash = PortedWheelDash.from(carRig.chassisGroup, revRangeFor(carById(carRigCar).physics));
-      }
-      // A ported body's anchors are set once its GLB has loaded; a body without the Evo's screen or mirror glass
-      // gets an empty display and no mirrors, so it is probed once
-      if (!vf26Body && !gt3Dash && carById(carRigCar).modelUrl && cockpitProbeFrame++ % 30 === 0) {
-        const anchors = carRig.getCameraAnchors();
-        if (anchors) {
-          gt3Dash = new Gt3DashDisplay(carRig.chassisGroup, revRangeFor(carById(carRigCar).physics));
-          const glassPatches = gt3MirrorPatches(carRig.chassisGroup);
-          if (glassPatches.length) {
-            wingMirrors = new WingMirrors(renderer, scene, carRig.chassisGroup, {
-              materials: [],
-              eyeInModel: anchors.cockpit.pos,
-              glassPatches,
-            });
+      // Everything from here to the cameras only moves what is drawn: a frame the cap skips leaves it for the next
+      // drawn one, which moves it on by the time since the last (drawDtS)
+      if (draw) {
+        // The fixed-step physics leaves up to 2 ms unstepped each frame: draw the car (and the cameras on it) where it
+        // is at the frame's time, the pose carried forward by its velocity over that remainder. The worker's car comes
+        // carried forward to this frame already (remote-car.ts), so a capped 30 fps still draws it where it is now.
+        renderCarPos
+          .copy(carVelocityWorld)
+          .multiplyScalar(physics.renderLeadS ?? 0)
+          .add(physics.worldPosition);
+        carRig.root.position.copy(renderCarPos);
+        carRig.root.quaternion.copy(physics.worldQuaternion);
+        carRig.chassisGroup.position.y = physics.rideHeightOffsetM;
+        if (physics.tyreVisuals) {
+          playerWheels.tyres = physics.tyreVisuals;
+          playerWheels.ground = physics.groundQuery ?? null;
+          playerWheels.quaternion = physics.worldQuaternion;
+        }
+        carRig.updateFromTelemetry(
+          physics.telemetry,
+          physics.pitchRad,
+          physics.rollRad,
+          physics.wheelRotationRad,
+          drawDtS,
+          physics.tyreVisuals ? playerWheels : undefined
+        );
+        seatContactShadow(carRig.root, physics.tyreVisuals ? playerWheels : undefined);
+        podium.drawPlayer(carRig, physics.telemetry, physics.groundQuery ?? null, drawDtS);
+
+        const lc26Body = carRig.getLc26Body();
+        // Built once per body (keyed on the body, not on the wheel display: a body without STEER_BASE has no display,
+        // and keying on it rebuilt the mirrors' render target every frame)
+        if (lc26Body && lc26ExtrasFor !== lc26Body) {
+          lc26ExtrasFor = lc26Body;
+          const steerBase = lc26Body.getObjectByName("STEER_BASE");
+          if (steerBase) wheelDisplay = new SteeringWheelDisplay(steerBase);
+          wingMirrors = new WingMirrors(renderer, scene, lc26Body);
+        }
+        if (!lc26Body && !portedDash && carById(carRigCar).modelUrl && portedProbeFrame++ % 30 === 0) {
+          portedDash = PortedWheelDash.from(carRig.chassisGroup, revRangeFor(carById(carRigCar).physics));
+        }
+        // A ported body's anchors are set once its GLB has loaded; a body without the Evo's screen or mirror glass
+        // gets an empty display and no mirrors, so it is probed once
+        if (!lc26Body && !gt3Dash && carById(carRigCar).modelUrl && cockpitProbeFrame++ % 30 === 0) {
+          const anchors = carRig.getCameraAnchors();
+          if (anchors) {
+            gt3Dash = new Gt3DashDisplay(carRig.chassisGroup, revRangeFor(carById(carRigCar).physics));
+            const glassPatches = gt3MirrorPatches(carRig.chassisGroup);
+            if (glassPatches.length) {
+              wingMirrors = new WingMirrors(renderer, scene, carRig.chassisGroup, {
+                materials: [],
+                eyeInModel: anchors.cockpit.pos,
+                glassPatches,
+              });
+            }
           }
         }
-      }
-      lapDelta.update(physics.telemetry);
-      // The wheel is only in shot from the onboard views; the display redraws itself at 30 Hz
-      if (view.wheelInShot && (wheelDisplay || gt3Dash?.found || portedDash?.found)) {
-        const delta = lapDelta.delta(physics.telemetry);
-        const deltaMs = delta === null ? null : delta * 1000;
-        if (wheelDisplay) {
-          displayExtra.deltaMs = deltaMs;
-          wheelDisplay.update(physics.telemetry, nowMs, displayExtra);
+        // The wheel is only in shot from the onboard views; the display redraws itself at 30 Hz
+        if (view.wheelInShot && (wheelDisplay || gt3Dash?.found || portedDash?.found)) {
+          const delta = lapDelta.delta(physics.telemetry);
+          const deltaMs = delta === null ? null : delta * 1000;
+          if (wheelDisplay) {
+            displayExtra.deltaMs = deltaMs;
+            wheelDisplay.update(physics.telemetry, nowMs, displayExtra);
+          }
+          if (gt3Dash?.found) gt3Dash.update(physics.telemetry, nowMs, { deltaMs });
+          if (portedDash?.found) portedDash.update(physics.telemetry, nowMs, { deltaMs });
         }
-        if (gt3Dash?.found) gt3Dash.update(physics.telemetry, nowMs, { deltaMs });
-        if (portedDash?.found) portedDash.update(physics.telemetry, nowMs, { deltaMs });
+
+        // Update persistent 4-wheel skidmark ribbons, tire smoke/gravel/rooster-tail particles & opponent 3D cars
+        // The player's car only lays skidmarks and throws smoke / spray while it is simulated: paused, in menus or in a
+        // replay its wheel state is the last driven frame, which would keep emitting on the spot
+        visualFx.update(
+          drawDtS,
+          physics.worldQuaternion,
+          physics.vxMs,
+          physics.wheels,
+          drawnPeers,
+          driving
+        );
+
+        floorSparks.update(drawDtS, driving && rigModel(carRigCar).floorSparks ? physics : null);
+
+        if (!podium.placeCamera(camera)) cameraRig.update({
+          dt: drawDtS,
+          nowMs,
+          mode,
+          car: physics,
+          carPos: renderCarPos,
+          carVelocity: carVelocityWorld,
+          anchor: onboardViews.resolve(lc26Cams, mode, carRigCar, settingsNow.cameraNudges),
+          chassis: carRig.chassisGroup,
+          onboardFovShift,
+          headMovement: settingsNow.hud.headMovement,
+          driving,
+          inVr,
+          menu: inMenu
+            ? {
+                close: appPhase === "wizard" && wizardStep === "car",
+                width: container.clientWidth,
+                height: container.clientHeight,
+                aerial: menuAerial,
+                still: reducedMotion?.matches ?? false,
+                fogDensity: scene.fog instanceof THREE.FogExp2 ? scene.fog.density : undefined,
+              }
+            : null,
+        });
+        // The driving aids' overlay (the racing line) is not drawn from the air: the tour is a broadcast shot
+        if (cameraRig.aerialUp !== aerialOverlayOff) {
+          aerialOverlayOff = cameraRig.aerialUp;
+          if (aerialOverlayOff) camera.layers.disable(OVERLAY_LAYER);
+          else camera.layers.enable(OVERLAY_LAYER);
+        }
+
+        builtCircuit.updateEnvironment(nowMs * 0.001);
+        // (a race in the worker lays its rubber there)
+        builtCircuit.setGrooveRubber(aiFieldOf(raceNow())?.worker?.rubber ?? getTrackEnv().trackEvolution.meanRacingLineRubber());
       }
-
-      // Update persistent 4-wheel skidmark ribbons, tire smoke/gravel/rooster-tail particles & opponent 3D cars
-      // The player's car only lays skidmarks and throws smoke / spray while it is simulated: paused, in menus or in a
-      // replay its wheel state is the last driven frame, which would keep emitting on the spot
-      const drawnPeers = podium.drawPeers(renderPeers);
-      visualFx.update(
-        dtSeconds,
-        physics.worldQuaternion,
-        physics.vxMs,
-        physics.wheels,
-        drawnPeers,
-        driving
-      );
-
-
-      floorSparks.update(dtSeconds, driving && rigModel(carRigCar).floorSparks ? physics : null);
-
-      if (!podium.placeCamera(camera)) cameraRig.update({
-        dt: dtSeconds,
-        nowMs,
-        mode,
-        car: physics,
-        carPos: renderCarPos,
-        carVelocity: carVelocityWorld,
-        anchor: onboardViews.resolve(vf26Cams, mode, carRigCar, settingsNow.cameraNudges),
-        chassis: carRig.chassisGroup,
-        onboardFovShift,
-        headMovement: settingsNow.hud.headMovement,
-        driving,
-        inVr,
-        menu: inMenu
-          ? { close: appPhase === "wizard" && wizardStep === "car", width: container.clientWidth, height: container.clientHeight }
-          : null,
-      });
-
-      builtCircuit.updateEnvironment(nowMs * 0.001);
-      builtCircuit.setGrooveRubber(getTrackEnv().trackEvolution.meanRacingLineRubber());
       opponentAudio.update({
         context: audio?.context ?? null,
         output: audio?.output ?? null,
@@ -2251,9 +3138,21 @@ export class DriveSession {
       });
       audio?.setCameraMode(mode);
       audio?.setPaused(!driving);
+      // The music follows where the player is: the menus, the grid, the race, the flag, a replay, the pause menu
+      if (music.unlocked) {
+        music.setCue(
+          musicDirector.cue({
+            phase: appPhase,
+            racePhase: physics.telemetry.race?.phase,
+            replaying,
+            frozen: frozen || Boolean(device.wheelLost),
+            speedMs: physics.vxMs,
+          }),
+        );
+      }
       if (driving) {
         audio?.update(physics.telemetry, dtSeconds);
-        // Cues: DRS enabled (two-tone), flap open (chime; VF26: X-mode), shift point (150 rpm short of the limiter)
+        // Cues: DRS enabled (two-tone), flap open (chime; LC26: X-mode), shift point (150 rpm short of the limiter)
         const tc = physics.telemetry;
         const cues = settingsNow.hud;
         const drsAvail = Boolean(
@@ -2271,19 +3170,18 @@ export class DriveSession {
           cueGear = tc.gear;
           cueShiftArmed = true;
         }
-        if (cues.shiftBeep && cueShiftArmed && tc.gear > 0 && tc.rpm >= limiter - 150) {
+        if (cues.shiftBeep && cueShiftArmed && tc.gear > 0 && tc.rpm >= limiter - SHIFT_BEEP_BELOW_LIMITER_RPM) {
           audio?.cue("shift");
           cueShiftArmed = false;
         }
       }
 
-      // Nothing to draw behind the opaque loading screen (the shaders are compiled separately)
-      if (appPhase === "loading") return;
+      // Nothing to draw behind the opaque loading screen (the shaders are compiled separately), or with no GPU context
+      if (appPhase === "loading" || gpuLost) return;
 
       // Weather: sun, sky, fill and fog, the wet look of the road, spray, and rain around the camera
       const wx = trackEnv.weather;
-      // The ripples' clock runs every frame with the real frame time; the rest of the sky updates at 10 Hz below
-      advanceAsphaltRain(dtSeconds);
+      // The sky updates at 10 Hz; the ripples' clock and the rain around the camera with each drawn frame, below
       if (nowMs - lastSkyMs > 100) {
         lastSkyMs = nowMs;
         const sun = wx.sun;
@@ -2294,28 +3192,10 @@ export class DriveSession {
         env.setConditions(skyConditions);
         setAsphaltWetness(wetnessFromWater(wx.waterMm), wetnessFromWater(wx.lineWaterMm), wx.rainIntensity);
         // The water under the player's own wheels, not the lap's mean line water
-        visualFx.setWetness(trackEnv.weatherSampleFor(physics)?.wetness ?? wetnessFromWater(wx.lineWaterMm));
+        // (in a race the worker runs, its road under the car)
+        const workerRace = aiFieldOf(raceNow())?.worker;
+        visualFx.setWetness((workerRace ? workerRace.playerWetness : trackEnv.weatherSampleFor(physics)?.wetness) ?? wetnessFromWater(wx.lineWaterMm));
       }
-      camera.getWorldPosition(rainCamPos);
-      if (dtSeconds > 0) rainCamVel.subVectors(rainCamPos, rainCamPrev).divideScalar(dtSeconds).clampLength(0, 110);
-      rainCamPrev.copy(rainCamPos);
-      // Spray thrown up by the cars ahead (the wake model's, from their speed, gap and the water)
-      const sprayWake = trackEnv.weatherSampleFor(physics)?.sprayIntensity ?? 0;
-      // Droplets on the visor only from the driver's eye (the mirrors render without this layer)
-      if (view.driverEye && !inVr) camera.layers.enable(RAIN_VISOR_LAYER);
-      else camera.layers.disable(RAIN_VISOR_LAYER);
-      const skyLight = THREE.MathUtils.clamp((skyConditions.elevationDeg + 3) / 17, 0, 1) * (1 - 0.4 * wx.cloudCover);
-      visualFx.setLightLevel(skyLight);
-      rainFx.update(
-        dtSeconds,
-        wx.rainIntensity,
-        camera,
-        rainCamVel,
-        skyLight,
-        wx.windVxMs,
-        wx.windVzMs,
-        THREE.MathUtils.clamp(sprayWake, 0, 1)
-      );
       if (nowMs - lastWeatherHudMs > 500) {
         lastWeatherHudMs = nowMs;
         const next: WeatherHudState = {
@@ -2332,55 +3212,117 @@ export class DriveSession {
           setWeatherHud(next);
         }
       }
-      env.update(physics.worldPosition, camera);
-      startupMonitor?.begin();
-      reflectionProbe.update(podium.focus ?? physics.worldPosition, carRig.root, scene.environmentIntensity);
-      startupMonitor?.end("probe");
-      // Virtual mirror: on its own in the views whose wing mirrors are off screen (or that have none), and in the
-      // chase view too when the player asked for it always
-      const vmSetting = settingsNow.hud.virtualMirror;
-      const vmView =
-        view.virtualMirror === "always" ||
-        (view.virtualMirror === "noSideMirrors" && !(wingMirrors?.found && wingMirrors.coversSides)) ||
-        (view.virtualMirror === "onRequest" && vmSetting === "always");
-      const vmOn = driving && !inVr && !podium.playing && container.clientWidth >= 640 && vmSetting !== "off" && vmView;
-      virtualMirror.update(frameIndex, vmOn, carRig.chassisGroup, carRig.root);
-      if (vmOn !== virtualMirrorShown) {
-        virtualMirrorShown = vmOn;
-        setVirtualMirrorOn(vmOn);
-      }
-      // Rear view into the mirrors' render target (cockpit only, every 2nd frame), then the main frame
-      wingMirrors?.update(frameIndex, view.driverEye && !inVr, carRig.chassisGroup);
-      // Counted here, not inside the optional call above: without wing mirrors it never advanced, which also
-      // disabled the virtual mirror's every-other-frame throttle
-      frameIndex++;
-      if (inVr) {
-        // The head pose is added on top of the driver's eye point (a "local" space starts at the head)
-        xrRig.position.copy(camera.position);
-        xrRig.quaternion.copy(camera.quaternion);
-        renderer.render(scene, xrCamera);
-      } else {
-        const t0 = loggedFirstFrame ? 0 : performance.now();
+      // The drawing itself (a frame the cap skips draws nothing)
+      if (draw) {
+        advanceAsphaltRain(drawDtS);
+        camera.getWorldPosition(rainCamPos);
+        if (drawDtS > 0) rainCamVel.subVectors(rainCamPos, rainCamPrev).divideScalar(drawDtS).clampLength(0, 110);
+        rainCamPrev.copy(rainCamPos);
+        // Spray thrown up by the cars ahead (the wake model's, from their speed, gap and the water)
+        const workerRace = aiFieldOf(raceNow())?.worker;
+        const sprayWake = workerRace ? workerRace.playerSpray : (trackEnv.weatherSampleFor(physics)?.sprayIntensity ?? 0);
+        // Droplets on the visor only from the driver's eye (the mirrors render without this layer)
+        if (view.driverEye && !inVr) camera.layers.enable(RAIN_VISOR_LAYER);
+        else camera.layers.disable(RAIN_VISOR_LAYER);
+        const skyLight = THREE.MathUtils.clamp((skyConditions.elevationDeg + 3) / 17, 0, 1) * (1 - 0.4 * wx.cloudCover);
+        visualFx.setLightLevel(skyLight);
+        rainFx.update(
+          drawDtS,
+          wx.rainIntensity,
+          camera,
+          rainCamVel,
+          skyLight,
+          wx.windVxMs,
+          wx.windVzMs,
+          THREE.MathUtils.clamp(sprayWake, 0, 1)
+        );
+        env.update(physics.worldPosition, camera);
         startupMonitor?.begin();
-        postFx.render(dtSeconds);
-        virtualMirror.draw();
-        startupMonitor?.end("render");
-        if (!loggedFirstFrame) {
-          loggedFirstFrame = true;
-          if (process.env.NODE_ENV !== "production") {
-            // The frame right after the loading screen: it stalls when the warm-up missed something
-            renderer.getContext().finish();
-            console.info(`[load] first visible frame: ${(performance.now() - t0).toFixed(0)} ms`);
+        // Not in the aerial tour: the car is a speck there, and its reflections can wait for the camera to come back
+        if (!cameraRig.aerialUp) reflectionProbe.update(podium.focus ?? physics.worldPosition, carRig.root, scene.environmentIntensity);
+        startupMonitor?.end("probe");
+        // Virtual mirror: on its own in the views whose wing mirrors are off screen (or that have none), and in the
+        // chase view too when the player asked for it always. Auto shows it only with other cars about: an AI race, an
+        // online race, or other players in the room (practice, the hotlap and qualifying are driven alone)
+        const vmSetting = settingsNow.hud.virtualMirror;
+        const vmView =
+          view.virtualMirror === "always" ||
+          (view.virtualMirror === "noSideMirrors" && !(wingMirrors?.found && wingMirrors.coversSides)) ||
+          (view.virtualMirror === "onRequest" && vmSetting === "always");
+        const othersAbout = raceNow().kind !== "practice" || peersOnTrack > 0;
+        const vmOn =
+          driving && !inVr && !podium.playing && container.clientWidth >= 640 && vmView && (vmSetting === "always" || (vmSetting === "auto" && othersAbout));
+        // The mirrors refresh every other frame, 30 times a second at 60 fps; under the 30 fps cap every drawn frame
+        // does, which keeps them at 30
+        const mirrorFrame = pacer.cap > 0 ? 0 : frameIndex;
+        virtualMirror.update(mirrorFrame, vmOn, carRig.chassisGroup, carRig.root);
+        if (vmOn !== virtualMirrorShown) {
+          virtualMirrorShown = vmOn;
+          setVirtualMirrorOn(vmOn);
+        }
+        // Rear view into the mirrors' render target (cockpit only, every 2nd frame), then the main frame
+        wingMirrors?.update(mirrorFrame, view.driverEye && !inVr, carRig.chassisGroup);
+        // Counted here, not inside the optional call above: without wing mirrors it never advanced, which also
+        // disabled the virtual mirror's every-other-frame throttle
+        frameIndex++;
+        if (inVr) {
+          // The head pose is added on top of the driver's eye point (a "local" space starts at the head)
+          xrRig.position.copy(camera.position);
+          xrRig.quaternion.copy(camera.quaternion);
+          renderer.render(scene, xrCamera);
+        } else {
+          const t0 = loggedFirstFrame ? 0 : performance.now();
+          startupMonitor?.begin();
+          postFx.render(drawDtS);
+          virtualMirror.draw();
+          startupMonitor?.end("render");
+          if (captureWaiting) {
+            const take = captureWaiting;
+            captureWaiting = null;
+            take(renderer.domElement);
+          }
+          if (!loggedFirstFrame) {
+            loggedFirstFrame = true;
+            if (process.env.NODE_ENV !== "production") {
+              // The frame right after the loading screen: it stalls when the warm-up missed something
+              renderer.getContext().finish();
+              console.info(`[load] first visible frame: ${(performance.now() - t0).toFixed(0)} ms`);
+            }
           }
         }
       }
+
+      // Automatic quality: judged on the frames drawn while driving (not paused, in a menu or a replay)
+      if (driving && settingsNow.graphics.autoQuality && !inVr) {
+        governorFed = true;
+        if (draw) {
+          const event = governor.frame(nowMs, drawIntervalMs, frameBudgetMs(pacer.cap, displayRate.intervalMs));
+          if (event) onQualityEvent(event, nowMs);
+        }
+      } else if (governorFed) {
+        governorFed = false;
+        governor.interrupt();
+      }
+      // The bug report's frame rate: the same frames, whether or not the automatic quality is on
+      if (driving && draw && !inVr) noteDrivingFrame(drawIntervalMs, nowMs);
 
       // Paused, the car is frozen but the pause menu (and the HUD under it) would still re-render at 30 Hz for nothing;
       // 4 Hz keeps what can still move there (remote players) current
       if (nowMs - lastHudSyncMs > (frozen ? 250 : 33)) {
         lastHudSyncMs = nowMs;
+        // What the player steered with against what the wheels did, for the input trace
+        const steerSource = physics.steeringAssist.source;
+        const steerInput = !driving
+          ? undefined
+          : steerSource === "keyboard"
+            ? kbSteerDir
+            : steerSource === "controller"
+              ? (gamepadStick ?? 0)
+              : (directSteer ?? 0);
         setTelemetry({
           ...physics.telemetry,
+          steerInput,
+          steerLockDeg: physics.maxSteerAngleRad * (180 / Math.PI),
           tireTempsC: [...physics.telemetry.tireTempsC],
           brakeTempsC: [...physics.telemetry.brakeTempsC],
           wheelSlipRatios: [...physics.telemetry.wheelSlipRatios],
@@ -2406,20 +3348,46 @@ export class DriveSession {
       }
     };
 
+    // `?perf=1`: each frame's own time on the page, whether it drew, and what the game was doing, for the report
+    const timedAnimate = (nowMs: number) => {
+      const startMs = performance.now();
+      frameSimMs = 0;
+      animate(nowMs);
+      if (!sessionPerf) return;
+      const phase: PerfPhase =
+        appPhaseNow === "loading"
+          ? "load"
+          : appPhaseNow !== "driving"
+            ? "menu"
+            : replay.active
+              ? "replay"
+              : this.snapshot.paused || this.snapshot.seatPanel
+                ? "pause"
+                : "drive";
+      sessionPerf.frame(nowMs, lastDrawMs === nowMs, phase, performance.now() - startMs, frameSimMs);
+    };
     // setAnimationLoop runs on window rAF normally and on the headset's frame loop in VR
-    renderer.setAnimationLoop(animate);
+    renderer.setAnimationLoop(sessionPerf ? timedAnimate : animate);
 
     this.teardown = () => {
       disposed = true;
+      // A context the browser gave back after a loss holds none of this session's GPU objects: let go of it first, and
+      // the disposals below are no-ops instead of a WebGL warning each
+      const gl = renderer.getContext();
+      if (gpuLost && !gl.isContextLost()) gl.getExtension("WEBGL_lose_context")?.loseContext();
       unsubscribeAssets();
       window.clearInterval(assetWatchdog);
       renderer.setAnimationLoop(null);
       void renderer.xr.getSession()?.end();
       haptics.stop();
+      dualSense.stop();
       opponentAudio.dispose();
+      menuIdle.dispose();
       wheelFfb.dispose();
       simHost?.dispose();
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      renderer.domElement.removeEventListener("webglcontextlost", onContextLost);
+      renderer.domElement.removeEventListener("webglcontextrestored", onContextRestored);
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("blur", onWindowBlur);
@@ -2440,8 +3408,11 @@ export class DriveSession {
       rainFx.dispose();
       virtualMirror.dispose();
       floorSparks.dispose();
+      setKtx2Renderer(null);
       renderer.dispose();
       audio?.dispose();
+      // The music plays on into the next circuit's session (or the menus)
+      stopNowPlaying();
     };
   }
 

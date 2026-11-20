@@ -1,0 +1,142 @@
+"use client";
+
+import React, { useId } from "react";
+import { focusOnHover } from "@/components/menu/useFocusNav";
+import { Icon } from "@/components/ui/icons/Icon";
+import { CHOSEN_TILE, cx, IDLE_TILE, MOTION } from "@/components/ui/styles";
+import { BUILT_IN_HUD_LAYOUTS, THIRD_PARTY_HUD_LAYOUTS, type HudLayoutInfo, type HudPreset } from "@/lib/settings/hud-layouts";
+import { HudPreview } from "./hud-preview";
+
+/** The third-party layouts as plain entries (the list may be empty in a build without them) */
+const THIRD_PARTY: readonly HudLayoutInfo<HudPreset>[] = THIRD_PARTY_HUD_LAYOUTS;
+
+/** The cursor on a layout tile: the kit's tile cursor (volt edge and halo), shown on the tile while its radio has focus */
+const TILE_CURSOR = cx(
+  "has-[[role=radio]:focus]:border-lc-volt has-[[role=radio]:focus]:inset-ring has-[[role=radio]:focus]:inset-ring-lc-volt",
+  "has-[[role=radio]:focus]:shadow-lc-focus",
+);
+
+/**
+ * Tiles by the picker's own width: two across, three, or a group's five in one row, so a group never ends on a lone
+ * tile (each tile stays wide enough for its picture to read)
+ */
+const GRID = "grid grid-cols-2 gap-2 @min-[480px]:grid-cols-3 @min-[620px]:grid-cols-5";
+
+/**
+ * One layout: its picture and name, the whole tile one tap to choose. A third-party layout adds "by <author>", a link
+ * to its source that sits over the tile (a link can't live inside the radio button); the D-pad skips the link, Tab and
+ * the pointer reach it.
+ */
+function LayoutTile({
+  layout,
+  checked,
+  onSelect,
+  navDefault,
+}: {
+  layout: HudLayoutInfo<HudPreset>;
+  checked: boolean;
+  onSelect: (id: HudPreset) => void;
+  navDefault?: boolean;
+}) {
+  const credit = layout.credit;
+  return (
+    <div
+      className={cx(
+        "group relative flex min-w-0 flex-col gap-2 rounded-lc-tile border-[1.5px] p-1.5 pb-2.5",
+        MOTION,
+        checked ? CHOSEN_TILE : IDLE_TILE,
+        TILE_CURSOR,
+      )}
+    >
+      <button
+        type="button"
+        role="radio"
+        aria-checked={checked}
+        aria-description={credit ? `${layout.detail}. By ${credit.author}` : layout.detail}
+        data-own-ring=""
+        data-nav-default={navDefault ? "" : undefined}
+        onPointerEnter={focusOnHover}
+        onClick={() => {
+          if (!checked) onSelect(layout.id);
+        }}
+        className={cx(
+          "flex min-w-0 cursor-pointer flex-col gap-2 text-left outline-none",
+          // The whole tile is the button's hit area
+          "after:absolute after:inset-0 after:rounded-lc-tile after:content-['']",
+        )}
+      >
+        <span className="block overflow-hidden rounded-lc-nub inset-ring inset-ring-white/6">
+          <HudPreview preset={layout.id} />
+        </span>
+        <span className="flex min-w-0 items-start justify-between gap-2 px-1">
+          <span className={cx("min-w-0 truncate text-[15px] leading-tight font-semibold", checked ? "text-lc-chalk" : "text-lc-fog")}>
+            {layout.label}
+          </span>
+          {checked ? <Icon name="success" className="mt-px shrink-0 text-lc-chalk" /> : null}
+        </span>
+      </button>
+      {credit ? (
+        <a
+          href={credit.repoUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-nav-skip=""
+          aria-label={`${layout.label} source, by ${credit.author} (opens in a new tab)`}
+          className={cx(
+            "relative z-10 -mt-1 mr-auto ml-1 inline-flex max-w-full min-w-0 items-center gap-1 rounded-sm text-[12px] leading-tight text-lc-slate",
+            "underline decoration-lc-keyline underline-offset-2 hover:text-lc-chalk hover:decoration-lc-chalk",
+            "focus-visible:text-lc-chalk focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lc-volt",
+            "pointer-coarse:min-h-11",
+          )}
+        >
+          <span className="truncate">by {credit.author}</span>
+          <Icon name="externalLink" size="xs" className="size-3 shrink-0" />
+        </a>
+      ) : null}
+    </div>
+  );
+}
+
+/** Which layouts a touch screen shows, for the pickers on one */
+export const HUD_TOUCH_NOTE = "Phones use the touch layout. On a tablet with touch controls, the third-party layouts keep their look.";
+
+export interface HudLayoutPickerProps {
+  value: HudPreset;
+  onChange: (id: HudPreset) => void;
+  /** The chosen tile is where a controller lands when the picker's screen opens */
+  navDefault?: boolean;
+  className?: string;
+}
+
+/**
+ * Every HUD layout as a grid of pictures, the game's own first, then the third-party ones with their authors. One tap,
+ * click, Enter or A chooses; the chosen tile has the white edge and the check. The Settings screen, the pause menu and
+ * first-run setup all draw this one picker.
+ */
+export function HudLayoutPicker({ value, onChange, navDefault, className }: HudLayoutPickerProps) {
+  const headingId = useId();
+  return (
+    <div role="radiogroup" aria-label="HUD layout" className={cx("@container flex flex-col gap-4", className)}>
+      <div className={GRID}>
+        {BUILT_IN_HUD_LAYOUTS.map((l) => (
+          <LayoutTile key={l.id} layout={l} checked={value === l.id} onSelect={onChange} navDefault={navDefault && value === l.id} />
+        ))}
+      </div>
+      {THIRD_PARTY.length ? (
+        <div role="group" aria-labelledby={headingId} className="flex flex-col gap-2.5">
+          <div className="flex flex-col gap-1 px-0.5">
+            <h3 id={headingId} className="lc-row-label m-0">
+              Third-party
+            </h3>
+            <p className="lc-hint m-0">Recreated from other open-source HUD projects, credited to their authors.</p>
+          </div>
+          <div className={GRID}>
+            {THIRD_PARTY.map((l) => (
+              <LayoutTile key={l.id} layout={l} checked={value === l.id} onSelect={onChange} navDefault={navDefault && value === l.id} />
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}

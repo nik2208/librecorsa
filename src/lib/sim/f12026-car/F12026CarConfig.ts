@@ -96,6 +96,36 @@ export interface ChassisData {
   steerComplianceDegPerKN?: number;
   /** Hydraulic power steering; none = an unassisted rack */
   powerSteering?: PowerSteeringData;
+  /**
+   * The body's plan for barrier contact: points round its right half, [half width, z from the axles' midpoint] (m, z
+   * forward), mirrored to the left. Measured from the car's model where its rig fits it on this chassis (axle midpoint on
+   * the physics'), the body from 8 cm to 0.8 m off its floor; the tyres are added to it. Absent: an outline built from
+   * the axles, tyres and wings (an open-wheel car's)
+   */
+  bodyPlan?: readonly (readonly [number, number])[];
+  /**
+   * The chassis twisting between its front and rear axle structures (`ChassisTorsionData`). Absent: an infinitely stiff
+   * body, the axles' roll stiffnesses alone sharing the load transfer
+   */
+  chassisTorsion?: ChassisTorsionData;
+}
+
+/**
+ * Finite torsional stiffness between the front and rear axle structures, about the body's roll axis. It sits in series
+ * with each axle's roll stiffness, so a softer chassis moves lateral load transfer away from the stiffer axle and lets
+ * one corner of a diagonal (a kerb under one front wheel) unload less. One degree of freedom: the front structure rolls
+ * by (1 − `frontRollInertiaShare`) of the twist and the rear by −`frontRollInertiaShare` of it, so the mean roll is the
+ * rigid body's
+ */
+export interface ChassisTorsionData {
+  /** Torsional stiffness between the axle structures (Nm/deg) */
+  torsionalStiffnessNmPerDeg: number;
+  /** Structural damping of the twist (Nms/deg) */
+  torsionalDampingNmsPerDeg: number;
+  /** Share of the body's roll inertia in the front structure (0.35..0.65); default 0.46 */
+  frontRollInertiaShare?: number;
+  /** Largest twist the structure takes (deg); default 2.5 */
+  maxTwistDeg?: number;
 }
 
 /**
@@ -144,6 +174,19 @@ export interface EngineData {
   wetPedalMap?: boolean;
   /** Turbocharger; absent: naturally aspirated */
   turbo?: TurboData;
+  /**
+   * A regulated limit on the power the driven axle's shafts carry, engine and hybrid motor together, as the torque
+   * sensors on an LMDh car's driveshafts enforce it: `curve` is that power against engine speed (rpm → kW after the
+   * gearbox's losses), × `vsSpeedKmh` at the road speed where the limit moves with it (km/h → ×, a balance-of-performance
+   * table's speed bands). The engine gives way first: while the motor deploys, the combustion torque is trimmed until the
+   * sum sits on the limit, so deploying adds no power there. Absent: no limit
+   */
+  outputPowerCap?: { curve: LutPoints; vsSpeedKmh?: LutPoints };
+  /**
+   * Ram-air intake: the airbox's dynamic pressure q = ½ρv² adds `ramAirGainPerKPa` × q (kPa) to the cylinders' torque,
+   * before any output cap. Absent: none
+   */
+  ramAirGainPerKPa?: number;
   idleRpm: number;
   /** Crank + flywheel + MGU-K/H rotor inertia reflected to the crank (kg·m²) */
   inertia: number;
@@ -172,11 +215,24 @@ export interface TurboData {
   spoolDownS: number;
   /** Gauge pressure shown at full boost (bar), for the HUD and the sound */
   displayMaxBoostBar: number;
+  /**
+   * The throttle works inside the power law: the boost asked for is maxBoost·(plate·rpm / referenceRpm)^gamma, so a
+   * part-open throttle makes far less boost than its share of the full-load boost, and the torque at part throttle is
+   * plate × the unboosted curve × (1 + that boost). Unset: the boost asked for is the plate's share of the full-load
+   * boost, and the torque the plate's share of the boosted curve
+   */
+  throttleInBoostLaw?: boolean;
 }
 
 /** Full-load steady-state boost of `turbo` at `rpm` */
 export function turboSteadyBoost(turbo: TurboData, rpm: number): number {
   return Math.min(turbo.maxBoost, turbo.maxBoost * Math.max(0, rpm / turbo.referenceRpm) ** turbo.gamma);
+}
+
+/** The steady-state boost `turbo` asks for at `rpm` with the throttle plate at `plate` (0..1) */
+export function turboBoostAsked(turbo: TurboData, rpm: number, plate: number): number {
+  if (!turbo.throttleInBoostLaw) return turboSteadyBoost(turbo, rpm) * plate;
+  return turbo.maxBoost * Math.min(1, Math.max(0, (plate * rpm) / turbo.referenceRpm)) ** turbo.gamma;
 }
 
 export interface ERSData {
@@ -201,6 +257,15 @@ export interface ERSData {
   liftThrottle: number;
   /** Harvest power while lifting in top gear (W, before the mode scale) */
   topGearLiftHarvestW: number;
+  /**
+   * The lift harvest in every gear, not in top gear alone: `topGearLiftHarvestW` × the mode's scale with the pedal
+   * shut, easing to nothing as the pedal reaches `liftThrottle`, and never more than `maxAxleTorqueNm` at the driven
+   * axle (Nm), which at low speed holds it to what the tyres there carry on a lift. The same power in every gear is the
+   * same force at the wheels, so a lift slows the car alike whichever gear it is in. The brake pedal keeps it (as it
+   * keeps the engine's overrun) until the pedal's own harvest is the greater, so a touch of the brake never slows the
+   * car less than the lift did. Absent: top gear only, the whole of it below `liftThrottle`, and none on the brake
+   */
+  liftHarvestEveryGear?: { maxAxleTorqueNm: number };
   /** Deploy multiplier by gear (gear number → 0..1, the source's per-gear table); default 1 in every gear */
   deployVsGear?: LutPoints;
 }
@@ -354,6 +419,22 @@ export interface DifferentialData {
   hiSpdSwitchKmh?: number;
 }
 
+/**
+ * Four-wheel drive through a centre coupling (Assetto Corsa's AWD2 layout): the engine drives the primary axle
+ * (`CarPhysicsConfig.drivenAxle`) through the clutch and `differential`, and a coupling on that axle's drive hands the
+ * other axle torque as the primary axle's wheels run ahead of it: `rampNmPerRadS` per rad/s by which the primary axle's
+ * mean wheel speed exceeds the secondary's, up to `maxTorqueNm`, both at the axles (rad/s of the wheels, Nm on the
+ * axle). It works one way, in the drive direction while the engine drives (an electronically controlled clutch engaged
+ * by the primary axle's wheelspin, as ATTESA E-TS): a secondary axle running ahead (its longer path round a corner, a
+ * smaller rolling radius) gets nothing, and the coupling lets go off the throttle and on the brakes. The secondary axle
+ * has its own differential
+ */
+export interface AwdData {
+  centre: { rampNmPerRadS: number; maxTorqueNm: number };
+  /** The secondary axle's differential: locking = preload + power / coast × the torque the coupling hands it */
+  secondaryDiff: DifferentialSettingsUnits;
+}
+
 export interface BrakesData {
   /** Brake torque at full pedal before the bias split (Nm per wheel pair-equivalent) */
   maxTorqueNm: number;
@@ -368,20 +449,44 @@ export interface BrakesData {
   handbrakeTorqueNm?: number;
   /** One EBB step moves the bias this much (0..1) */
   ebbStep: number;
-  /** Disc / pad material for the brake thermal model and pad μ(T) (default carbon-carbon, F1) */
-  discMaterial?: 'carbon-ceramic' | 'endurance-steel';
+  /**
+   * Disc / pad material for the brake thermal model and pad μ(T): F1 carbon-carbon (`'carbon-ceramic'`, the default),
+   * prototype carbon-carbon with its weak cold bite (`'endurance-carbon'`), or iron discs (`'endurance-steel'`)
+   */
+  discMaterial?: 'carbon-ceramic' | 'endurance-carbon' | 'endurance-steel';
   /**
    * The pads' friction against disc temperature (°C → share of `maxTorqueNm`, linear between points, held past the
    * ends), in place of the material's built-in curve. Pad glazing still acts on top. Absent: the material's curve
    */
   padMuCurve?: LutPoints;
-  /** Disc temperature the car starts and restarts with (°C); default 380 */
+  /** Disc temperature the car starts and restarts with (°C), and on a rolling start; default 380 */
   discStartTempC?: number;
   /**
-   * Brake-by-wire migration: the bias moves forward by `amount` at full pedal, starting at `rampStart` of the pedal
-   * travel (BRAKE_MIGRATION + BMIG_RAMP). Default 0.015 from the first of the travel
+   * Disc temperature leaving the garage on a cold start (°C): the full realism level starts a car with this from the
+   * pits or a standing grid it reached from the garage. Absent: the car always starts at `discStartTempC`
    */
-  migration?: { amount: number; rampStart: number };
+  garageDiscTempC?: number;
+  /** New disc thickness, front and rear (mm); the discs lose heat capacity as they wear thinner. Default the material's */
+  discThicknessMm?: { front: number; rear: number };
+  /**
+   * The cooling air the rear discs get against the front's (0..1), on top of the garage's duct setting: rear ducts
+   * blanked down on a car whose MGU-K takes most of the rear axle's braking, so the rear discs keep the heat of the
+   * little work left to them. Absent: 1, the front's airflow
+   */
+  rearDuctShare?: number;
+  /**
+   * The cooling air both axles' discs get against the material's own ducts (0..1, on top of the garage's duct setting
+   * and `rearDuctShare`): a car with smaller ducts than the ones the material's model is set for, so its discs run in
+   * the temperature range its pads are made for. Absent: 1
+   */
+  ductShare?: number;
+  /**
+   * Brake-by-wire migration: the bias moves forward by `amount` at full pedal, starting at `rampStart` of the pedal
+   * travel (BRAKE_MIGRATION + BMIG_RAMP), along the pedal's share past the ramp raised to `exponent` (default 1, a
+   * straight line; above 1 the shift comes off early as the driver releases into the corner). Default 0.015 from the
+   * first of the travel
+   */
+  migration?: { amount: number; rampStart: number; exponent?: number };
 }
 
 // ---------------------------------------------------------------------------
@@ -411,9 +516,14 @@ export interface DamperControllerData {
   heaveFastReboundThresholdMs?: number;
 }
 
-/** `BumpStopSettingsUnits` */
+/**
+ * `BumpStopSettingsUnits`: a microcellular urethane bump rubber. Its force is elastic (rate, progression) plus a
+ * damping that grows the deeper it is squeezed; coming back out it gives back only part of its elastic force and of
+ * that damping (the rubber's hysteresis loop), so a car bouncing off a kerb on its stops loses energy each time instead
+ * of being thrown back up
+ */
 export interface BumpStopSettingsUnits {
-  /** Free travel from static ride height to bump-rubber contact (m) */
+  /** Free travel from static ride height to bump-rubber contact (m), before any corner packer */
   range: number;
   /** Bump-rubber rate at the wheel (N/m), progressive with `progression` */
   rate: number;
@@ -421,6 +531,16 @@ export interface BumpStopSettingsUnits {
   progression: number;
   /** A second stop further up the travel (m from static ride) adding its own rate (N/m at the wheel) */
   hardStop?: { range: number; rate: number };
+  /** Packer shims on the damper shaft taking free travel off `range` (m); the garage adds its own. Default 0 */
+  packerGap?: number;
+  /** Damping in the rubber at contact (Ns/m at the wheel); default 2400 */
+  damper?: number;
+  /** Damping added per metre the rubber is squeezed (Ns/m²); default 60 000 */
+  risingDamper?: number;
+  /** Share of the elastic force the rubber gives back while extending (0.2..1); default 0.55 */
+  reboundElasticShare?: number;
+  /** Share of its damping it keeps while extending (0..0.5); default 0.15 */
+  reboundDamperShare?: number;
 }
 
 /** `SuspensionSettingUnits` */
@@ -472,6 +592,14 @@ export interface AxleSuspensionData {
   rollCentreHeight: number;
   /** Anti-roll bar rate at the wheel (`MechanicalBalanceUnits.arbs`, N/m) */
   arb: number;
+  /** The garage may disconnect this anti-roll bar altogether (0 N/m), below its softest blade setting */
+  allowNoArb?: boolean;
+  /**
+   * How fast the spring's and damper's leverage over the wheel grows with bump (per m of wheel travel, 1 at static):
+   * a pushrod or pullrod rocker's rising rate, the wheel rate × leverage² and the damper's force × leverage at a shaft
+   * speed × leverage. 0: a coilover whose leverage stays put. Default by `actuation`: 1.35 pullrod, 1.15 pushrod
+   */
+  rockerProgressivityPerM?: number;
   /**
    * 3D wishbone + steering link pickup coordinates `[x_inboard, y_up, z_fwd]` from the wheel center (m):
    * `[WBCAR_TOP_FRONT, WBCAR_TOP_REAR, WBCAR_BOTTOM_FRONT, WBCAR_BOTTOM_REAR, WBTYRE_TOP, WBTYRE_BOTTOM, WBCAR_STEER?, WBTYRE_STEER?]`
@@ -513,6 +641,13 @@ export interface WingData {
    */
   lutYaw_CL_mult?: LutPoints;
   lutYaw_CD_mult?: LutPoints;
+  /**
+   * Height of this element's drag above the CG, body frame (m). When any element has one, the total drag acts at the
+   * height its parts give it as they stand (flaps open or shut, ride heights, yaw), with the bodywork's drag at
+   * `AeroData.dragCentreY` and an element without a height there too. Absent on every element: all the drag at
+   * `dragCentreY`
+   */
+  dragY?: number;
 }
 
 /** `ZoneData_DRSZone` (fractions of a lap) */
@@ -532,7 +667,8 @@ export interface AeroData {
   /**
    * Height of the total drag's line of action above the CG, body frame (m). Wings, wheels and body each drag at their
    * own height, so the sum pitches the car (nose up when it acts above the CG). Absent: through the CG, no pitch moment.
-   * Set it for wing-element aero; a ride-height map whose balance is an axle split already carries the drag's moment
+   * Set it for wing-element aero; a ride-height map whose balance is an axle split already carries the drag's moment.
+   * With `WingData.dragY` on the elements it is the height of the bodywork's drag alone
    */
   dragCentreY?: number;
   wings: WingData[];
@@ -546,6 +682,20 @@ export interface AeroData {
    * the skids sit on the floor reference plane under the axles.
    */
   plank?: { y: number; frontZ: number; rearZ: number };
+  /**
+   * The skid block's contact and wear (`ExponentialPlankData`). Absent: a stiff linear contact that never wears
+   */
+  plankPhysics?: ExponentialPlankData;
+  /**
+   * What the garage's brake ducts and radiator opening cost in drag and downforce (`AeroCoolingCouplingData`). Absent:
+   * they change the cooling alone
+   */
+  cooling?: AeroCoolingCouplingData;
+  /**
+   * How hard this car's aero feels another car's wake (`AeroWakeCarSensitivity`), as multipliers on the wake's drag
+   * saving and downforce losses. Absent: 1 on each
+   */
+  wakeSensitivity?: AeroWakeCarSensitivity;
   /** DRS flap travel time (s) */
   drsTransitionS: number;
   /** DRS closes when the throttle falls below this (a lift), as well as on the brake */
@@ -557,6 +707,55 @@ export interface AeroData {
    * balance come from it, and `wings` only add their angle-dependent offsets on top
    */
   rhMap?: AeroRideHeightMap;
+}
+
+/**
+ * Drag and downforce of the cooling openings, per garage step away from the baseline (brake duct step 3, the
+ * radiator's baseline tape): an open duct spills the wheel arch's low pressure and drags more, a taped-up radiator
+ * drags less. The radiator's downforce change splits 65 / 35 front / rear
+ */
+export interface AeroCoolingCouplingData {
+  /** CD·A per front brake duct step (m²) */
+  brakeDuctFrontCdAPerStep: number;
+  /** CL·A per front brake duct step (m², + = downforce) */
+  brakeDuctFrontClAPerStep: number;
+  brakeDuctRearCdAPerStep: number;
+  brakeDuctRearClAPerStep: number;
+  /** CD·A per radiator opening step (m²) */
+  radiatorCdAPerStep: number;
+  /** CL·A per radiator opening step (m², + = downforce) */
+  radiatorClAPerStep: number;
+}
+
+/** Multipliers on the wake's effects on this car (1 = the wake model as it stands) */
+export interface AeroWakeCarSensitivity {
+  /** On the drag the wake saves */
+  dragWakeMult: number;
+  /** On the front's downforce loss */
+  frontLiftWakeMult: number;
+  /** On the rear's (underbody and diffuser) downforce loss: a ground-effect car loses more in dirty air */
+  diffuserDraftLiftMult: number;
+}
+
+/**
+ * A skid block that stiffens as it is pressed into the road (the resin, then the car's structure behind it) and wears
+ * with the work it slides against the road: k_lin·δ + (k_exp / β)(e^{βδ} − 1), the exponential capped at 25 mm
+ */
+export interface ExponentialPlankData {
+  /** Linear stiffness (N/m) */
+  kLinearNm: number;
+  /** Exponential stiffness at contact (N/m) */
+  kExpNm: number;
+  /** Exponential growth (1/m) */
+  betaPerM: number;
+  /** Contact damping (Ns/m) */
+  dampNsPerM: number;
+  /** Sliding friction against the road */
+  frictionMu: number;
+  /** New skid thickness above the wear limit (mm) */
+  initialWearMarginMm: number;
+  /** Wear per MJ of sliding work (mm/MJ) */
+  wearMmPerMJ: number;
 }
 
 /** 2D ride-height aero map: coefficients × area, scaled by 2D ride-height tables and by roll / yaw */
@@ -763,19 +962,60 @@ export interface TyresThermalPatchData {
    */
   tread?: { grainGain: number; grainGamma: number; blisterGain: number; blisterGamma: number; wearOffWithSlip?: boolean };
   /**
-   * Inflation pressure in the heat flow, with p = pressure / optimal − 1: the sliding heat × (1 − `slipGain` × p), the
-   * middle band's share of the heat × (1 + 2 × `crownGain` × p) and each shoulder's × (1 − `crownGain` × p) (an
-   * over-inflated tyre runs on its crown), and the rolling heat × the rolling-resistance factor of
-   * `TyresPressureData.pressureRollingGain` (a soft tyre flexes more and heats more). The bands' grip weighting is
-   * left alone. Absent: pressure does not move the heat
+   * Inflation pressure in the tyre, with p = pressure / optimal − 1: the sliding heat × (1 − `slipGain` × p), the rolling
+   * heat × the rolling-resistance factor of `TyresPressureData.pressureRollingGain` (a soft tyre flexes more and heats
+   * more), and the middle strip's share of the contact pressure + `crownGain` × p (an over-inflated tyre runs on its
+   * crown, an under-inflated one on its shoulders), which moves both the heat and the grip across the strips. Absent:
+   * pressure moves neither
    */
   pressureHeat?: { slipGain: number; crownGain: number };
   /**
-   * How the contact pressure, and with it the heat and the grip weighting, moves across the inner / middle / outer
-   * bands: the shift toward the inner shoulder per radian of camber leaning toward the car, and toward the outer one
-   * per unit of lateral force over load. Absent: 3.8 and 0.22
+   * The third rubber layer: each band is a tread surface over the tread's bulk (subsurface) over the carcass liner the
+   * inflation gas touches. Heat capacity of the bulk layer (J/K at the front tyre's size), on top of the liner's
+   * `coreHeatCapacity`. Absent: 0.62 × `coreHeatCapacity`
    */
-  bandSpread?: { camber: number; lateral: number };
+  subsurfaceHeatCapacity?: number;
+  /** Surface → bulk conductance (W/K); absent: 2.2 × `surfaceToCore` */
+  surfaceToSubsurfaceTransfer?: number;
+  /** Bulk → liner conductance (W/K); absent: 1.4 × `surfaceToCore` */
+  subsurfaceToCoreTransfer?: number;
+  /** Share of the sliding heat taken into the tyre that lands in the bulk rather than the flash surface; default 0.22 */
+  frictionHeatToSubsurface?: number;
+  /** Share of the rolling (hysteresis) heat made in the bulk rather than the liner; default 0.6 */
+  rollingHeatToSubsurface?: number;
+  /**
+   * The wheel rim and the inflation gas (`RimGasCavityThermalData`): the gas warmed by the carcass liner and by the rim
+   * the brake disc heats. Absent: typical 18" racing-wheel values
+   */
+  rimGas?: RimGasCavityThermalData;
+}
+
+/**
+ * The wheel and the air inside the tyre: the brake disc heats the rim by radiation and by the air in the barrel, the
+ * rim and the carcass liner heat the gas, the outside air cools the rim. The gas temperature sets the pressure
+ */
+export interface RimGasCavityThermalData {
+  /** Rim heat capacity (J/K) */
+  rimHeatCapacityJK: number;
+  /** Disc area facing the inner barrel (m²) */
+  rimBrakeOverlapAreaM2: number;
+  /** Disc → barrel radiation view factor × emissivity (0..1) */
+  discToRimEmissivity: number;
+  /** Disc → rim convection through the barrel air: g0 + g1·v (W/K, v in m/s) */
+  discToRimConvectionWK: readonly [number, number];
+  /** Rim → outside air: g0 + g1·v (W/K) */
+  rimToAmbientConvectionWK: readonly [number, number];
+  /** Rim → gas (W/K) */
+  rimToGasConductanceWK: number;
+  /** Carcass liner → gas (W/K) */
+  carcassToGasConductanceWK: number;
+  /** Gas heat capacity at constant volume (J/K) */
+  gasHeatCapacityJK: number;
+  /**
+   * The carcass stretches with pressure, so the gas's pressure rises less than its temperature: volume gain per psi.
+   * Default 0.0018
+   */
+  carcassVolumeStretchPerPsi?: number;
 }
 
 /** `TyresPressureData` */
@@ -800,6 +1040,12 @@ export interface TyresPressureData {
   pressureGripLossPerPsi?: number;
   /** Temperature the cold pressure is set at (°C, tyre blankets) */
   coldRefC: number;
+  /**
+   * A tyre raced without blankets, its cold pressure set at the garage's `coldRefC`: the temperature its tyres leave
+   * the garage at when the realism level warms them anyway, and on a rolling start (after a formation lap). Absent:
+   * blankets at `coldRefC`, whatever the level
+   */
+  blanketC?: number;
 }
 
 /** `TyresCamberData` + `TyreCompoundGeneratorGeneralData` contact-camber terms */
@@ -812,6 +1058,11 @@ export interface TyresCamberData {
   /** Lateral grip vs camber leaning into the force: 1 + dcamber0·γ + dcamber1·γ² (rad) */
   dcamber0: number;
   dcamber1: number;
+  /**
+   * Lateral grip against camber as a table, in place of the dcamber0 / dcamber1 parabola: degrees of camber (negative:
+   * the tyre's top leaning into the force) → grip multiplier. Absent: the parabola
+   */
+  dcamberLut?: LutPoints;
   /** Longitudinal grip vs camber magnitude: 1 + dcamber0_x·|γ| + dcamber1_x·γ² (rad) */
   dcamber0_x: number;
   dcamber1_x: number;
@@ -860,6 +1111,8 @@ export interface CarPhysicsConfig {
   screenName: string;
   /** The axle the engine drives through the clutch and differential; absent: the rear */
   drivenAxle?: 'front' | 'rear';
+  /** Four-wheel drive: the other axle is driven through a centre coupling (`AwdData`); absent: two-wheel drive */
+  awd?: AwdData;
   chassis: ChassisData;
   engine: EngineData;
   ers: ERSData;
@@ -873,6 +1126,34 @@ export interface CarPhysicsConfig {
   /** The car's compounds; `compoundSlots` picks one for each of the simulator's soft / medium / hard */
   tyreCompounds: Partial<Record<PhysicsTyreCompound, TyresCompoundData>>;
   compoundSlots: Record<CompoundSlot, PhysicsTyreCompound>;
+  /** A prototype's own hybrid controls in place of the performance modes (`EnduranceHybridDialsData`) */
+  hybridDials?: EnduranceHybridDialsData;
+  /**
+   * The homologated gear sets the garage chooses between (`ChassisSetup.gearRatioSet`), the first the one `gearbox`
+   * holds. Absent: the one set
+   */
+  gearSets?: ReadonlyArray<{ label: string; ratios: readonly number[]; reverse: number; finalDrive: number }>;
+}
+
+/**
+ * A prototype's hybrid as its driver runs it: the motor's deployment and the braking regeneration each on their own
+ * dial (kW caps), the battery's charge cycling between them, instead of an F1 car's combined modes. Deployment only
+ * above `minDeploySpeedKmh` (the class's balance of performance)
+ */
+export interface EnduranceHybridDialsData {
+  /** The deploy dial's steps (kW) and the one a car starts on */
+  deployStepsKw: ReadonlyArray<number>;
+  defaultDeployIndex: number;
+  /** The regeneration dial's steps (kW) and the one a car starts on */
+  regenStepsKw: ReadonlyArray<number>;
+  defaultRegenIndex: number;
+  /** No deployment below this road speed (km/h) */
+  minDeploySpeedKmh: number;
+  /**
+   * The charge the controller holds the battery about (0..1): above it the motor deploys at the shaft limit (the engine
+   * giving way), below it only where the engine leaves room. Default 0.5
+   */
+  socTarget?: number;
 }
 
 /** A compound of `config`, or an error when the car does not have it */
@@ -880,6 +1161,29 @@ export function compoundData(config: CarPhysicsConfig, compound: PhysicsTyreComp
   const data = config.tyreCompounds[compound];
   if (!data) throw new Error(`${config.screenName} has no ${compound}`);
   return data;
+}
+
+/**
+ * Whether a tyre's data has it raced on blankets: its cold pressure is set at a blanket's warmth (`coldRefC` 40 °C or
+ * more) rather than in the garage's air, and it is not one raced without them (`blanketC`)
+ */
+export function racesOnBlankets(p: TyresPressureData): boolean {
+  return p.blanketC === undefined && p.coldRefC >= 40;
+}
+
+/** The hottest a tyre blanket heats a tyre (°C) */
+export const TYRE_BLANKET_MAX_C = 80;
+
+/**
+ * The temperature a compound's tyres leave their blankets at: the data's own (`blanketC`, or `coldRefC` for a tyre
+ * raced on blankets); for a tyre whose data has none, the middle of its grip window, at most `TYRE_BLANKET_MAX_C`
+ */
+export function blanketTempC(t: TyresCompoundData): number {
+  const p = t.pressureData;
+  if (p.blanketC !== undefined) return p.blanketC;
+  if (racesOnBlankets(p)) return p.coldRefC;
+  const [lo, hi] = t.thermalData.optimalTempC;
+  return Math.min(TYRE_BLANKET_MAX_C, 0.5 * (lo + hi));
 }
 
 /**
@@ -897,6 +1201,7 @@ export function deriveRainCompound(
   name: string,
   f1Pack = false
 ): TyresCompoundData {
+  const unblanketed = !racesOnBlankets(base.pressureData);
   const th = base.thermalData;
   const peakC = 0.5 * (th.optimalTempC[0] + th.optimalTempC[1]);
   const traits = f1Pack ? f1RainTraits(kind, peakC) : WET_TYRE_TRAITS[kind];
@@ -940,11 +1245,27 @@ export function deriveRainCompound(
       thermalPerformanceCurve,
       optimalTempC: [th.optimalTempC[0] + traits.tempShiftC, th.optimalTempC[1] + traits.tempShiftC],
     },
-    pressureData: { ...base.pressureData, coldRefC: base.pressureData.coldRefC + 0.55 * traits.tempShiftC },
+    pressureData: rainPressure(base.pressureData, traits.tempShiftC),
     rearOverride: base.rearOverride
-      ? { ...base.rearOverride, modelData: scaleModel(base.rearOverride.modelData) }
+      ? {
+          ...base.rearOverride,
+          modelData: scaleModel(base.rearOverride.modelData),
+          pressureData: base.rearOverride.pressureData && unblanketed ? { ...base.rearOverride.pressureData, setPsi: undefined } : base.rearOverride.pressureData,
+        }
       : undefined,
   };
+}
+
+/**
+ * A rain tyre's pressures on its slick's: blanketed, the cooler blankets of its window; raced without blankets, the
+ * garage's same temperature, warmed to its cooler window where a level warms them, its cold pressure its own (the
+ * slick's set pressure is the slick's). A tyre set in the garage's air with no blankets at all (`coldRefC` under a
+ * blanket's warmth, no `blanketC`) keeps that air's temperature too
+ */
+function rainPressure(p: TyresPressureData, tempShiftC: number): TyresPressureData {
+  if (racesOnBlankets(p)) return { ...p, coldRefC: p.coldRefC + 0.55 * tempShiftC };
+  if (p.blanketC === undefined) return { ...p, setPsi: undefined };
+  return { ...p, setPsi: undefined, blanketC: p.blanketC + 0.55 * tempShiftC };
 }
 
 // ===========================================================================
@@ -1573,7 +1894,8 @@ function f1Compound(
       hysteresis: 0.0107,
       surfaceToCore: 40,
       surfaceCooling: [5, 0.6],
-      coreCooling: [8, 0.2],
+      // Through the sidewalls; the rest of the carcass's heat leaves through the gas and the rim [est]
+      coreCooling: [3, 0.08],
       thermalVerticalK: -0.0012,
       thermalVerticalRefC: 100,
       // GRAIN_GAIN / GRAIN_GAMMA, BLISTER_GAIN / BLISTER_GAMMA [ref_tyres.ini]; the graining wears off as the tread slides
@@ -1616,7 +1938,9 @@ function f1Compound(
         verticalDamping: 480.925,
       },
       camberData: { camberGain: 0.159, dcamber0: 1.211, dcamber1: -11.584 },
-      pressureData: { optimalPsi: 24, pressureSpringCurve: rateCurve(274_490, 15, 12_250) },
+      // Set 24.0 on the blankets: the rear discs average about 100 °C on a stint (the fronts about 460 °C), so the rear
+      // rims stay cool and hold the gas near its blanket temperature [est]
+      pressureData: { optimalPsi: 24, setPsi: 24, pressureSpringCurve: rateCurve(274_490, 15, 12_250) },
     },
   };
 }
@@ -1710,6 +2034,8 @@ export const F12026_CAR_CONFIG = {
     // at ≈ 26 Nm at the rim (above the ≈ 24 Nm of a 2.5 g corner at 200 km/h) and reaches a light 0.45 ratio 6 Nm
     // later, so the slow hairpins and parking get the help [est]
     powerSteering: { steeringRatio: 12.6, deadbandNm: 26, rampNm: 6, maxRatio: 0.45 },
+    // Torsional stiffness between the axle structures: a carbon tub, engine and gearbox as stressed members [est]
+    chassisTorsion: { torsionalStiffnessNmPerDeg: 50_000, torsionalDampingNmsPerDeg: 300, frontRollInertiaShare: 0.42 },
   },
   engine: F12026_ENGINE,
   ers: F12026_ERS,

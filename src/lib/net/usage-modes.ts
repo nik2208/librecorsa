@@ -15,6 +15,22 @@ export const MIN_USAGE_MINUTES = 0.5;
 export const MAX_USAGE_MINUTES = 240;
 
 /**
+ * Laps a report may claim per minute driven: the shortest circuit is under a kilometre, about 13 s a lap at a speed no
+ * car reaches there, so six a minute is more than any real stretch completes
+ */
+export const MAX_LAPS_PER_MINUTE = 6;
+
+/**
+ * The laps a report counts: a whole number of laps, at most six a minute of the (capped) minutes plus the one under way
+ * as it started; anything else (older builds send none) counts as none, and the rest of the report still counts
+ */
+export function usageLapsOf(raw: unknown, minutes: number): number {
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) return 0;
+  const cap = Math.floor(Math.min(Math.max(minutes, 0), MAX_USAGE_MINUTES) * MAX_LAPS_PER_MINUTE) + 1;
+  return Math.min(raw, cap);
+}
+
+/**
  * Extra fields a report may carry, each optional (older builds send none). Each one is added up on its own, per day:
  * never crossed with the circuit, the country or another extra, so together they can't single a player out.
  */

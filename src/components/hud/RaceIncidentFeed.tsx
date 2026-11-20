@@ -2,64 +2,140 @@
 
 import React from "react";
 import type { RaceControlFeedMessage } from "@/types/f1";
-import { HUD_BORDER, HUD_GREEN, HUD_RED, HUD_SLATE, HUD_WHITE, HUD_YELLOW } from "./hud-format";
+import { Badge, type BadgeTone } from "@/components/ui/Badge";
+import { Icon } from "@/components/ui/icons/Icon";
+import type { IconName } from "@/components/ui/icons/registry";
+import { FlagBadge } from "@/components/ui/badges/FlagBadge";
+import { FlagIcon } from "@/components/ui/badges/FlagIcon";
+import { PenaltyBadge } from "@/components/ui/badges/PenaltyBadge";
+import { HUD_GLASS, HUD_LBL } from "./hud-format";
+import { SkinBanner, skinCss, skinRootClass, SkinTag, type SkinTone, useHudSkin } from "./styles/third-party-skin";
 
-const TONES: Record<RaceControlFeedMessage["kind"], { bg: string; fg: string; badge: string; badgeFg: string; label: string }> = {
-  yellow: { bg: HUD_YELLOW, fg: "#08090D", badge: "#08090D", badgeFg: HUD_YELLOW, label: "FLAG" },
-  green: { bg: HUD_GREEN, fg: "#08090D", badge: "#08090D", badgeFg: HUD_GREEN, label: "FLAG" },
-  investigation: { bg: "rgba(8,9,13,0.9)", fg: HUD_WHITE, badge: HUD_YELLOW, badgeFg: "#08090D", label: "RC" },
-  penalty: { bg: HUD_RED, fg: HUD_WHITE, badge: HUD_WHITE, badgeFg: HUD_RED, label: "RC" },
-  warning: { bg: HUD_YELLOW, fg: "#08090D", badge: "#08090D", badgeFg: HUD_YELLOW, label: "RC" },
-  nfa: { bg: "rgba(8,9,13,0.86)", fg: HUD_WHITE, badge: "#1B1F2B", badgeFg: HUD_SLATE, label: "RC" },
-  retired: { bg: "rgba(8,9,13,0.9)", fg: HUD_WHITE, badge: HUD_RED, badgeFg: HUD_WHITE, label: "OUT" },
-  info: { bg: "rgba(8,9,13,0.86)", fg: HUD_WHITE, badge: "#1B1F2B", badgeFg: HUD_SLATE, label: "RC" },
+type Kind = RaceControlFeedMessage["kind"];
+
+/** The badge each call wears (word and icon), and the hairline of its pill */
+const BADGE: Record<Exclude<Kind, "yellow" | "green" | "warning">, { tone: BadgeTone; label: string; icon: IconName }> = {
+  investigation: { tone: "warn", label: "Investigation", icon: "search" },
+  penalty: { tone: "bad", label: "Penalty", icon: "penalty" },
+  nfa: { tone: "neutral", label: "No action", icon: "info" },
+  retired: { tone: "bad", label: "Out", icon: "damage" },
+  info: { tone: "neutral", label: "Race control", icon: "info" },
+};
+
+const RING: Record<Kind, string> = {
+  yellow: "inset-ring-lc-caution/60",
+  green: "inset-ring-lc-gain/60",
+  investigation: "inset-ring-lc-caution/60",
+  penalty: "inset-ring-lc-loss/70",
+  warning: "inset-ring-lc-caution/60",
+  nfa: "inset-ring-white/7",
+  retired: "inset-ring-lc-loss/70",
+  info: "inset-ring-white/7",
+};
+
+const SKIN_CALL: Record<Kind, { tone: SkinTone; label: string; icon: IconName }> = {
+  yellow: { tone: "caution", label: "Yellow", icon: "warning" },
+  green: { tone: "gain", label: "Green", icon: "success" },
+  warning: { tone: "caution", label: "Warning", icon: "warning" },
+  investigation: { tone: "caution", label: "Investigation", icon: "search" },
+  penalty: { tone: "loss", label: "Penalty", icon: "penalty" },
+  nfa: { tone: "default", label: "No action", icon: "info" },
+  retired: { tone: "loss", label: "Out", icon: "damage" },
+  info: { tone: "info", label: "Race control", icon: "info" },
+};
+
+const CallBadge: React.FC<{ kind: Kind; text?: string }> = ({ kind, text }) => {
+  if (kind === "yellow") return <FlagBadge flag={text === "Double yellow" ? "doubleYellow" : "yellow"} variant="solid" size="sm" />;
+  if (kind === "green") return <FlagBadge flag="green" variant="solid" size="sm" />;
+  if (kind === "warning") return <PenaltyBadge penalty={{ kind: "warning" }} variant="solid" size="sm" />;
+  const b = BADGE[kind];
+  return (
+    <Badge tone={b.tone} variant="solid" size="sm" icon={b.icon}>
+      {b.label}
+    </Badge>
+  );
 };
 
 /** Race control's latest calls in an AI race: flags, contact investigations, penalties, retirements */
-export const RaceIncidentFeed: React.FC<{ messages: RaceControlFeedMessage[] | undefined; yellow?: boolean }> = ({ messages, yellow }) => {
+export const RaceIncidentFeed: React.FC<{
+  messages: RaceControlFeedMessage[] | undefined;
+  yellow?: boolean;
+  /** The yellow is a double yellow */
+  doubleYellow?: boolean;
+  /** Blue flag: the code of the car lapping the player */
+  blueFlag?: string;
+}> = ({ messages, yellow, doubleYellow, blueFlag }) => {
+  const skin = useHudSkin();
   const latest = messages?.[0];
   if (!latest) {
-    // The flag stays up while the player is in the zone, after its message has gone
-    if (!yellow) return null;
+    // The flag stays up while the player is in the zone, after its message has gone; a blue flag while the car is behind
+    const flag = doubleYellow ? "doubleYellow" : yellow ? "yellow" : blueFlag ? "blue" : null;
+    if (!flag) return null;
+    if (skin === "blocks") return null;
+    const words = flag === "blue" ? `Let ${blueFlag} through` : flag === "doubleYellow" ? "Slow down · no overtaking" : "No overtaking";
+    const blue = flag === "blue";
+    if (skin !== null) {
+      return (
+        <SkinBanner role="status" tone={blue ? "info" : "caution"} cut="sm" className="relative mt-1 inline-flex h-8 items-center gap-2 pr-3 pl-2">
+          <SkinTag tone={blue ? "info" : "caution"} filled className="px-2 py-0.5 text-[11px] font-bold uppercase">
+            <FlagIcon flag={flag} size={14} />
+            {blue ? "Blue" : flag === "doubleYellow" ? "Double yellow" : "Yellow"}
+          </SkinTag>
+          <span className="text-[14px] font-bold whitespace-nowrap uppercase">{words}</span>
+        </SkinBanner>
+      );
+    }
     return (
       <div
         role="status"
-        className="relative mt-1 inline-flex h-9 items-center gap-2 rounded-full pr-4 pl-1.5 shadow-[0_10px_28px_rgba(0,0,0,0.4)]"
-        style={{ backgroundColor: HUD_YELLOW, color: "#08090D" }}
+        className={`relative mt-1 inline-flex h-8 items-center gap-2 rounded-full pr-3.5 pl-1.5 text-lc-chalk inset-ring ${blue ? "inset-ring-lc-info/60" : RING.yellow} ${HUD_GLASS}`}
       >
-        <span className="inline-flex h-6 items-center rounded-full bg-[#08090D] px-2 font-f1-mono text-[9px] font-extrabold tracking-[0.14em] text-[#FFB300]">
-          FLAG
-        </span>
-        <span className="lc-disp text-[15px] whitespace-nowrap">Yellow · no overtaking</span>
+        <FlagBadge flag={flag} variant="solid" size="sm" />
+        <span className="lc-disp text-[13px] whitespace-nowrap">{words}</span>
       </div>
     );
   }
-  const tone = TONES[latest.kind];
+  // Bad news and cautions interrupt; the rest is read when convenient. Only bad news pulses (a crimson halo)
+  const urgent = latest.kind === "penalty" || latest.kind === "retired" || latest.kind === "yellow" || latest.kind === "warning" || latest.kind === "investigation";
+  const bad = latest.kind === "penalty" || latest.kind === "retired";
+  if (skin !== null) {
+    const call = SKIN_CALL[latest.kind];
+    return (
+      <div className={`flex flex-col items-center gap-1 ${skinRootClass(skin) ?? ""}`}>
+        <SkinBanner
+          key={latest.id}
+          role={urgent ? "alert" : "status"}
+          tone={call.tone}
+          cut="sm"
+          className={`relative mt-1 inline-flex min-h-8 items-center gap-2 py-1 pr-3 pl-2 ${bad ? "lc-alert" : ""}`}
+        >
+          <SkinTag tone={call.tone} filled className="px-2 py-0.5 text-[11px] font-bold uppercase">
+            <Icon name={call.icon} size="xs" />
+            {call.label}
+          </SkinTag>
+          <span className="flex min-w-0 flex-col leading-tight">
+            <span className="text-[13px] font-bold whitespace-nowrap sm:text-[14px]">{latest.text}</span>
+            {latest.detail ? <span className={`text-[10px] uppercase ${skinCss.inkDim}`}>{latest.detail}</span> : null}
+          </span>
+        </SkinBanner>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col items-center gap-1">
       <div
         key={latest.id}
-        role="alert"
-        className="lc-alert relative mt-1 inline-flex min-h-11 items-center gap-3 rounded-full py-1.5 pr-5 pl-2 shadow-[0_12px_34px_rgba(0,0,0,0.4)]"
-        style={{ backgroundColor: tone.bg, color: tone.fg, border: tone.bg.startsWith("rgba") ? `1px solid ${HUD_BORDER}` : undefined }}
+        role={urgent ? "alert" : "status"}
+        className={`relative mt-1 inline-flex min-h-9 items-center gap-2 rounded-full py-1 pr-4 pl-1.5 text-lc-chalk inset-ring ${RING[latest.kind]} ${
+          bad ? "lc-alert" : ""
+        } ${HUD_GLASS}`}
       >
-        <span
-          className="inline-flex h-7 shrink-0 items-center rounded-full px-2.5 font-f1-mono text-[10px] font-extrabold tracking-[0.14em]"
-          style={{ backgroundColor: tone.badge, color: tone.badgeFg }}
-        >
-          {tone.label}
-        </span>
+        <CallBadge kind={latest.kind} text={latest.text} />
         <span className="flex min-w-0 flex-col leading-tight">
-          <span className="lc-disp text-[16px] whitespace-nowrap sm:text-[18px]">{latest.text}</span>
-          {latest.detail ? <span className="font-f1-mono text-[10px] font-extrabold tracking-[0.12em] uppercase opacity-75">{latest.detail}</span> : null}
+          <span className="lc-disp text-[14px] whitespace-nowrap sm:text-[15px]">{latest.text}</span>
+          {latest.detail ? <span className={`${HUD_LBL} text-lc-fog`}>{latest.detail}</span> : null}
         </span>
       </div>
-      {messages && messages[1] ? (
-        <span className="font-f1-mono text-[10px] font-extrabold tracking-[0.12em] text-[#8E96AA] uppercase">
-          {messages[1].text}
-          {messages[1].detail ? ` · ${messages[1].detail}` : ""}
-        </span>
-      ) : null}
     </div>
   );
 };

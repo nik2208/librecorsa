@@ -18,7 +18,14 @@ import {
 import { AMG_GT3_SOUND } from "../src/lib/sim/gt3/AmgGt3Sim";
 import { SUZUKI_LIANA_SOUND } from "../src/lib/sim/road/SuzukiLianaSim";
 import { MTR_496R_SOUND } from "../src/lib/sim/proto/Mtr496rSim";
-import type { Vf26AudioManifest } from "../src/lib/sim/vf26-audio";
+import { LC_LMDH_SOUND } from "../src/lib/sim/proto/LcLmdhSim";
+import { NISSAN_R33_SOUND } from "../src/lib/sim/classic/NissanR33Sim";
+import { NISSAN_R32_SOUND } from "../src/lib/sim/classic/NissanR32Sim";
+import { BMW_M1_PROCAR_SOUND } from "../src/lib/sim/classic/BmwM1ProcarSim";
+import { CHAPARRAL_2D_67_SOUND, CHAPARRAL_2D_SOUND } from "../src/lib/sim/classic/Chaparral2dSim";
+import { PORSCHE_934_RSR_SOUND } from "../src/lib/sim/classic/Porsche934RsrSim";
+import { VW_SCIROCCO_SOUND } from "../src/lib/sim/road/VwSciroccoSim";
+import type { Lc26AudioManifest } from "../src/lib/sim/lc26-audio";
 import { noteSkip, REPO_CAR_IDS } from "./lib/hosted-files";
 
 let passed = 0;
@@ -32,13 +39,22 @@ function check(name: string, cond: boolean, detail = ""): void {
 }
 
 const EXPECTED_SOUNDS: Record<CarId, { sound: CarSoundSource; maxIdleRpm: number }> = {
-  vf26: { sound: F1_2026_SOUND, maxIdleRpm: 4200 },
+  lc26: { sound: F1_2026_SOUND, maxIdleRpm: 4200 },
   // Event branch extra: its bank is only there when restored (scripts/kiosk/restore-extra-content.mjs)
   sf26: { sound: SF26_SOUND, maxIdleRpm: 4200 },
   "amg-gt3": { sound: AMG_GT3_SOUND, maxIdleRpm: 1600 },
   "bmw-m4-gt3": { sound: BMW_M4_GT3_SOUND, maxIdleRpm: 1600 },
   liana: { sound: SUZUKI_LIANA_SOUND, maxIdleRpm: 1000 },
   "mtr-496r": { sound: MTR_496R_SOUND, maxIdleRpm: 2200 },
+  "lc-lmdh": { sound: LC_LMDH_SOUND, maxIdleRpm: 2200 },
+  // [spec engine.ini MINIMUM]
+  "nissan-r33-jgtc": { sound: NISSAN_R33_SOUND, maxIdleRpm: 1400 },
+  "nissan-r32-jtcc": { sound: NISSAN_R32_SOUND, maxIdleRpm: 2200 },
+  "bmw-m1-procar": { sound: BMW_M1_PROCAR_SOUND, maxIdleRpm: 1400 },
+  "vw-scirocco-gtx": { sound: VW_SCIROCCO_SOUND, maxIdleRpm: 1000 },
+  "chaparral-2d": { sound: CHAPARRAL_2D_SOUND, maxIdleRpm: 1400 },
+  "chaparral-2d-67": { sound: CHAPARRAL_2D_67_SOUND, maxIdleRpm: 1400 },
+  "porsche-934-rsr": { sound: PORSCHE_934_RSR_SOUND, maxIdleRpm: 1400 },
 };
 
 const MAX_BANK_BYTES = Math.round(3.4 * 1024 * 1024);
@@ -81,7 +97,7 @@ for (const [bankId, { sound, maxIdleRpm }] of seenBanks) {
   }
   check(`${bankId}: manifest exists at ${manifestPath}`, existsSync(manifestPath));
 
-  const m = JSON.parse(readFileSync(manifestPath, "utf8")) as Vf26AudioManifest;
+  const m = JSON.parse(readFileSync(manifestPath, "utf8")) as Lc26AudioManifest;
   check(
     `${bankId}: sampleRate=48000 and valid loopSeconds`,
     m.sampleRate === 48000 && typeof m.loopSeconds === "number" && m.loopSeconds >= 1.5 && m.loopSeconds <= 3.5,

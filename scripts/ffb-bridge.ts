@@ -15,8 +15,10 @@
  *   npm run ffb -- --direction 0    if Test direction moves nothing: the other DirectInput direction convention
  *   npm run ffb -- --telemetry-only no force feedback: relay telemetry only
  *
- * Force feedback needs Windows. Without a usable wheel (none found, or it refused the effect) the bridge keeps running
- * and relays telemetry only; on macOS and Linux it always runs that way.
+ * Force feedback needs Windows. The bridge opens the wheel only while the game sends force through it, and lets it go
+ * a few seconds after that stops, so a bridge kept running for telemetry never holds a wheel the page drives over
+ * WebHID. Without a usable wheel (none found, or it refused the effect) the bridge keeps running and relays telemetry
+ * only; on macOS and Linux it always runs that way.
  *
  * Then turn on Force feedback in Controls → Wheel. Only pages served from localhost may connect (any other page
  * could otherwise move your wheel); allow a deployed copy with FFB_ALLOW_ORIGIN=https://your.site (comma-separated).
@@ -154,30 +156,65 @@ if (args.includes("--list") || args.includes("--info")) {
 const TELEMETRY_ONLY = "Telemetry only: no force feedback through the bridge";
 const telemetryOnly = args.includes("--telemetry-only") || !isWindows;
 if (!isWindows) console.log("Force feedback through the bridge needs Windows; relaying telemetry only.");
+// Built now, so a build error shows at start rather than at the first force
+if (!telemetryOnly) ensureHelper();
 
-let status: HelperStatus = telemetryOnly
-  ? { ok: false, device: null, axes: 0, error: TELEMETRY_ONLY }
-  : { ok: false, device: null, axes: 0, error: "Starting" };
+/** Before the page sends force (or after the wheel was let go): the browser shows "waiting for the wheel" */
+const WAITING: HelperStatus = { ok: false, device: null, axes: 0, error: null };
+/**
+ * No force from the page for this long and the helper is stopped, which lets go of the wheel: the page switched to
+ * WebHID force feedback, switched force feedback off, or closed. The next force opens the wheel again
+ */
+const HELPER_IDLE_MS = 3000;
+/** HRESULT_FROM_WIN32(ERROR_BUSY): DirectInput's answer when another program holds the wheel */
+const WHEEL_BUSY = "0x800700AA";
+const WHEEL_BUSY_MESSAGE =
+  "The wheel is busy: another program holds it, most often this page's WebHID force feedback. Switch WebHID off in " +
+  "Controls → Wheel, or start the bridge with --telemetry-only";
+
+let status: HelperStatus = telemetryOnly ? { ok: false, device: null, axes: 0, error: TELEMETRY_ONLY } : WAITING;
 let client: Duplex | null = null;
 let shuttingDown = false;
-let helperGone = telemetryOnly;
+/** The helper could not drive the wheel (none found, it refused the effect, it crashed): telemetry only from then on */
+let helperFailed = telemetryOnly;
+let helper: ChildProcessWithoutNullStreams | null = null;
+/** The helper being stopped because the page stopped sending force: its exit lets go of the wheel, it is not a failure */
+let releasing: ChildProcessWithoutNullStreams | null = null;
+let lastForceMs = 0;
+/** DirectInput said another program holds the wheel: the warning stays up until this helper lets go */
+let wheelBusy = false;
 
-/** The wheel helper is gone (no wheel, the wheel refused the effect, or it crashed): keep relaying telemetry */
-function helperStopped(why: string) {
-  if (helperGone) return;
-  helperGone = true;
-  if (shuttingDown) process.exit(0);
-  const reason = !status.ok && status.error && status.error !== "Starting" ? status.error : "The bridge's wheel helper stopped";
-  status = { ok: false, device: null, axes: 0, error: `${reason.replace(/[.\s]+$/, "")}. Telemetry is still relayed.` };
+function broadcastStatus() {
   client?.write(wsFrame(JSON.stringify({ type: "status", ...status })));
+}
+
+/** The helper exited: let go of the wheel after an idle stop, or carry on with telemetry only after a failure */
+function helperExited(h: ChildProcessWithoutNullStreams, why: string) {
+  if (helper !== h) return;
+  helper = null;
+  wheelBusy = false;
+  if (shuttingDown) process.exit(0);
+  if (releasing === h) {
+    releasing = null;
+    status = WAITING;
+    broadcastStatus();
+    console.log("Let go of the wheel: no force from the page. It opens again with the next one.");
+    return;
+  }
+  helperFailed = true;
+  const reason = !status.ok && status.error ? status.error : "The bridge's wheel helper stopped";
+  status = { ok: false, device: null, axes: 0, error: `${reason.replace(/[.\s]+$/, "")}. Telemetry is still relayed.` };
+  broadcastStatus();
   console.log(`Force-feedback helper ${why}: no force feedback. Still relaying telemetry; Ctrl+C to stop.`);
 }
 
-let helper: ChildProcessWithoutNullStreams | null = null;
-if (!telemetryOnly) {
-  ensureHelper();
+/** Opens the wheel: the helper starts on the first force the page sends, never before */
+function startHelper() {
+  if (helper || helperFailed || shuttingDown) return;
   const h = spawn(HELPER_EXE, args, { windowsHide: true });
   helper = h;
+  status = { ok: false, device: null, axes: 0, error: "Opening the wheel" };
+  broadcastStatus();
   // A force write that lands after the helper died but before its "exit" raises EPIPE here; "exit" handles the rest
   h.stdin.on("error", () => {});
   let helperOut = "";
@@ -195,22 +232,45 @@ if (!telemetryOnly) {
           continue;
         }
         console.log(status.ok ? `Wheel: ${status.device}` : `Wheel: ${status.error}`);
-        client?.write(wsFrame(JSON.stringify({ type: "status", ...status })));
+        // The helper knows nothing of the conflict: its later status lines must not hide it
+        if (wheelBusy) status = { ...status, ok: false, error: WHEEL_BUSY_MESSAGE };
+        broadcastStatus();
       } else if (line.startsWith("LOG ")) {
-        console.log(line.slice(4));
+        const msg = line.slice(4);
+        console.log(msg);
+        // DirectInput refusing a property with ERROR_BUSY: another program has the wheel (reported by vAzhure)
+        if (msg.includes(WHEEL_BUSY) && !wheelBusy) {
+          wheelBusy = true;
+          status = { ...status, ok: false, error: WHEEL_BUSY_MESSAGE };
+          console.log(WHEEL_BUSY_MESSAGE.replace("Controls → Wheel", "the game's Controls → Wheel") + ".");
+          broadcastStatus();
+        }
       } else if (line) {
         console.log(line);
       }
     }
   });
   h.stderr.pipe(process.stderr);
-  h.on("exit", (code) => helperStopped(`exited (${code ?? "signal"})`));
-  h.on("error", (e) => helperStopped(`failed to start (${e.message})`));
+  h.on("exit", (code) => helperExited(h, `exited (${code ?? "signal"})`));
+  h.on("error", (e) => helperExited(h, `failed to start (${e.message})`));
 }
 
 const toHelper = (line: string) => {
-  if (helper && !helperGone && helper.stdin.writable) helper.stdin.write(`${line}\n`);
+  if (helper && helper.stdin.writable) helper.stdin.write(`${line}\n`);
 };
+
+// Lets go of the wheel once the page has sent no force for HELPER_IDLE_MS
+if (!telemetryOnly) {
+  setInterval(() => {
+    if (!helper || releasing === helper || Date.now() - lastForceMs < HELPER_IDLE_MS) return;
+    const h = helper;
+    releasing = h;
+    toHelper("Q");
+    setTimeout(() => {
+      if (helper === h) h.kill();
+    }, 1000).unref();
+  }, 500).unref();
+}
 
 // ---- Telemetry out: one browser packet → one UDP datagram
 
@@ -263,6 +323,10 @@ function onMessage(text: string) {
     return;
   }
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  if (msg.t === "f" || msg.t === "test") {
+    lastForceMs = Date.now();
+    startHelper();
+  }
   if (msg.t === "f") {
     const sub =
       Array.isArray(msg.s) && msg.s.length > 0
@@ -322,13 +386,14 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(
     telemetryOnly
       ? `Telemetry bridge on ws://127.0.0.1:${PORT}. Turn on Telemetry out in Controls → Wheel. Ctrl+C to stop.`
-      : `Force-feedback bridge on ws://127.0.0.1:${PORT}. Turn on Force feedback in Controls → Wheel. Ctrl+C to stop.`
+      : `Force-feedback bridge on ws://127.0.0.1:${PORT}. Turn on Force feedback in Controls → Wheel; the bridge opens the wheel ` +
+          `when the game sends force through it, and lets it go when that stops. Ctrl+C to stop.`
   );
 });
 
 const shutdown = () => {
   shuttingDown = true;
-  if (helperGone) process.exit(0);
+  if (!helper) process.exit(0);
   toHelper("Q");
   setTimeout(() => process.exit(0), 600).unref();
 };

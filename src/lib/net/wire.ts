@@ -5,13 +5,18 @@
  *
  * No three.js and no DOM: the Worker imports this file.
  */
-import { isVehicleModelId, type TireCompound, type VehicleModelId } from '../../types/f1';
+import { foldVehicleModelId, isVehicleModelId, type TireCompound, type VehicleModelId } from '../../types/f1';
 import { sanitizeWeatherSync, type WeatherSyncState } from '../sim/weather';
+
+// The car state packet travels in binary (state-codec.ts); everything else is JSON
+export { decodeState, encodeState, MAX_STATE_BYTES, PROTOCOL_VERSION, stateInfoJson, StateInfoMemory } from './state-codec';
 
 const PEER_COMPOUNDS: readonly TireCompound[] = ['soft', 'medium', 'hard', 'intermediate', 'wet'];
 /** Network input is untrusted: only a known model id is kept */
-const asPeerVehicle = (v: unknown): VehicleModelId | undefined =>
-  isVehicleModelId(v) ? v : undefined;
+const asPeerVehicle = (raw: unknown): VehicleModelId | undefined => {
+  const v = foldVehicleModelId(raw);
+  return isVehicleModelId(v) ? v : undefined;
+};
 
 export interface NetworkVehiclePacket {
   peerId: string;
@@ -45,6 +50,8 @@ export interface NetworkVehiclePacket {
   speedKmh: number;
   /** Sender's packet counter (loss statistics); absent from older clients */
   seq?: number;
+  /** How long after `timestampMs` the packet left (ms): its sender's frame work before the send (absent from older clients) */
+  sendDelayMs?: number;
   /** Driver name (absent from older clients) */
   name?: string;
   /** Progress in a multiplayer race */
@@ -52,6 +59,17 @@ export interface NetworkVehiclePacket {
   /** The sender judges its own car a hazard (slow, wrong way, off the track): the others pass through it */
   hz?: boolean;
 }
+
+/**
+ * Car state packets per second, sent on a fixed schedule (MultiplayerSyncManager.update). A room's host and the race
+ * server relay each car at this rate to every other.
+ */
+export const STATE_SEND_HZ = 60;
+/**
+ * A car sending more than this per second is flooding: a room's host and the race server drop the excess. Half as much
+ * again as the send rate, as packets bunch up on the way
+ */
+export const MAX_STATE_PACKETS_PER_S = 90;
 
 /** A racer's progress, sent with every state packet while a multiplayer race runs */
 export interface PeerRaceProgress {
@@ -108,6 +126,9 @@ export interface LobbyState {
   race: RaceStartInfo | null;
   /** The host's weather and clock (host-authoritative; guests ease theirs to it) */
   weather?: WeatherSyncState;
+  /** The host's protocol version (PROTOCOL_VERSION) and physics revision; a guest on another one can't race it */
+  proto?: number;
+  sim?: number;
 }
 
 /** Everything every client needs to run the same start: the lights are timed on the host's clock */
@@ -142,7 +163,10 @@ export interface OfficialResultRow {
 }
 
 export type ControlMessage =
-  | { type: 'hello'; name: string; code: string; color: string; vehicle?: VehicleModelId; trackId?: string }
+  /** `proto`, `sim`: the sender's protocol version and physics revision (absent from older clients) */
+  | { type: 'hello'; name: string; code: string; color: string; vehicle?: VehicleModelId; trackId?: string; proto?: number; sim?: number }
+  /** A room's host to a guest on another version of the game: not let in */
+  | { type: 'refuse'; reason: 'version' }
   | { type: 'ping'; t0: number }
   | { type: 'pong'; t0: number; now: number }
   | { type: 'lobby'; lobby: LobbyState }
@@ -166,8 +190,9 @@ export interface ControlEnvelope {
 /** The default circuit (DEFAULT_TRACK_ID in track-data.ts, which loads three.js and so can't be imported here) */
 export const FALLBACK_TRACK_ID = 'rwanda_official_short';
 
+// Cut by code point, not UTF-16 unit, so a name never ends in half an emoji (a lone surrogate draws as a broken glyph)
 const clampStr = (v: unknown, max: number, fallback: string) =>
-  typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f<>]/g, '').slice(0, max) : fallback;
+  typeof v === 'string' ? Array.from(v.replace(/[\u0000-\u001f\u007f<>]/g, '')).slice(0, max).join('') : fallback;
 const asCode = (v: unknown) => {
   const s = typeof v === 'string' ? v.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3) : '';
   return s.length === 3 ? s : 'DRV';
@@ -176,6 +201,7 @@ const asColor = (v: unknown) => (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.te
 const finite = (v: unknown, lo: number, hi: number): number | null =>
   typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi ? v : null;
 const COLLISION_MODES: readonly CollisionMode[] = ['on', 'ghost_lap1', 'off', 'protected'];
+const version = (v: unknown): number | undefined => (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 1e6 ? v : undefined);
 const CAR_CLASSES: readonly CarClassRule[] = ['any', 'f1', 'gt3'];
 
 function sanitizeRace(v: unknown): PeerRaceProgress | undefined {
@@ -224,6 +250,8 @@ export function sanitizeLobby(v: unknown): LobbyState | null {
   return {
     hostId: l.hostId.slice(0, 64),
     weather: sanitizeWeatherSync(l.weather) ?? undefined,
+    proto: version(l.proto),
+    sim: version(l.sim),
     settings: {
       trackId: clampStr(st.trackId, 64, FALLBACK_TRACK_ID),
       laps: Math.round(finite(st.laps, 1, 99) ?? 5),
@@ -311,6 +339,7 @@ export function sanitizePacket(v: unknown): NetworkVehiclePacket | null {
     trackS: clampNum(p.trackS, -10_000, 10_000_000, 0),
     speedKmh: clampNum(p.speedKmh, 0, 600, 0),
     seq,
+    sendDelayMs: finite(p.sendDelayMs, 0, 1000) ?? undefined,
     name: typeof p.name === 'string' ? clampStr(p.name, 16, 'Driver') : undefined,
     race: sanitizeRace(p.race),
     hz: p.hz === true ? true : undefined,
@@ -354,7 +383,11 @@ export function sanitizeControl(v: unknown): ControlMessage | null {
         color: asColor(m.color),
         vehicle: asPeerVehicle(m.vehicle),
         trackId: typeof m.trackId === 'string' ? m.trackId.slice(0, 64) : undefined,
+        proto: version(m.proto),
+        sim: version(m.sim),
       };
+    case 'refuse':
+      return m.reason === 'version' ? { type: 'refuse', reason: 'version' } : null;
     case 'ping': {
       const t0 = finite(m.t0, -1e15, 1e15);
       return t0 === null ? null : { type: 'ping', t0 };

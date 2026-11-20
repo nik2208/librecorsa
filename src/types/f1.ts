@@ -37,6 +37,7 @@ export interface ControlInputs {
   toggleXMode: boolean;
   shiftUp: boolean;
   shiftDown: boolean;
+  neutral?: boolean; // One-frame press: out of gear (both shift buttons at once, or the Neutral key / button)
 }
 
 export type CameraMode =
@@ -64,6 +65,8 @@ export interface LiveryConfig {
   number: string;
   /** Pictures on the paint (render/livery-decals.ts); a livery without is its three colours only */
   decals?: LiveryDecalSet;
+  /** Left out of the Android app (lib/store-mode.ts): its logos aren't licensed */
+  notInStoreBuild?: true;
 }
 
 /** A livery's decals: their atlas and where each goes on the car */
@@ -128,7 +131,7 @@ export interface TrackSamplePoint {
   kerbLeft: boolean;
   kerbRight: boolean;
   drsZone: boolean;
-  /** Lap-time line of the F1 cars (VF26, f12026-car), normalised: see `aiLineOffsetM` */
+  /** Lap-time line of the F1 cars (LC26, f12026-car), normalised: see `aiLineOffsetM` */
   racingLineOffset: number;
   /** The GT3's own lap-time line, same scale (the F1 line where a track has none) */
   racingLineOffsetGt3?: number;
@@ -209,6 +212,8 @@ export interface RaceStandingEntry {
   penaltyS?: number;
   /** Out of the race (terminal damage) */
   retired?: boolean;
+  /** Disqualified by race control */
+  dq?: boolean;
   /** Damage 0..1 (absent: none) */
   damage?: number;
 }
@@ -230,6 +235,8 @@ export interface RaceResultEntry {
   bestLapMs: number | null;
   /** Still running when the classification closed */
   dnf: boolean;
+  /** Disqualified (shown in place of the DNF) */
+  dq?: boolean;
   /** Time penalties added to the race time (s), already included in `finishTimeS` and `gapS` */
   penaltyS?: number;
   /** Track-limits warnings received (the player's own) */
@@ -244,8 +251,10 @@ export interface RaceStatus {
   phase: 'lights' | 'racing' | 'finished';
   /** Red start lights lit (0–5); 0 during the race */
   lightsOn: number;
-  /** Seconds until the light sequence starts (multiplayer countdown); absent otherwise */
+  /** Seconds until the light sequence starts (multiplayer countdown, an AI race's grid after qualifying); absent otherwise */
   countdownS?: number;
+  /** The qualifying classification the race lined up in (AI race with qualifying): code, player, best clean lap (ms) */
+  qualifying?: { code: string; isPlayer: boolean; lapMs: number | null }[];
   /** Race length (laps) */
   totalLaps?: number;
   /** Final classification once the player has finished */
@@ -267,6 +276,12 @@ export interface RaceStatus {
   raceControl?: RaceControlFeedMessage[];
   /** The player is coming up on a yellow flag */
   yellow?: boolean;
+  /** … and it is a double yellow (a car stopped on the road, or more than one incident) */
+  doubleYellow?: boolean;
+  /** Blue flag: the car lapping the player is close behind (its code) */
+  blueFlag?: string;
+  /** A place the player owes back after passing under yellow: to whom, and the time left to give it back */
+  giveBack?: { code: string; double: boolean; remainingS: number; progress: number };
   /** The player's car damage (absent: none, or damage off) */
   damage?: PlayerDamageStatus;
 }
@@ -324,10 +339,13 @@ export const axlePressures = (front: number, rear: number): WheelPressures => ({
 
 /** Driver-set tyre setup. Camber in degrees per axle, negative = top of the tyre leaning inward. */
 export interface TyreSetup {
-  /** Psi gauge per tyre at the model's cold reference: VF26 20 °C; F12026/GT3 compound blanket temperature. */
+  /** Psi gauge per tyre at the model's cold reference: LC26 20 °C; F12026/GT3 compound blanket temperature. */
   coldPressurePsi: WheelPressures;
   camberDeg: { front: number; rear: number };
 }
+
+/** The control a manual start's cue names as the clutch */
+export type StartClutchControl = { pad: number } | { key: string } | { name: string };
 
 export interface CarTelemetry {
   /** The last car-to-car contact this car took in a race: its closing speed (m/s), counted up per contact */
@@ -340,6 +358,14 @@ export interface CarTelemetry {
   brake: number; // 0..1
   clutch: number; // 0..1 (1 = engaged, 0 = disengaged)
   steering: number; // -1..1 (positive = right)
+  /**
+   * The player's own steering this frame, −1..1 (+ = right): the keys' direction, the shaped stick, or the wheel, mouse
+   * or touch, whichever steered. The session sets it on the HUD's copy, so the input trace can draw it against
+   * `steering` (the road-wheel angle over the lock); absent while not driving and on other cars.
+   */
+  steerInput?: number;
+  /** Road-wheel angle at full lock (deg), to read `steering` in degrees; on the HUD's copy, as `steerInput` */
+  steerLockDeg?: number;
   longitudinalG: number;
   lateralG: number;
   /** Aero load as a multiple of the car's weight, 1 + downforce / (mass · g): the cameras, haptics and effects read it; it carries no bumps */
@@ -365,6 +391,12 @@ export interface CarTelemetry {
   // 2026 Power Unit (~540 kW ICE + 350 kW MGU-K)
   icePowerKw: number;
   mgukPowerKw: number; // -350 (harvest) to +350 (deploy)
+  /** Electric machine speed (rpm), where it differs from the engine's (a unit that can drive with the engine off) */
+  mguRpm?: number;
+  /** Mean speed of the driven shafts (rad/s) and the torque they carry (Nm, negative on the overrun and under
+   * regeneration): heard by sound banks with a `driveline` section (`lc26-audio.ts`) */
+  driveshaftRadS?: number;
+  driveshaftTorqueNm?: number;
   totalPowerKw: number;
   ersBatteryPercent: number; // 0..100
   manualOverrideActive: boolean; // 2026 MOM 350kW boost
@@ -380,6 +412,12 @@ export interface CarTelemetry {
   wheelSlipRatios: [number, number, number, number]; // FL, FR, RL, RR signed longitudinal slip ratio
   wheelSlipAnglesDeg: [number, number, number, number]; // FL, FR, RL, RR lateral slip angle (deg)
   wheelLoadsN: [number, number, number, number]; // FL, FR, RL, RR vertical contact load Fz (N)
+  /**
+   * FL, FR, RL, RR: what the road's shape did to each tyre this frame, from its load hits (0 smooth road, 1 a hard
+   * kerb), and left / right: how often those hits came (Hz). From the physics, for the pad and the DualSense
+   */
+  wheelKerbHit?: [number, number, number, number];
+  kerbHitHz?: [number, number];
   wheelRideHeightsMm: [number, number, number, number]; // FL, FR, RL, RR dynamic ride height (mm)
   suspensionTravelMm: [number, number, number, number]; // FL, FR, RL, RR suspension compression (mm)
   suspensionVelocityMs: [number, number, number, number]; // FL, FR, RL, RR shock velocity (m/s, + = compressing), from the last physics step
@@ -452,8 +490,26 @@ export interface CarTelemetry {
   /** Present while racing the AI opponents */
   race?: RaceStatus;
   /**
+   * A manual standing start, set by the app shell: the car held on the grid through the lights, a jump start, the
+   * control the player holds as the clutch (a standard-mapping pad button, a key's name, or a named control such as
+   * "clutch pedal"), and how far they hold it in (0..1, 1 = pressed)
+   */
+  start?: {
+    held: boolean;
+    jumped: boolean;
+    /** What the jump start costs as it stands (s): +5, or +10 for a big one */
+    penaltyS?: number;
+    clutch: StartClutchControl;
+    clutchIn: number;
+  };
+  /**
+   * Qualifying before an AI race (qualifying.ts), set by the session: the clock left (s), whether the lap under way is
+   * the last one (the clock has run out) and still counts, and the best clean lap so far (ms)
+   */
+  qualifying?: { remainingS: number; lastLap: boolean; lapCounts: boolean; bestMs: number | null };
+  /**
    * Run counter, set by the app shell: it goes up whenever the run restarts (a new session, a restart, a
-   * teleport, a flashback, a car change). Anything that keeps lap- or run-scoped state resets when it changes,
+   * teleport, a car change). Anything that keeps lap- or run-scoped state resets when it changes,
    * instead of guessing a restart from the lap count or distance.
    */
   runId?: number;
@@ -474,7 +530,7 @@ export interface CarTelemetry {
 }
 
 /** Why an excursion counted against the driver */
-export type TrackLimitsReason = "gained" | "corner_cut" | "not_lifted" | "illegal_overtake";
+export type TrackLimitsReason = "gained" | "corner_cut" | "not_lifted" | "illegal_overtake" | "course_cut" | "wall_contact";
 
 /** The race-control state of the track-limits judging (see `TrackLimitsMonitor`) */
 export interface TrackLimitsStatus {
@@ -485,6 +541,18 @@ export interface TrackLimitsStatus {
   totalStrikes: number;
   /** Time penalties awarded (s) */
   penaltyS: number;
+  /**
+   * A race on a points ladder (race-rules.ts): its points so far against the allowance; `warnings` / `strikesPerPenalty`
+   * then hold the meter towards the next step. Absent: the strike ladder of before, or not a race
+   */
+  ladder?: {
+    scoring: 'four_strike' | 'weighted_pts';
+    points: number;
+    pointsAllowed: number;
+    /** Within a point of the next step: the black-and-white flag is out */
+    blackWhite: boolean;
+    disqualified: boolean;
+  };
   /** An excursion in progress or being judged: what the driver must still give back */
   pending: {
     /** "off": still off the track; "judging": back on, settling; "give_back": must give the time / lift / position back */
@@ -499,7 +567,7 @@ export interface TrackLimitsStatus {
   } | null;
   /** The last race-control message, for the banner; `atMs` is the wall-clock time it was issued */
   message: {
-    kind: "warning" | "penalty" | "cleared" | "lap_invalid" | "no_advantage";
+    kind: "warning" | "final_warning" | "penalty" | "disqualified" | "cleared" | "lap_invalid" | "no_advantage";
     text: string;
     detail?: string;
     atMs: number;
@@ -513,6 +581,12 @@ export interface LiveTunerState {
   tcLevel: number;
   /** Traction Control Stage 2: Torque cut depth / aggressiveness (1..12) */
   tc2Level: number;
+  /**
+   * Traction Control slip-angle dial (0 = off, 1 = the most sideways slide before it cuts, 12 = the least), on a car
+   * whose electronics have it (`hasTcSlipAngle`)
+   */
+  tcSlipAngleLevel: number;
+  hasTcSlipAngle: boolean;
   /** 4-Channel ABS dial (0 = OFF, 1 = min intervention, 12 = max stability) */
   absLevel: number;
   /** Front static brake balance (% front, e.g. 56.0 for F1, 61.0 for GT3) */
@@ -535,6 +609,14 @@ export interface LiveTunerState {
   ersMode: string;
   /** Whether the car has hybrid ERS */
   hasErs: boolean;
+  /** A prototype's hybrid dials (kW): the motor's deployment cap and the braking regeneration cap; null without them */
+  motorDeployKw: number | null;
+  regenKw: number | null;
+  /** The steps each dial has (kW), empty without them */
+  motorDeployStepsKw: readonly number[];
+  regenStepsKw: readonly number[];
+  /** The class bans ABS: the dial stays at 0 unless the Assisted preset keeps it */
+  absAllowed: boolean;
   /** Live TC throttle cut fraction (0 = no cut, 1 = full cut) */
   tcCutFraction: number;
   /** Live 4-wheel ABS pressure release fraction [FL, FR, RL, RR] (0 = no cut, 1 = full release) */
@@ -548,6 +630,7 @@ export type LiveTunerPatch = Partial<
     LiveTunerState,
     | "tcLevel"
     | "tc2Level"
+    | "tcSlipAngleLevel"
     | "absLevel"
     | "brakeBiasPct"
     | "brakeMigrationPct"
@@ -557,25 +640,55 @@ export type LiveTunerPatch = Partial<
     | "engineMap"
     | "ersMode"
   >
->;
+> & { motorDeployKw?: number; regenKw?: number };
 
 /**
- * Player car: the VF26 model (F1Physics2026), the 6-DOF f12026-car, or the Mercedes-AMG GT3, the Suzuki Liana and the
- * MTRacing 496R on the same vehicle model
+ * Player car: the LC26 model (F1Physics2026), the 6-DOF f12026-car, or the Mercedes-AMG GT3, the Suzuki Liana, the
+ * MTRacing 496R, the LC-LMDH, the classic Nissans, the BMW M1 Procar, the VW Scirocco and the two Chaparral 2Ds on the
+ * same vehicle model
  */
-export type VehicleModelId = "vf26" | "f12026-car" | "amg-gt3" | "liana" | "mtr-496r";
+export type VehicleModelId =
+  | "lc26"
+  | "f12026-car"
+  | "amg-gt3"
+  | "liana"
+  | "mtr-496r"
+  | "lc-lmdh"
+  | "nissan-r33-jgtc"
+  | "nissan-r32-jtcc"
+  | "bmw-m1-procar"
+  | "vw-scirocco-gtx"
+  | "chaparral-2d"
+  | "chaparral-2d-67"
+  | "porsche-934-rsr";
 
 /** Typed as a Record over VehicleModelId so adding a car fails to compile until it is listed here */
 const VEHICLE_MODEL_ID_SET: Record<VehicleModelId, true> = {
-  vf26: true,
+  lc26: true,
   "f12026-car": true,
   "amg-gt3": true,
   liana: true,
   "mtr-496r": true,
+  "lc-lmdh": true,
+  "nissan-r33-jgtc": true,
+  "nissan-r32-jtcc": true,
+  "bmw-m1-procar": true,
+  "vw-scirocco-gtx": true,
+  "chaparral-2d": true,
+  "chaparral-2d-67": true,
+  "porsche-934-rsr": true,
 };
 
 /** Every vehicle model id, for validating ids from storage and the network */
 export const VEHICLE_MODEL_IDS = Object.keys(VEHICLE_MODEL_ID_SET) as readonly VehicleModelId[];
+
+/**
+ * A vehicle model id from a file, a save or the network, followed to the model's present id: the 2026 Prototype's
+ * was renamed, and ghost files and older clients still carry the old one
+ */
+export function foldVehicleModelId(value: unknown): unknown {
+  return value === "vf26" ? "lc26" : value; // keep-old-id
+}
 
 export function isVehicleModelId(value: unknown): value is VehicleModelId {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(VEHICLE_MODEL_ID_SET, value);
@@ -611,8 +724,14 @@ export interface F12026Channels {
   /** Inside a DRS zone / armed by its detection point */
   drsZone: boolean;
   drsAvailable: boolean;
+  /** A press of the flap button is kept for the zone the car is on or coming to: it opens the flaps once they may open */
+  drsQueued: boolean;
   /** Last detection point crossed: zone id, whether DRS was earned, sim time (ms) */
   drsDetection: { zone: string; eligible: boolean; atMs: number } | null;
+  /** 2026 Straight Mode: the last time a stretch where the flaps may open came up ahead (sim time, ms) */
+  straightModeAhead: { atMs: number } | null;
+  /** 2026, in a race: race control's last Overtake Mode verdict at the detection point (sim time, ms) */
+  overtakeDetection: { earned: boolean; atMs: number } | null;
   /** Share of the friction circle in use per tyre (telemetry only, 1 = at the limit) */
   circleFraction: [number, number, number, number];
   performanceMode: string;
@@ -625,6 +744,12 @@ export interface F12026Channels {
   absActive: boolean;
   /** Touching a barrier this frame / last impact speed into the wall (m/s) and its sim time (ms) */
   wallContact: boolean;
+  /**
+   * Seconds the body has touched a barrier while moving, every fixed step counted, since the car was last placed (a
+   * placement zeroes it, otherwise it only grows): race control judges barrier contact from its rise between frames,
+   * however few of them it sees
+   */
+  wallContactS: number;
   /** Last barrier impact: into-wall speed, when, and where on the car (m, + left / + forward) */
   wallImpact: { speedMs: number; atMs: number; localX?: number; localZ?: number } | null;
 }

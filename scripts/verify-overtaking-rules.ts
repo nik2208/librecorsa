@@ -1,7 +1,7 @@
 /**
  * Headless checks for the overtaking aids by era (`src/lib/sim/overtaking-rules.ts`): the 1 s and lap rules, the car
- * ahead on the road (lapped cars included), Overtake Mode's grant, and the flaps (2026 Straight Mode in every zone,
- * rear-flap DRS by the detection point before).
+ * ahead on the road (lapped cars included), Overtake Mode's grant, and the flaps (2026 Straight Mode in every zone and
+ * on every other straight, rear-flap DRS by the detection point before).
  *
  *   npx tsx scripts/verify-overtaking-rules.ts
  */
@@ -19,7 +19,8 @@ import {
 import { FlatGroundQuery } from '../src/lib/sim/f12026-car/TrackColliderQuery';
 import { VehiclePhysics, type VehicleInputs } from '../src/lib/sim/f12026-car/VehiclePhysics';
 import { CARS, carOvertakingRules } from '../src/lib/cars/car-registry';
-import { getActiveTrackData } from '../src/lib/track-data';
+import { getActiveTrackData, RWANDA_DRS_ZONES } from '../src/lib/track-data';
+import { inLapWindow, STRAIGHT_KINK_MIN_RADIUS_M, STRAIGHT_MAX_CURVATURE, STRAIGHT_MIN_M, straightModeWindows } from '../src/lib/sim/straight-mode-zones';
 import { F12026CarSim } from '../src/lib/sim/f12026-car/F12026CarSim';
 import { F1Physics2026 } from '../src/lib/f1-physics-2026';
 
@@ -115,6 +116,14 @@ console.log('\n== Overtake Mode grant');
   earn = false;
   g.observe(0.895, 0.905, zones, race);
   check('Judged afresh next lap: lost when over 1 s', !g.available(race) && g.extraDeployJ(race) === 0);
+  let lockedEarn = true;
+  const locked: OvertakingRaceControl = { racing: true, aidsLocked: true, earnedAtDetection: () => lockedEarn };
+  const lg = new OvertakeGrant();
+  lg.observe(0.88, 0.91, zones, locked);
+  check('Yellow zone (aids locked): no Overtake Mode and no extra energy even when earned', !lg.available(locked) && lg.extraDeployJ(locked) === 0);
+  const unlocked: OvertakingRaceControl = { racing: true, aidsLocked: false, earnedAtDetection: () => lockedEarn };
+  check('Out of the yellow: the earned override is back', lg.available(unlocked) && lg.extraDeployJ(unlocked) === OVERTAKE_EXTRA_DEPLOY_J);
+  lockedEarn = false;
   g.observe(0.895, 0.905, zones, { racing: false, earnedAtDetection: () => true });
   check('After the flag: free again', g.available({ racing: false, earnedAtDetection: () => false }));
 }
@@ -154,6 +163,28 @@ check('DRS (gated): shut when not earned at detection', !gatedNo.open);
 check('DRS (gated): opens when earned', gatedYes.open);
 check('Straight Mode (ungated): opens in the zone without the gap', straight.open);
 check('No DRS fitted (pre-2011): never opens', !flapRun({ flaps: 'rear', gated: false, eligible: true, press: true, fitted: false }).open);
+/** A car on a straight (the first 30 % of the lap) that is outside the circuit's one zone (60 to 70 %) */
+const offZoneRun = (gated: boolean) => {
+  const car = new VehiclePhysics({
+    ground: new FlatGroundQuery(0),
+    airDensity: 1.06,
+    drsZones: [{ id: 'Z', detection: 0.5, start: 0.6, end: 0.7 }],
+    straightZones: [{ start: 0, end: 0.3 }],
+    locateProgress: (_x, z) => 0.04 + z / 5000,
+    drsEligibleAtDetection: () => true,
+  });
+  car.drsFlaps = gated ? 'rear' : 'front-rear';
+  car.drsGatedByDetection = gated;
+  car.reset(0, 0, 0, 260 / 3.6);
+  for (let t = 0; t < 1.5; t += DT) car.step(DT, full);
+  car.step(DT, { ...full, drs: true });
+  for (let t = 0; t < 1.5; t += DT) car.step(DT, full);
+  return { open: car.drsOpen, zone: car.telemetry.drsZone };
+};
+const offZone = offZoneRun(false);
+const offZoneGated = offZoneRun(true);
+check('Straight Mode: opens on a straight outside the zones', offZone.open && offZone.zone);
+check('DRS (gated): a straight outside the zones is no zone', !offZoneGated.open && !offZoneGated.zone);
 const fullDrop = shut.cd - straight.cd;
 const rearDrop = shut.cd - gatedYes.cd;
 check(
@@ -169,6 +200,30 @@ check(
   `front ClA·q/v² change: both ${fmt(frontFull, 4)}, rear ${fmt(frontRear, 4)}`
 );
 check('Both drop the rear downforce', gatedYes.clRear < shut.clRear && straight.clRear < shut.clRear);
+
+// ---------------------------------------------------------------------------
+console.log('\n== The circuit\'s straights (2026 Straight Mode)');
+{
+  const track = getActiveTrackData();
+  const lap = track.totalLengthM;
+  const windows = straightModeWindows(track);
+  const lengthOf = (w: { start: number; end: number }) => ((w.end - w.start + 1) % 1) * lap;
+  const text = windows.map((w) => `${Math.round(w.start * lap)}-${Math.round(w.end * lap)}`).join(', ');
+  check(`Each is ${STRAIGHT_MIN_M} m or longer`, windows.length > 0 && windows.every((w) => lengthOf(w) >= STRAIGHT_MIN_M), text);
+  check(
+    'None has a corner in it (a short gentle kink at most)',
+    track.samples.every(
+      (s) => Math.abs(s.curvature) <= 1 / STRAIGHT_KINK_MIN_RADIUS_M || !windows.some((w) => inLapWindow(s.s / lap, w.start, w.end))
+    ) && STRAIGHT_KINK_MIN_RADIUS_M < 1 / STRAIGHT_MAX_CURVATURE
+  );
+  check(
+    'The straights the circuit\'s own zones are on are among them',
+    RWANDA_DRS_ZONES.length > 0 &&
+      RWANDA_DRS_ZONES.every((z) => windows.some((w) => inLapWindow((z.start + ((z.end - z.start + 1) % 1) / 2) % 1, w.start, w.end))),
+    RWANDA_DRS_ZONES.map((z) => `${Math.round(z.start * lap)}-${Math.round(z.end * lap)}`).join(', ')
+  );
+  check('Found once for a circuit', straightModeWindows(track) === windows);
+}
 
 // ---------------------------------------------------------------------------
 console.log('\n== Car adapters (override = Overtake Mode on a 2026 car)');

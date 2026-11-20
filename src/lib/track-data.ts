@@ -7,9 +7,12 @@ import {
   TurnMetadata,
 } from "@/types/f1";
 import rawTrackJson from "../../public/tracks/rwanda_official_short/track_data.json";
-import { AI_LINE_WIDTH_SCALE, brakingZoneLevel, computeSpeedProfile, createVf26ProfileCarModel } from "./sim/speed-profile";
+import { AI_LINE_WIDTH_SCALE, brakingZoneLevel, computeSpeedProfile, createLc26ProfileCarModel } from "./sim/speed-profile";
 import { resolveSurfaceTable, type SurfaceTable, type SurfaceTableOverrides, type TrackSurfaceKind } from "./sim/track-surfaces";
 import type { SceneryCutBox } from "./scenery-cuts";
+import type { LapStretches } from "./sim/course-limits";
+import { correctedDrsZones } from "./drs-zone-fixes";
+import { isStoreBuild } from "./store-mode";
 import { EVENT_LIVERY } from "@/lib/kiosk/event-livery";
 
 /** Raw `track_data.json` layout shared by every circuit (the bundled circuit's file is the reference schema) */
@@ -56,9 +59,31 @@ export interface TracksideTvCameraDef {
   outPoint: number;
 }
 
+/**
+ * A point-to-point course (a hill climb): one timed run from the start line to a finish line somewhere else.
+ *
+ * Its track data is still a closed loop, so everything built on a lap keeps working: the start line is s = 0, the
+ * road runs on past the finish line to `endS`, and from there a line with no road under it closes the loop back to
+ * `startS`, where the road begins a little before the start line. Between `endS` and `startS` there is nothing to
+ * drive on: a car that gets there is put back on the start line (`inDeadZone`).
+ */
+export interface PointToPointDef {
+  /** The finish line (m from the start line): the length of the timed run */
+  finishS: number;
+  /** Where the road past the finish ends (m from the start line) */
+  endS: number;
+  /** Where the road before the start line begins (m along the loop, a little short of its length) */
+  startS: number;
+}
+
+/** Whether `s` (m along the loop) is on the stretch of a point-to-point course that has no road */
+export const inDeadZone = (p: PointToPointDef, s: number): boolean => s > p.endS && s < p.startS;
+
 export interface BuiltTrackData {
   /** Circuit id (a folder under public/tracks); absent on synthetic test tracks */
   id?: string;
+  /** Set on a point-to-point course (a hill climb); absent on a circuit */
+  pointToPoint?: PointToPointDef;
   /** Circuit GLB (relative to the base path); absent on synthetic test tracks */
   meshUrl?: string;
   /** Materials of the circuit GLB's scan that are the racing surface (asphalt shader); none for a circuit with its own road meshes */
@@ -75,6 +100,8 @@ export interface BuiltTrackData {
   totalLengthM: number;
   /** Altitude (m ASL) of world y = 0 on this track, for the air density; absent: the active circuit's */
   baseAltitudeM?: number;
+  /** Where another layout's road leaves this lap: there its own road edge and kerbs are the limit (course-limits.ts) */
+  otherLayoutRoads?: LapStretches;
   spline: THREE.CatmullRomCurve3;
   getSampleAtDistance: (s: number) => TrackSamplePoint;
   projectWorldToTrack: (
@@ -98,8 +125,12 @@ export interface BuiltTrackData {
   ) => { i0: number; i1: number; t: number; s: number; lateralH: number };
 }
 
-/** DRS zones of the active circuit (the name predates other circuits) */
-export const RWANDA_DRS_ZONES: DrsZoneDef[] = [...(rawTrackJson.drsZones as DrsZoneDef[])];
+/** DRS zones of the active circuit (the name predates other circuits), with their corrections (`drs-zone-fixes.ts`) */
+export const RWANDA_DRS_ZONES: DrsZoneDef[] = correctedDrsZones(
+  DEFAULT_TRACK_ID,
+  rawTrackJson.metadata.lengthMeters,
+  rawTrackJson.drsZones as DrsZoneDef[]
+);
 /** Broadcast cameras of the active circuit */
 export const RWANDA_TV_CAMERAS: TracksideTvCameraDef[] = [...(rawTrackJson.cameras as TracksideTvCameraDef[])];
 
@@ -144,7 +175,7 @@ const ORACLE_RED_BULL_DECALS: LiveryDecalSet = {
  * The F1 liveries: the first in LibreCorsa's own colours, two more of the game's own, and the Oracle Red Bull Racing
  * one with its pictures (the 2026 Prototype's body paints them; other bodies take the colours only)
  */
-export const LIVERIES: LiveryConfig[] = [
+const ALL_LIVERIES: LiveryConfig[] = [
   {
     id: "librecorsa",
     name: "LibreCorsa #26",
@@ -181,10 +212,17 @@ export const LIVERIES: LiveryConfig[] = [
     accent: "#f2b705",
     number: "3",
     decals: ORACLE_RED_BULL_DECALS,
+    notInStoreBuild: true,
   },
   // Event branch: the event's livery (src/lib/kiosk/event-livery.ts), the kiosk's car
   EVENT_LIVERY,
 ];
+
+/**
+ * The liveries this copy of the game offers and paints: in the Android app, all but the Red Bull one. A saved choice
+ * of a missing livery falls back to the first, and so does an AI car that wore it; the saved choice stays as it was.
+ */
+export const LIVERIES: LiveryConfig[] = isStoreBuild() ? ALL_LIVERIES.filter((l) => !l.notInStoreBuild) : ALL_LIVERIES;
 
 function turnsOf(raw: RawTrackJson): TurnMetadata[] {
   return (raw.turns as TurnMetadata[]).map((t) => ({ ...t, sector: t.sector as 1 | 2 | 3 }));
@@ -227,7 +265,8 @@ export interface TrackMetaExtras {
    * `roadMaterials`: the scan's racing-surface materials (build_track.py), drawn with the asphalt shader;
    * `cutBoxes` / `cutMaterials`: scan geometry standing on the racing line, left out at load (scenery-cuts.ts);
    * `conformSurfaces`: the off-road collider bands and the visual road are fitted to `Track_Surface_Road` at load
-   * (TrackColliderQuery.ts), for converted circuits whose surfaces don't meet the road edge as exported;
+   * (TrackColliderQuery.ts), for converted circuits whose surfaces don't meet the road edge as exported, and the bands
+   * are taken off the road where they lie on it;
    * `scenery`: scenery files drawn with the circuit (instanced trees: scenery-instances.ts);
    * `barrierMeshes`: drawn barriers the converted circuit gives no collider (Monaco's Armco ends and orange blocks),
    * by mesh name: the cars hit them and the racing line keeps clear of them as of the `Track_Collider_Wall_*` walls;
@@ -247,8 +286,15 @@ export interface TrackMetaExtras {
     groundMaterials?: Record<string, TrackSurfaceKind>;
   };
   credit?: { title: string; author: string; url: string; short?: string; license: string; licenseUrl: string };
+  /** A point-to-point course (a hill climb): its finish line and the ends of its road */
+  pointToPoint?: PointToPointDef;
   /** Per-kind overrides of the default surface table (track-surfaces.ts) */
   surfaceTable?: SurfaceTableOverrides;
+  /**
+   * A layout sharing its model with another: the stretches of this lap ([from, to], m) where the other layout's road
+   * leaves it, beyond its edges. There this lap's road edge and kerbs are the track limits (course-limits.ts)
+   */
+  otherLayoutRoads?: [number, number][];
   /**
    * Drive-plan check per car (scripts/ai/check-lines.ts): a flying AI lap on the full physics tracking the stored line.
    * The field drives a car on plans only where its check passed (no barrier hit, on the road, on the line, near the
@@ -283,6 +329,22 @@ export function getActiveTrackMetadata(): RawTrackJson["metadata"] & TrackMetaEx
   return activeRaw.metadata as RawTrackJson["metadata"] & TrackMetaExtras;
 }
 
+/** The active circuit's point-to-point course, or null on a circuit that laps */
+export function getActivePointToPoint(): PointToPointDef | null {
+  return getActiveTrackMetadata().pointToPoint ?? null;
+}
+
+/** What a timed lap is called on the active circuit: a hill climb's is a run */
+export const activeLapWord = (): "Run" | "Lap" => (getActivePointToPoint() ? "Run" : "Lap");
+
+/**
+ * The distance a lap time is set over: the lap, or on a point-to-point course the run from the start line to the
+ * finish line (`TRACK_TOTAL_LENGTH_M` there is the whole loop, most of it not road)
+ */
+export function getActiveTimedLengthM(): number {
+  return getActivePointToPoint()?.finishS ?? TRACK_TOTAL_LENGTH_M;
+}
+
 /** The active circuit's surface table, with the track data it was resolved from (as cachedBuiltTrack keeps its id) */
 let cachedSurfaceTable: { raw: RawTrackJson; table: SurfaceTable } | null = null;
 
@@ -307,7 +369,8 @@ export function setActiveTrack(id: string, raw: RawTrackJson = rawTrackJson): vo
   // Everything is read from `raw` before anything changes: malformed data throws with the previous circuit whole
   const meta = raw.metadata as RawTrackJson["metadata"] & TrackMetaExtras;
   const rawDs = meta.lengthMeters / raw.samples.length;
-  const drsZones = [...(raw.drsZones as DrsZoneDef[])];
+  // Every car, the AI and the HUD read the zones from here: their corrections are made once, before anything sees them
+  const drsZones = correctedDrsZones(id, meta.lengthMeters, raw.drsZones as DrsZoneDef[]);
   const cameras = [...(raw.cameras as TracksideTvCameraDef[])];
   const spawnGrid = [...(raw.spawnGrid as GridSlotDef[])];
   const turns = turnsOf(raw);
@@ -361,8 +424,79 @@ let cachedBuiltTrack: BuiltTrackData | null = null;
 export const LAT_PROFILE_OFFSETS = [-12, -8, -5, -2.5, 0, 2.5, 5, 8, 12] as const;
 
 /**
+ * A profile column counts as road once the road's edge is past it, and comes in over this far (m) as the edge moves out
+ * past it; the column after it is eased in past the edge over the same distance (scripts/tracks/build_track.py
+ * EDGE_COLUMN_RAMP_M)
+ */
+const EDGE_COLUMN_RAMP_M = 0.5;
+
+const LAT_CENTRE = (LAT_PROFILE_OFFSETS.length - 1) >> 1;
+
+/** The profile's height at `lat` (|lat| <= 12) by plain interpolation between its columns */
+function profileBetweenColumns(yp: readonly number[], lat: number): number {
+  for (let k = 0; k < LAT_PROFILE_OFFSETS.length - 1; k++) {
+    const l0 = LAT_PROFILE_OFFSETS[k];
+    const l1 = LAT_PROFILE_OFFSETS[k + 1];
+    if (lat >= l0 && lat <= l1) return yp[k] + ((yp[k + 1] - yp[k]) * (lat - l0)) / (l1 - l0);
+  }
+  return yp[LAT_CENTRE];
+}
+
+/** |lateral offset| of the profile column `m` columns out from the centre on `side` (−1 left, +1 right) */
+function columnLat(side: number, m: number): number {
+  return Math.abs(LAT_PROFILE_OFFSETS[LAT_CENTRE + side * m]);
+}
+
+/** The line through columns `m0` and `m1` on `side`, at |offset| `x` */
+function columnLine(yp: readonly number[], side: number, m0: number, m1: number, x: number): number {
+  const y0 = yp[LAT_CENTRE + side * m0];
+  const l0 = columnLat(side, m0);
+  return y0 + ((yp[LAT_CENTRE + side * m1] - y0) * (x - l0)) / (columnLat(side, m1) - l0);
+}
+
+/** The road at |offset| `x` <= half width, `j` the outermost column the edge is past */
+function roadSurface(yp: readonly number[], side: number, j: number, halfWidth: number, x: number): number {
+  if (j <= 1) return columnLine(yp, side, 0, 1, x);
+  if (x <= columnLat(side, j - 1)) return profileBetweenColumns(yp, side * x);
+  const w = Math.min(1, (halfWidth - columnLat(side, j)) / EDGE_COLUMN_RAMP_M);
+  return (1 - w) * columnLine(yp, side, j - 2, j - 1, x) + w * columnLine(yp, side, j - 1, j, x);
+}
+
+/** Past the edge: from the edge's height to column `m`, then on through the columns past it */
+function easeToColumn(yp: readonly number[], side: number, m: number, yEdge: number, halfWidth: number, lat: number): number {
+  const a = Math.abs(lat);
+  if (m > LAT_CENTRE || a >= columnLat(side, m)) return profileBetweenColumns(yp, lat);
+  return yEdge + ((yp[LAT_CENTRE + side * m] - yEdge) * (a - halfWidth)) / (columnLat(side, m) - halfWidth);
+}
+
+/**
+ * Height at `lat` (|lat| <= 12, + right) of a road of half width `halfWidth` from its profile `yp`. The road keeps its own
+ * crossfall out to its edge: the columns past the edge hold the ground beside the road (a bank, a ditch, the ground
+ * under a bridge), so from the last road column on the height follows the line through the last two road columns, and
+ * only past the edge does it ease to the next column out. A column counts as road once the edge is past it and comes in
+ * over EDGE_COLUMN_RAMP_M as the edge moves on; past the edge the column after the next one out comes in the same way
+ * while the next one is within that distance, so nothing steps as the road widens past a column. The converter builds
+ * the road colliders by the same rule (scripts/tracks/build_track.py `road_profile_height`).
+ */
+function roadProfileHeight(yp: readonly number[], halfWidth: number, lat: number): number {
+  const side = lat > 0 ? 1 : -1;
+  const a = Math.abs(lat);
+  // j: the outermost column the edge is past
+  let j = 0;
+  while (j < LAT_CENTRE && columnLat(side, j + 1) < halfWidth) j++;
+  if (a <= halfWidth) return roadSurface(yp, side, j, halfWidth, a);
+  if (j >= LAT_CENTRE) return profileBetweenColumns(yp, lat);
+  const yEdge = roadSurface(yp, side, j, halfWidth, halfWidth);
+  const u = Math.min(1, (columnLat(side, j + 1) - halfWidth) / EDGE_COLUMN_RAMP_M);
+  const next = easeToColumn(yp, side, j + 1, yEdge, halfWidth, lat);
+  if (u >= 1 || j + 2 > LAT_CENTRE) return next;
+  return u * next + (1 - u) * easeToColumn(yp, side, j + 2, yEdge, halfWidth, lat);
+}
+
+/**
  * Evaluates the exact 3D track surface height `y` at a signed lateral offset `lateralOffsetM`
- * (`-left .. +right` along horizontal track binormal) for a `TrackSamplePoint`.
+ * (`-left .. +right` along horizontal track binormal) for a `TrackSamplePoint`: on the road and up to 12 m out, the
+ * profile read by `roadProfileHeight` for the sample's width; further out, the outermost columns' slope carried on.
  */
 export function evaluateSampleLateralHeightM(
   sample: TrackSamplePoint,
@@ -384,15 +518,7 @@ export function evaluateSampleLateralHeightM(
       (LAT_PROFILE_OFFSETS[n - 1] - LAT_PROFILE_OFFSETS[n - 2]);
     return yp[n - 1] + slopeRight * (lateralOffsetM - LAT_PROFILE_OFFSETS[n - 1]);
   }
-  for (let k = 0; k < n - 1; k++) {
-    const l0 = LAT_PROFILE_OFFSETS[k];
-    const l1 = LAT_PROFILE_OFFSETS[k + 1];
-    if (lateralOffsetM >= l0 && lateralOffsetM <= l1) {
-      const alpha = (lateralOffsetM - l0) / (l1 - l0);
-      return yp[k] + (yp[k + 1] - yp[k]) * alpha;
-    }
-  }
-  return sample.position.y;
+  return roadProfileHeight(yp, sample.width / 2, lateralOffsetM);
 }
 
 /**
@@ -718,8 +844,8 @@ export function getActiveTrackData(numSamples = 1200): BuiltTrackData {
     });
   }
 
-  // Target speeds along the AI line from the VF26 vehicle model (balanced aero package)
-  const nominalProfile = computeSpeedProfile(samples, createVf26ProfileCarModel('balanced'));
+  // Target speeds along the AI line from the LC26 vehicle model (balanced aero package)
+  const nominalProfile = computeSpeedProfile(samples, createLc26ProfileCarModel('balanced'));
   for (let i = 0; i < NUM_SAMPLES; i++) {
     samples[i].optimalSpeedKmh = nominalProfile.speedMs[i] * 3.6;
     samples[i].brakeLimitKmh = nominalProfile.brakeEnvelopeMs[i] * 3.6;
@@ -1007,11 +1133,13 @@ export function getActiveTrackData(numSamples = 1200): BuiltTrackData {
   if (!meshUrl) console.warn(`Circuit "${ACTIVE_TRACK_ID}" has no mesh url: drawing the procedural stand-in`);
   cachedBuiltTrack = {
     id: ACTIVE_TRACK_ID,
+    pointToPoint: getActiveTrackMetadata().pointToPoint,
     meshUrl,
     roadMaterials: getActiveTrackMetadata().mesh?.roadMaterials,
     sceneryCuts: getActiveTrackMetadata().mesh?.cutBoxes,
     sceneryCutMaterials: getActiveTrackMetadata().mesh?.cutMaterials,
     sceneryUrls: getActiveTrackMetadata().mesh?.scenery,
+    otherLayoutRoads: getActiveTrackMetadata().otherLayoutRoads,
     spawnGrid: [...RWANDA_SPAWN_GRID],
     samples,
     totalLengthM: totalLength,

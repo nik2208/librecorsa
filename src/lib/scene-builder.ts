@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { BuiltTrackData } from "@/lib/track-data";
+import { inDeadZone, type BuiltTrackData } from "@/lib/track-data";
 import { withBasePath } from "@/lib/base-path";
 import { aiLineOffsetM, type BrakingGuide } from "@/lib/sim/speed-profile";
 import { evaluateDynamicBrakingUrgency } from "@/lib/sim/track-occupancy";
@@ -9,19 +9,24 @@ import {
   type RacingLineMask,
 } from "@/lib/render/asphalt-sheen";
 import type { RacingLineId, RunoffStyle } from "@/types/f1";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
+import { createGltfLoader } from "@/lib/render/gltf-loader";
+import { acquireKtx2Loader, ktx2Ready, releaseKtx2Loader } from "@/lib/render/ktx2";
+import { ktx2ModelUrl } from "@/lib/ktx2-models";
 import { assetProgress } from "@/lib/loading/asset-progress";
 import { applySceneryDetail, prepareTreeGeometry, sceneryKind, setSceneryTime } from "@/lib/render/scenery-detail";
 import { attachSceneryInstances, loadSceneryInstances, resetSceneryInstances } from "@/lib/render/scenery-instances";
 import { cleanScanMaterial } from "@/lib/render/scan-materials";
 import { trackColliders } from "@/lib/sim/track-colliders";
 import { fitVisualRoad, inheritedTag } from "@/lib/render/fit-visual-road";
+import { fillRoadSeams, type SeamFillOptions } from "@/lib/render/seam-fill";
 import { createGroundHit, type GroundQuery } from "@/lib/sim/f12026-car/TrackColliderQuery";
 import { OVERLAY_LAYER } from "@/lib/render/layers";
 import { cutSceneryBoxes, isCutMaterialMesh, type SceneryCutBox } from "@/lib/scenery-cuts";
 import { freezeStaticTransforms, singlePassTransparency } from "@/lib/render/static-scene";
 import { applyEventBranding } from "@/lib/kiosk/event-scene-branding";
+import { attachDriftingObjects, type DriftingObjects } from "@/lib/render/drifting-objects";
+import { loadVenueLayout } from "@/lib/render/venue-model";
+import { venueModelFiles, type VenueModelFiles, type VenuePair } from "@/lib/venue-models";
 
 /** Height of a racing-line dash over the driving surface: clear of its ripple, low enough to read as paint */
 const DASH_SEAT_LIFT_M = 0.035;
@@ -50,7 +55,8 @@ export interface BuiltCircuitScene {
   trackRoot: Promise<THREE.Object3D>;
 }
 
-// RISE Motordrome: one glTF exported from the Blender build (public/tracks/rwanda_official/rwanda_official.glb).
+// RISE Motordrome: one glTF exported from the Blender build (public/tracks/rwanda_official/rwanda_official.glb), with
+// the scenery of its Assetto Corsa release added by scripts/rwanda-official/ac_merge.mjs (the same naming).
 // Node naming contract: Track_* (racing surfaces, barriers), Track_Collider_* (invisible physics proxies,
 // extras.collider = true), Terrain, Lake, Env_* (vegetation, canopies) and Prop_* (buildings, stands, gantry).
 // The other circuits (scripts/tracks/build_track.py) wrap a converted scan in `Track_Model` and append hidden
@@ -120,6 +126,18 @@ const SHADOW_RECEIVE_ONLY = new Set([
   "Track_Kerb_Blocks",
 ]);
 
+/**
+ * A `castShadow` extra (true or false) on the mesh or the nearest node above it, below `root`; undefined when none
+ * sets one, and the naming and size rules decide. glTF node and mesh extras land in `userData`.
+ */
+export function castShadowExtra(obj: THREE.Object3D, root: THREE.Object3D): boolean | undefined {
+  for (let node: THREE.Object3D | null = obj; node && node !== root; node = node.parent) {
+    const v = node.userData?.castShadow;
+    if (typeof v === "boolean") return v;
+  }
+  return undefined;
+}
+
 const COLLIDER_DEBUG_COLOURS: Record<string, number> = {
   Track_Surface_Road: 0x3b82f6,
   Track_Surface_Kerb: 0xef4444,
@@ -171,6 +189,10 @@ function loadTrackGlb(
   cutBoxes: readonly SceneryCutBox[] = [],
   /** Scan materials whose meshes are left out (track data `mesh.cutMaterials`) */
   cutMaterials: readonly string[] = [],
+  /** The layout's split model (venue-models.ts): loaded in place of `url`, which stays the fallback */
+  split?: VenueModelFiles,
+  /** The lap's edges are the ones whose seams get filled (seam-fill.ts) */
+  lap?: SeamFillOptions["lap"],
   /** Event branch: the circuit's track data, for the event's trackside boards (src/lib/kiosk/event-scene-branding.ts) */
   eventTrack?: BuiltTrackData
 ): void {
@@ -191,21 +213,57 @@ function loadTrackGlb(
   /** Each source material's decal clones, by polygon offset and decal flag: meshes that share a material share them */
   const decalClones = new WeakMap<THREE.Material, Map<string, THREE.Material>>();
   assetProgress.begin("track");
+  // A superseded download keeps running: its bytes must not move the newer load's progress bar
+  const onProgress = (event: { loaded: number; total: number; lengthComputable?: boolean }) => {
+    if (current()) assetProgress.progress("track", event);
+  };
   // Circuit scans are meshopt-compressed (scripts/compress-track-glb.mjs)
-  new GLTFLoader()
-    .setMeshoptDecoder(MeshoptDecoder)
-    // A superseded download keeps running: its bytes must not move the newer load's progress bar
-    .loadAsync(withBasePath(url), (event) => {
-      if (current()) assetProgress.progress("track", event);
-    })
-    .then((gltf) => {
-      const root = gltf.scene;
+  const ownUrl = url;
+  const loadGlb = (file: string) =>
+    createGltfLoader()
+      .loadAsync(withBasePath(file), onProgress)
+      .then((gltf) => gltf.scene);
+  const loadOwnGlb = () => loadGlb(ownUrl);
+  // GPU-compressed textures for phones (ktx2-models.ts, a venue's ktx2Build; render/ktx2.ts decides who gets them)
+  const ktx2Url = ktx2ModelUrl(url);
+  const ktx2 = ktx2Url || split?.ktx2 ? acquireKtx2Loader() : null;
+  // A load with KTX2 textures also fails when the transcoder can't start (else it would wait for them forever)
+  const transcoded = <T>(load: Promise<T>) => (ktx2 ? Promise.all([load, ktx2Ready()]).then(([result]) => result) : load);
+  // A layout of a venue with a shared model loads that pair (the same scene); its own GLB if the pair can't load
+  const loadPair = (files: VenuePair, label: string, fallback: () => Promise<THREE.Group>) => {
+    const pair = loadVenueLayout(withBasePath(files.layoutUrl), withBasePath(files.sharedUrl), onProgress);
+    return (files === split?.ktx2 ? transcoded(pair) : pair).catch((err) => {
+      if (!current()) throw new SupersededLoad();
+      console.warn("%s not available, falling back:", label, err);
+      return fallback();
+    });
+  };
+  const loadWebpPairOrOwn = () => (split ? loadPair(split, `Venue model ${split.venue} ${split.build}`, loadOwnGlb) : loadOwnGlb());
+  const loadSplitOrOwn = () =>
+    split?.ktx2 && ktx2 ? loadPair(split.ktx2, `Venue model ${split.venue} ${split.ktx2.build} (KTX2)`, loadWebpPairOrOwn) : loadWebpPairOrOwn();
+  const chosen =
+    ktx2Url && ktx2
+      ? transcoded(loadGlb(ktx2Url)).catch((err) => {
+          if (!current()) throw new SupersededLoad();
+          console.warn("KTX2 model %s not available, loading %s:", ktx2Url, url, err);
+          return loadSplitOrOwn();
+        })
+      : loadSplitOrOwn();
+  // The transcoder's workers are freed once the circuit's textures are in
+  const loaded = ktx2 ? chosen.finally(releaseKtx2Loader) : chosen;
+  loaded
+    .then((root) => {
       root.name = "CircuitTrack";
       const box = new THREE.Box3();
       const size = new THREE.Vector3();
       root.updateMatrixWorld(true);
       const colliders = trackColliders(root);
-      if (colliders.conformSurfaces && colliders.ground) fitVisualRoad(root, colliders.ground);
+      if (colliders.conformSurfaces && colliders.ground) {
+        fitVisualRoad(root, colliders.ground, roadMaterials);
+        // The mod's gaps between the asphalt and the terrain beside it, fitted with their heights kept, open onto the
+        // sky's ground: filled with the terrain's own surface (seam-fill.ts)
+        fillRoadSeams(root, roadMaterials, { lap });
+      }
       root.traverse((obj) => {
         // Exported node extras land on the node; the mesh child inherits nothing, so walk up.
         let node: THREE.Object3D | null = obj;
@@ -243,11 +301,20 @@ function loadTrackGlb(
 
         const receiveOnly = SHADOW_RECEIVE_ONLY.has(topName) || isDecal;
         obj.receiveShadow = true;
-        if (topName === "Track_Model") {
-          // Converted scans have no naming contract: only tall things (stands, buildings, trees, barriers) cast
+        const castExtra = castShadowExtra(obj, root);
+        if (castExtra !== undefined) {
+          // Set by the build per node or mesh: a mesh split into pieces keeps its shadow whatever each piece's size
+          obj.castShadow = castExtra;
+        } else if (topName === "Track_Model") {
+          // Converted scans have no naming contract: only tall things (stands, buildings, trees, barriers) cast. What
+          // lies on the ground never does, as a mod draws it: what the fit laid flat on the ground (`onGround`,
+          // fit-visual-road.ts: the asphalt, its lines and markings) and modelled kerbs. Merged across a circuit's
+          // climbs, they passed for tall, and their edges, a centimetre or two over the ground beside them, drew jagged
+          // shadow-map teeth along the lines at a low sun
+          const onGround = obj.userData?.onGround === true || !!inheritedTag(obj, "keepShape", root);
           obj.geometry.computeBoundingBox();
           box.copy(obj.geometry.boundingBox!).applyMatrix4(obj.matrixWorld).getSize(size);
-          obj.castShadow = !isDecal && size.y > 1.2;
+          obj.castShadow = !isDecal && !onGround && size.y > 1.2;
         } else {
           obj.castShadow = !receiveOnly && (topName.startsWith("Prop_") || topName.startsWith("Env_") || topName.startsWith("Track_"));
         }
@@ -764,9 +831,15 @@ export function buildCircuitScene(
   let dashGround: GroundQuery | null = null;
   const dashHit = createGroundHit();
   // Crisp 3D dashed rectangular marker segments along a car's racing line: the four corners of dash i
+  const p2p = track.pointToPoint;
   const dashCorners = (i: number, line: RacingLineId): number[] => {
     const s0 = samples[i];
     const s1 = samples[(i + 1) % n];
+    // A point-to-point course's dead stretch has no road: no dash (all four corners at one point)
+    if (p2p && inDeadZone(p2p, s0.s)) {
+      const { x, y, z } = s0.position;
+      return [x, y, z, x, y, z, x, y, z, x, y, z];
+    }
 
     // The exact line the AI drives and the speed profile / braking markers are computed on
     const p0Base = s0.position.clone().addScaledVector(s0.binormal, aiLineOffsetM(s0, line));
@@ -1059,8 +1132,12 @@ export function buildCircuitScene(
     else if (ownLamps) startLightGroup.visible = false;
   };
 
+  /** A converted circuit's balloons and blimp (drifting-objects.ts), once the circuit has loaded */
+  let drifting: DriftingObjects | null = null;
+
   const updateEnvironment = (elapsedSeconds: number) => {
     setSceneryTime(elapsedSeconds);
+    drifting?.update(elapsedSeconds);
   };
 
   const setGrooveRubber = (rubber: number) => {
@@ -1101,6 +1178,7 @@ export function buildCircuitScene(
     (root) => {
       attachStartLightsToGantry(root);
       collectGrooves(root);
+      drifting = attachDriftingObjects(root);
       resolveTrackRoot(root);
     },
     sheenMask,
@@ -1108,6 +1186,9 @@ export function buildCircuitScene(
     track.roadMaterials ?? [],
     track.sceneryCuts ?? [],
     track.sceneryCutMaterials ?? [],
+    venueModelFiles(track.id),
+    // The road edges a driver sees: across the track and 15 m beyond its sides (the run-off's own asphalt, the pit exit)
+    samples.map((p) => ({ x: p.position.x, z: p.position.z, reach: p.width / 2 + 15 })),
     track
   );
 

@@ -1,10 +1,10 @@
 import * as THREE from "three";
 import type { CarTelemetry } from "@/types/f1";
 import { planarUvGeometry } from "./planar-uv";
-import { VF26_ENGINE } from "@/lib/sim/vf26-data";
+import { revLedBand, revLeds, revRangeFor, type RevLedBand } from "@/lib/sim/rev-range";
 
 /**
- * Steering-wheel screen for the VF26 GLB.
+ * Steering-wheel screen for the LC26 GLB.
  *
  * The display is the `INT_DISPLAY` primitive under `STEER_BASE`: a flat 2-triangle quad facing the driver
  * (normal -Z in model space), 94 mm x 55 mm (aspect ~1.72). Its UVs run 0.04..0.96 x 0.23..0.77 of the unit
@@ -25,15 +25,17 @@ const LED_COUNT = 15;
 const LED_GAP = 4;
 const LED_TOP = 6;
 const LED_H = 24;
-const LED_START_RPM = 10000;
-/** The VF26 wheel's last LED lights at the engine's limiter */
-const LIMITER_RPM = VF26_ENGINE.limiterRpm;
 
 const COLOR_BG = "#000000";
 const COLOR_LED_OFF = "#16191e";
-const COLOR_LED_GREEN = "#22ff55";
-const COLOR_LED_RED = "#ff2b2b";
 const COLOR_LED_BLUE = "#2f7bff";
+/** The wheel's LED colour for each band the HUD lights its shift lights in */
+const LED_BAND_COLOR: Record<RevLedBand, string> = {
+  green: "#22ff55",
+  yellow: "#ffd21f",
+  red: "#ff2b2b",
+  shift: COLOR_LED_BLUE,
+};
 const COLOR_TEXT = "#f4f6f8";
 const COLOR_TEXT_DIM = "#7d8794";
 const COLOR_SLOWER = "#ff3b3b";
@@ -55,12 +57,8 @@ const FONT_TYRE_LABEL = "bold 13px Arial, Helvetica, sans-serif";
 
 const DISPLAY_MATERIAL = "INT_DISPLAY";
 
-type ScreenInput = Pick<CarTelemetry, "rpm" | "gear" | "speedKmh" | "currentLapTimeMs" | "tireTempsC">;
+type ScreenInput = Pick<CarTelemetry, "rpm" | "gear" | "speedKmh" | "currentLapTimeMs" | "tireTempsC" | "f12026">;
 const BLANK_SCREEN: ScreenInput = { rpm: 0, gear: 0, speedKmh: 0, currentLapTimeMs: 0, tireTempsC: [0, 0, 0, 0] };
-
-function clamp01(x: number): number {
-  return x < 0 ? 0 : x > 1 ? 1 : x;
-}
 
 function tyreColour(tempC: number): string {
   let a: readonly [number, number, number];
@@ -114,12 +112,11 @@ export class SteeringWheelDisplay {
   private readonly ctx: CanvasRenderingContext2D | null = null;
   private readonly texture: THREE.CanvasTexture | null = null;
   private lastDrawMs = -Infinity;
-  /** The LED bar's first LED and its limiter (rpm): the VF26's by default */
-  private readonly ledStartRpm: number;
-  private readonly limiterRpm: number;
+  /** The LED bar's first LED and shift point (rpm); unset, the bar follows `revRangeFor` the telemetry's car, as the HUD */
+  private readonly revRange: readonly [number, number] | null;
 
-  constructor(steerRoot: THREE.Object3D, revRange: readonly [number, number] = [LED_START_RPM, LIMITER_RPM]) {
-    [this.ledStartRpm, this.limiterRpm] = revRange;
+  constructor(steerRoot: THREE.Object3D, revRange?: readonly [number, number]) {
+    this.revRange = revRange ?? null;
     let target: THREE.Mesh | null = null;
     steerRoot.traverse((obj) => {
       if (target) return;
@@ -197,18 +194,18 @@ export class SteeringWheelDisplay {
     ctx.fillStyle = COLOR_BG;
     ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
-    // RPM LEDs: green / red / blue segments, all blue and flashing at the limiter
-    const rpm = Number.isFinite(t.rpm) ? t.rpm : 0;
+    // RPM LEDs on the HUD's range and bands (green / yellow / red / blue), all blue and flashing at the shift point.
+    // A wheel built without a range follows the car the telemetry names, as the HUD does.
+    const range = this.revRange ?? revRangeFor(t.f12026?.carId);
     const segW = (BOX_W - (LED_COUNT - 1) * LED_GAP) / LED_COUNT;
-    const litCount = Math.round(clamp01((rpm - this.ledStartRpm) / (this.limiterRpm - this.ledStartRpm)) * LED_COUNT);
-    const atLimiter = rpm >= this.limiterRpm;
+    const { lit: litCount, atShift } = revLeds(t.rpm, range, LED_COUNT);
     const flashOn = Math.floor(nowMs / 100) % 2 === 0;
     for (let i = 0; i < LED_COUNT; i++) {
       let colour = COLOR_LED_OFF;
-      if (atLimiter) {
+      if (atShift) {
         if (flashOn) colour = COLOR_LED_BLUE;
       } else if (i < litCount) {
-        colour = i < 5 ? COLOR_LED_GREEN : i < 10 ? COLOR_LED_RED : COLOR_LED_BLUE;
+        colour = LED_BAND_COLOR[revLedBand(i, LED_COUNT)];
       }
       ctx.fillStyle = colour;
       ctx.fillRect(BOX_X + i * (segW + LED_GAP), LED_TOP, segW, LED_H);

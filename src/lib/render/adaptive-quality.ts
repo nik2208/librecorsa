@@ -1,0 +1,313 @@
+/**
+ * Automatic quality (Settings > Display > Graphics): when the frames stay slow while driving, the graphics step down,
+ * one knob at a time, on top of what the player chose. A phone that heats up after a few minutes (the iPhone 11 report:
+ * smooth, then stuttering after 4-5 minutes) slows its chip down; this gives the frames back their time.
+ *
+ * Nothing here touches the simulation: only the renderer's settings change, so physics timing, lap validity and the
+ * online sync are as they were. The saved settings are never written either: the steps are an overlay, gone when the
+ * player picks other graphics or the session ends.
+ *
+ * The ladder, cheapest to see first, each rung chosen from the costs measured on 14 Nov 2026 (Medium on an M4 Max
+ * emulating a phone): sun shadows 2.6-5 ms, MSAA 2.3-4.9 ms, the reflection probe's prefilter dropping a frame every
+ * few frames. None of the rungs recompiles a shader (switching the shadows off would, for every lit material, so the
+ * ladder stops short of it): a step costs at most a frame or two.
+ *  1-2. Render resolution 85 %, then 70 % of the player's (pixels: -28 %, -51 %)
+ *  3.   Live car reflections off (the cars keep the sky's; the probe's spike frames go)
+ *  4.   MSAA and bloom off
+ *  5.   Sun shadow maps at half resolution per side (a quarter of the texels; the shadows stay)
+ * A rung that would change nothing for the chosen preset (Low has no reflections or MSAA) is not on its ladder.
+ *
+ * When: once a second the frames drawn in that second are judged against the frame budget (16.7 ms, or 33.3 ms with
+ * the 30 fps cap, or the screen's own rate when the system holds it lower). A second is slow when its 90th percentile
+ * is over 1.3 x the budget: on a 60 Hz screen, where a late frame waits for the next vsync, that is more than one frame
+ * in ten missing its vsync (the stutter players see), while one hitch a second (a garbage collection) is not. Not 1.25:
+ * under the 30 fps cap a 120 Hz screen puts a frame that is one of its vsyncs late at 41.7 ms, exactly 1.25 x 33.3. An
+ * 8 ms slip barely shows, and in a throttled headless run all five steps for it bought 29 fps against 27.5. Three slow
+ * seconds in a row step down once. Nothing is judged in the first 20 s on track (shader and texture warm-up), for 5 s
+ * after a step (it may hitch itself) or 3 s after a pause, a menu, a hidden tab or a replay.
+ *
+ * Hysteresis: within a session the steps only go down, never back up on their own, races or not. A phone that
+ * cooled while running lighter would heat up again at full quality and stutter again: a step back up every few
+ * minutes is exactly the oscillation to avoid, and a mid-race change of look is a distraction. The next session (a new
+ * circuit, a reload) starts on the player's own settings again, or one rung better than the last one ended when
+ * that was less than 10 minutes ago (the phone is likely still warm). Changing the graphics by hand starts over too.
+ */
+
+export type GraphicsQuality = "low" | "medium" | "high";
+
+/** How the renderer is set up: the preset, and the knobs the step-down turns down on top of it */
+export interface RenderPlan {
+  quality: GraphicsQuality;
+  /** Multiplies the device pixel ratio after the preset's own cap */
+  renderScale: number;
+  /** The live car reflections (the probe); off on Low */
+  reflections: boolean;
+  /** MSAA, and bloom where the preset has it */
+  msaa: boolean;
+  /** The sun's cascaded shadow maps: full resolution, half per side, or none (Low) */
+  shadows: "full" | "half" | "off";
+}
+
+/** The base plan of a preset at the player's render scale */
+export function presetPlan(quality: GraphicsQuality, renderScale: number): RenderPlan {
+  return {
+    quality,
+    renderScale,
+    reflections: quality !== "low",
+    msaa: quality !== "low",
+    shadows: quality === "low" ? "off" : "full",
+  };
+}
+
+/** The scale rungs never take the render resolution below this, or below the player's own when that is lower */
+export const RENDER_SCALE_FLOOR = 0.6;
+
+export type RungId = "res85" | "res70" | "reflections" | "msaa" | "shadows";
+
+export interface Rung {
+  id: RungId;
+  /** What the step did, for the report */
+  label: string;
+  /** The plan with this rung on; the same plan when it changes nothing */
+  apply(plan: RenderPlan, chosenScale: number): RenderPlan;
+}
+
+const scaled = (chosen: number, f: number) => Math.max(chosen * f, Math.min(chosen, RENDER_SCALE_FLOOR));
+
+const RUNGS: readonly Rung[] = [
+  { id: "res85", label: "resolution 85%", apply: (p, s) => ({ ...p, renderScale: Math.min(p.renderScale, scaled(s, 0.85)) }) },
+  { id: "res70", label: "resolution 70%", apply: (p, s) => ({ ...p, renderScale: Math.min(p.renderScale, scaled(s, 0.7)) }) },
+  { id: "reflections", label: "car reflections off", apply: (p) => (p.reflections ? { ...p, reflections: false } : p) },
+  { id: "msaa", label: "anti-aliasing off", apply: (p) => (p.msaa ? { ...p, msaa: false } : p) },
+  { id: "shadows", label: "lighter shadows", apply: (p) => (p.shadows === "full" ? { ...p, shadows: "half" } : p) },
+];
+
+const samePlan = (a: RenderPlan, b: RenderPlan) =>
+  a.quality === b.quality &&
+  Math.abs(a.renderScale - b.renderScale) < 1e-6 &&
+  a.reflections === b.reflections &&
+  a.msaa === b.msaa &&
+  a.shadows === b.shadows;
+
+/** The rungs that change something for this preset and render scale, in order: level n has the first n on */
+export function ladderFor(quality: GraphicsQuality, renderScale: number): readonly Rung[] {
+  const out: Rung[] = [];
+  let plan = presetPlan(quality, renderScale);
+  for (const rung of RUNGS) {
+    const next = rung.apply(plan, renderScale);
+    if (samePlan(next, plan)) continue;
+    out.push(rung);
+    plan = next;
+  }
+  return out;
+}
+
+/** The plan at `level` steps down from the player's choice (clamped to the ladder) */
+export function planAt(quality: GraphicsQuality, renderScale: number, level: number): RenderPlan {
+  const ladder = ladderFor(quality, renderScale);
+  let plan = presetPlan(quality, renderScale);
+  for (let i = 0; i < Math.min(level, ladder.length); i++) plan = ladder[i].apply(plan, renderScale);
+  return plan;
+}
+
+/** What is lowered at `level`, for the Settings hint and the report ("resolution 70%, car reflections off") */
+export function loweredSummary(quality: GraphicsQuality, renderScale: number, level: number): string {
+  const ladder = ladderFor(quality, renderScale).slice(0, level);
+  // The second scale rung replaces the first in the summary
+  const shown = ladder.filter((r, i) => !(r.id === "res85" && ladder[i + 1]?.id === "res70"));
+  return shown.map((r) => r.label).join(", ");
+}
+
+// ---------------------------------------------------------------------------
+// When to step
+// ---------------------------------------------------------------------------
+
+export const STEP_DOWN = {
+  /** One judgement per this much time (ms) */
+  windowMs: 1000,
+  /** A window is slow when this percentile of its drawn frames' intervals... */
+  percentile: 0.9,
+  /** ...is over the budget times this */
+  overBudget: 1.3,
+  /** Slow windows in a row that step down once */
+  slowWindows: 3,
+  /** A window with fewer drawn frames is not judged (a stall, the tab hidden) */
+  minFrames: 5,
+  /** Nothing is judged this long after driving first starts in a session (ms): shaders and textures still warming */
+  startGraceMs: 20_000,
+  /** ...after a step (ms): the step's own hitch, and time for the frames to settle */
+  stepGraceMs: 5_000,
+  /** ...after a pause, a menu, a replay or a hidden tab (ms) */
+  resumeGraceMs: 3_000,
+  /** A session starting this soon after the last one stepped down (ms) starts one rung better than it ended */
+  carryMs: 10 * 60_000,
+} as const;
+
+/** The frame budget (ms): 60 fps, or the cap, or the screen's own rate when the system holds the frames lower */
+export function frameBudgetMs(capFps: number, displayIntervalMs: number): number {
+  const target = capFps > 0 ? 1000 / capFps : 1000 / 60;
+  return Math.max(target, displayIntervalMs);
+}
+
+/** The value at fraction `q` of the sorted samples (nearest rank) */
+export function percentile(sorted: readonly number[], q: number): number {
+  if (sorted.length === 0) return 0;
+  const i = Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1));
+  return sorted[i];
+}
+
+/**
+ * The fastest the screen and the system have let the page run this session (ms): the lowest 10th percentile of two
+ * seconds' animation frame intervals seen so far, fed from the loading screen on (which draws nothing, so it runs at
+ * the screen's own rate). A 60 Hz screen reads 16.7, 120 Hz 8.3. iOS in Low Power Mode holds every page at 30 fps from
+ * the start and reads 33.3, so its steady 30 is not taken for a hot phone (and stepped down to the floor for nothing).
+ * A phone that slows down later keeps the 16.7 it showed before: its steady 30 is the heat, and is stepped down.
+ * Low Power Mode switched on mid-session reads as heat too (the graphics step down; it saves battery as well).
+ */
+export class DisplayRate {
+  private readonly samples: number[];
+  private next = 0;
+  private count = 0;
+  private lowestMs = Infinity;
+  private sinceSort = 0;
+
+  constructor(private readonly size = 120) {
+    this.samples = new Array<number>(size).fill(0);
+  }
+
+  /** An animation frame's interval (ms); stalls over 250 ms are not the screen's rate and are left out */
+  add(intervalMs: number): void {
+    if (!(intervalMs > 0) || intervalMs > 250) return;
+    this.samples[this.next] = intervalMs;
+    this.next = (this.next + 1) % this.size;
+    this.count = Math.min(this.count + 1, this.size);
+    if (++this.sinceSort >= 30 && this.count === this.size) this.refresh();
+  }
+
+  private refresh(): void {
+    this.sinceSort = 0;
+    const sorted = this.samples.slice().sort((a, b) => a - b);
+    this.lowestMs = Math.min(this.lowestMs, percentile(sorted, 0.1));
+  }
+
+  /** 16.7 until two seconds of frames have been seen */
+  get intervalMs(): number {
+    return Number.isFinite(this.lowestMs) ? this.lowestMs : 1000 / 60;
+  }
+}
+
+/**
+ * A decision: "step" takes the next rung (`level` is the level now, 1 = the first rung on); "floor" says the frames
+ * stayed slow with every rung already on (once per ladder). `p90Ms` and `budgetMs`: the last slow second's 90th
+ * percentile and the budget it was judged against.
+ */
+export type GovernorEvent = { kind: "step"; level: number; p90Ms: number; budgetMs: number } | { kind: "floor"; p90Ms: number; budgetMs: number };
+
+/** The step-down's decisions: fed the frames drawn while driving, it says when to take the next rung */
+export class QualityGovernor {
+  private levelNow: number;
+  private maxLevel: number;
+  private windowStartMs = -1;
+  private intervals: number[] = [];
+  private slowRun = 0;
+  /** Nothing is judged before this time (ms); -1: the next frame sets it */
+  private graceUntilMs = -1;
+  private started = false;
+  private floorSaid = false;
+
+  constructor(maxLevel: number, startLevel = 0) {
+    this.maxLevel = maxLevel;
+    this.levelNow = Math.min(startLevel, maxLevel);
+  }
+
+  get level(): number {
+    return this.levelNow;
+  }
+
+  /** The level with every rung on */
+  get floor(): number {
+    return this.maxLevel;
+  }
+
+  /** The player chose other graphics: their ladder, from `level` (their own settings at 0) */
+  reset(maxLevel: number, level = 0): void {
+    this.maxLevel = maxLevel;
+    this.levelNow = Math.min(level, maxLevel);
+    this.floorSaid = false;
+    this.clearWindow();
+    // A change of graphics may hitch: judged again a grace period after the next frame
+    if (this.started) this.graceUntilMs = -1;
+  }
+
+  /** Driving stopped (pause, the menus, a replay, a hidden tab): judging resumes a grace period after the next frame */
+  interrupt(): void {
+    this.clearWindow();
+    this.graceUntilMs = -1;
+  }
+
+  private clearWindow(): void {
+    this.windowStartMs = -1;
+    this.intervals = [];
+    this.slowRun = 0;
+  }
+
+  /** A frame drawn while driving, `intervalMs` after the previous drawn one, against `budgetMs`: what to do now */
+  frame(nowMs: number, intervalMs: number, budgetMs: number): GovernorEvent | null {
+    if (this.graceUntilMs < 0) {
+      this.graceUntilMs = nowMs + (this.started ? STEP_DOWN.resumeGraceMs : STEP_DOWN.startGraceMs);
+      this.started = true;
+      return null;
+    }
+    if (nowMs < this.graceUntilMs) return null;
+    if (this.windowStartMs < 0) {
+      this.windowStartMs = nowMs;
+      return null;
+    }
+    // A stall (a hidden tab, a debugger) is not the frame rate
+    if (intervalMs > 0 && intervalMs < 1000) this.intervals.push(intervalMs);
+    if (nowMs - this.windowStartMs < STEP_DOWN.windowMs) return null;
+    this.windowStartMs = nowMs;
+    const frames = this.intervals;
+    this.intervals = [];
+    if (frames.length < STEP_DOWN.minFrames) {
+      this.slowRun = 0;
+      return null;
+    }
+    const p90Ms = percentile(frames.sort((a, b) => a - b), STEP_DOWN.percentile);
+    if (p90Ms <= budgetMs * STEP_DOWN.overBudget) {
+      this.slowRun = 0;
+      return null;
+    }
+    if (++this.slowRun < STEP_DOWN.slowWindows) return null;
+    this.slowRun = 0;
+    if (this.levelNow >= this.maxLevel) {
+      if (this.floorSaid) return null;
+      this.floorSaid = true;
+      return { kind: "floor", p90Ms, budgetMs };
+    }
+    this.levelNow++;
+    this.graceUntilMs = nowMs + STEP_DOWN.stepGraceMs;
+    this.windowStartMs = -1;
+    return { kind: "step", level: this.levelNow, p90Ms, budgetMs };
+  }
+}
+
+/**
+ * What the last session ended on, for the next one in this page (a circuit switch remounts the drive): the player's
+ * graphics it was for, the level, and when it last stepped down (ms, performance.now())
+ */
+let lastSession: { key: string; level: number; atMs: number } | null = null;
+
+const choiceKey = (quality: GraphicsQuality, renderScale: number) => `${quality}@${renderScale.toFixed(2)}`;
+
+/** Where a new session starts: one rung better than the last ended, when that was recent and on the same graphics */
+export function carriedLevel(quality: GraphicsQuality, renderScale: number, nowMs: number): number {
+  const last = lastSession;
+  if (!last || last.key !== choiceKey(quality, renderScale) || nowMs - last.atMs > STEP_DOWN.carryMs) return 0;
+  return Math.max(0, last.level - 1);
+}
+
+/** Remembers a session's level for the next (on every step, so a session that ends any way is remembered) */
+export function rememberLevel(quality: GraphicsQuality, renderScale: number, level: number, nowMs: number): void {
+  lastSession = level > 0 ? { key: choiceKey(quality, renderScale), level, atMs: nowMs } : null;
+}

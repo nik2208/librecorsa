@@ -110,6 +110,12 @@ export interface OptOptions {
   minStepM?: number;
   /** Keep the whole car off the barriers */
   walls?: WallClearance;
+  /**
+   * Weight on Σκ²·ds (s·m), the minimum-curvature objective, as a tie-break: where the lap time hardly depends on the
+   * line (a kink taken flat out) it takes the widest, straightest path through, as a driver does, instead of staying
+   * wherever the start left it (often the inside). 0: off
+   */
+  straightW?: number;
 }
 
 export interface OptResult {
@@ -198,12 +204,20 @@ const WALL_W = 200;
 /** Weight on the steering-lock penalty (s·m): a 0.1 /m excess over 20 m costs 200 s, i.e. never worth it */
 const LOCK_W = 1000;
 
-/** Lap time plus the smoothness penalty of a line, and a wall at the car's steering lock */
-export function lineCost(t: AiTrack, n: Float64Array, limits: CarLimits, smoothW: number, walls?: WallClearance): { cost: number; lapS: number } {
+/** Σκ²·ds of a line (1/m) */
+function curvatureEnergy(kappa: Float64Array, seg: Float64Array): number {
+  let sum = 0;
+  for (let i = 0; i < kappa.length; i++) sum += kappa[i] * kappa[i] * seg[i];
+  return sum;
+}
+
+/** Lap time plus the smoothness penalty of a line, and a wall at the car's steering lock (`straightW`: OptOptions) */
+export function lineCost(t: AiTrack, n: Float64Array, limits: CarLimits, smoothW: number, walls?: WallClearance, straightW = 0): { cost: number; lapS: number } {
   const geo = pathGeometry(t, n);
   const plan = planSpeeds(t, n, limits, geo);
   let cost = plan.lapS + smoothW * curvatureRatePenalty(geo.kappa, t.ds) + LOCK_W * lockPenalty(geo.kappa, geo.seg, limits.maxKappa);
   if (walls) cost += WALL_W * wallPenalty(t, n, walls);
+  if (straightW > 0) cost += straightW * curvatureEnergy(geo.kappa, geo.seg);
   return { cost, lapS: plan.lapS };
 }
 
@@ -266,7 +280,7 @@ export function optimiseLapTime(param: LineParam, b: LineBounds, limits: CarLimi
   const c = Float64Array.from(start);
   for (let k = 0; k < m; k++) c[k] = Math.min(cb.hi[k], Math.max(cb.lo[k], c[k]));
   const grid = new Float64Array(t.n);
-  const evalC = () => lineCost(t, param.toGrid(c, b, grid), limits, smoothW, opts.walls);
+  const evalC = () => lineCost(t, param.toGrid(c, b, grid), limits, smoothW, opts.walls, opts.straightW ?? 0);
   let cur = evalC();
   let sweeps = 0;
   const saved = new Float64Array(64);

@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { applyGroundDetail } from "./ground-detail";
+import { leafShading } from "./leaf-shading";
 
 /**
  * Material clean-up for the scanned circuits (`Track_Model`, Sketchfab exports converted by build_track.py).
@@ -14,11 +16,21 @@ import * as THREE from "three";
  * - roughness at least 0.65; named ground (asphalt, grass, kerbs, gravel, concrete, paint) at least 0.8;
  * - a blended material whose own opacity is 1 is classified by its texture's alpha (most names are generic, e.g.
  *   `Sepang691Mtl_4`): an opaque texture → opaque; mostly hard-edged alpha (foliage, crowds, signs) → alpha-tested
- *   cut-out that writes depth; soft alpha (baked shadows, gradients, glass) stays blended.
+ *   cut-out that writes depth; soft alpha (baked shadows, gradients, glass) stays blended. A model with KTX2 textures
+ *   carries the result in the material's extras (`alphaKind`), worked out from the source image when it was converted.
+ * - an alpha-tested, double-sided card (the converted circuits' trees, bushes, crowds and railings) gets the leaf
+ *   shading (leaf-shading.ts): its own normal from both sides, matte, and its coverage kept at a distance.
+ * - a converted circuit's ground with `extras.groundDetail` gets its detail texture as a world-tiled layer
+ *   (ground-detail.ts).
  */
 
 const METAL = /metal|steel|chrome|armco|rail|guard|post|pole|truss/i;
 const GROUND = /asph|apsh|road|tarmac|grass|gras|terrain|ground|curb|kerb|cord|gravel|sand|concrete|runoff/i;
+/**
+ * Fences, nets and wire: sparse cut-outs. The leaf shading lifts alpha with distance to keep dense foliage from
+ * thinning out, which would turn a catch fence of thin strands into a solid sheet far away, so they keep the plain test
+ */
+const SPARSE_CUTOUT = /fence|chain|chian|wire|grate|cage|catch|mesh|(^|[^a-z])net([^a-z]|$)/i;
 
 /** Blended texels (alpha between these) that make a texture "soft" rather than a cut-out */
 const SOFT_LO = 0.15;
@@ -80,7 +92,9 @@ export function cleanScanMaterial(mat: THREE.Material): void {
   if (!std.roughnessMap) std.roughness = Math.max(std.roughness, GROUND.test(name) ? 0.8 : 0.65);
 
   if (std.transparent && std.map && std.opacity >= 0.99) {
-    const kind = alphaKind(std.map);
+    // A KTX2 texture has no pixels to read here: the converter stored its kind (scripts/ktx2-track-textures.mjs)
+    const stored = std.userData.alphaKind as AlphaKind | undefined;
+    const kind = stored === "opaque" || stored === "cutout" || stored === "soft" ? stored : alphaKind(std.map);
     if (kind === "opaque") {
       std.transparent = false;
       std.depthWrite = true;
@@ -90,5 +104,7 @@ export function cleanScanMaterial(mat: THREE.Material): void {
       std.depthWrite = true;
     }
   }
+  if (std.alphaTest > 0 && std.side === THREE.DoubleSide && !SPARSE_CUTOUT.test(name)) leafShading(std);
+  applyGroundDetail(std);
   std.needsUpdate = true;
 }

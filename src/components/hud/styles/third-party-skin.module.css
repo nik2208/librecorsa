@@ -1,0 +1,964 @@
+/*
+ * The game's own panels (MFD, notices, start lights, lap toast, boards) drawn in the active third-party layout's
+ * construction, not only its colours: irDashies' borderless slate panels and bars, RaceVision's black windows with grey
+ * rounded rows and white position boxes, Head to Head's bordered Courier cards and navy band, Retro UI's cut-corner
+ * bronze frames, and Blocks' flat black blocks with white-inverted selections. The colours are each layout's own
+ * (see its *.module.css); states (gain, loss, caution, info, best) are the game's semantic tokens, so the
+ * colour-blind palettes still apply.
+ *
+ * Primitives (third-party-skin.tsx): .panel > .panelInner, .banner, .tag, .btn, each with a `.chrome` layer where the
+ * frame is drawn (a frame drawn on the control itself would clip its focus ring and its touch area). Pieces the panels
+ * put on their own elements: .label, .readout, .row, .pos, .tablist, .deepBox, .subBar, .pill.
+ */
+
+/* ---------------------------------------------------------------- Tokens */
+
+.skinRoot {
+  color: var(--tp-ink);
+  --tp-cut: 9px;
+  --tp-tone: var(--tp-border);
+  /* States: the game's semantic tokens */
+  --tp-gain: var(--color-lc-gain);
+  --tp-loss: var(--color-lc-loss);
+  --tp-caution: var(--color-lc-caution);
+  --tp-info: var(--color-lc-info);
+  --tp-best: var(--color-lc-best);
+}
+
+.skin_irdashies {
+  /* Tailwind slate: panel slate-800/90, bars and cells slate-900, rows alternating */
+  --tp-bg: rgb(30 41 59 / 0.9);
+  --tp-bg-soft: rgb(15 23 42 / 0.88);
+  --tp-bg-deep: rgb(15 23 42 / 0.78);
+  --tp-bg-head: rgb(15 23 42 / 0.94);
+  --tp-row-a: rgb(30 41 59 / 0.7);
+  --tp-row-b: rgb(15 23 42 / 0.7);
+  --tp-border: rgb(51 65 85 / 0.75);
+  --tp-border-soft: rgb(51 65 85 / 0.48);
+  --tp-ink: #ffffff;
+  --tp-ink-soft: #cbd5e1;
+  --tp-ink-dim: #94a3b8;
+  --tp-accent: #eab308;
+  --tp-accent-text: #fcd34d;
+  --tp-fill-ink: #0f172a;
+  --tp-player-bg: rgb(234 179 8 / 0.22);
+  --tp-player-ink: #fcd34d;
+  --tp-player-box: #fcd34d;
+  --tp-radius: 6px;
+  --tp-radius-sm: 4px;
+  /* Controls: slate-900 cells; chosen is the player's amber box */
+  --tp-btn-bg: rgb(15 23 42 / 0.78);
+  --tp-btn-bg-hover: rgb(51 65 85 / 0.8);
+  --tp-btn-edge: transparent;
+  --tp-btn-ink: #cbd5e1;
+  --tp-sel-bg: #fcd34d;
+  --tp-sel-edge: #fcd34d;
+  --tp-sel-ink: #0f172a;
+  --tp-soft-bg: rgb(234 179 8 / 0.22);
+  --tp-soft-edge: transparent;
+  --tp-soft-ink: #fcd34d;
+  font-family: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+}
+
+.skin_racevision {
+  /* Black windows at 80 %, mid-grey rounded rows, white position boxes, gold for the player */
+  --tp-bg: rgb(0 0 0 / 0.8);
+  --tp-bg-soft: rgb(61 61 61 / 0.8);
+  --tp-bg-deep: rgb(61 61 61 / 0.55);
+  --tp-bg-head: rgb(0 0 0 / 0.9);
+  --tp-row-a: transparent;
+  --tp-row-b: rgb(61 61 61 / 0.8);
+  --tp-border: rgb(255 255 255 / 0.2);
+  --tp-border-soft: rgb(255 255 255 / 0.12);
+  --tp-ink: #ffffff;
+  --tp-ink-soft: #e5e5e5;
+  --tp-ink-dim: #848484;
+  --tp-accent: #ffd959;
+  --tp-accent-text: #ffd959;
+  --tp-fill-ink: #000000;
+  --tp-player-bg: rgb(61 61 61 / 0.8);
+  --tp-player-ink: #ffd959;
+  --tp-player-box: #ffd959;
+  --tp-radius: 0px;
+  --tp-radius-sm: 8px;
+  --tp-btn-bg: rgb(61 61 61 / 0.8);
+  --tp-btn-bg-hover: rgb(90 90 90 / 0.85);
+  --tp-btn-edge: transparent;
+  --tp-btn-ink: #ffffff;
+  --tp-sel-bg: #ffffff;
+  --tp-sel-edge: #ffffff;
+  --tp-sel-ink: #000000;
+  --tp-soft-bg: rgb(61 61 61 / 0.8);
+  --tp-soft-edge: #ffd959;
+  --tp-soft-ink: #ffd959;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+.skin_h2h {
+  /* Near-black cards split by #2a2a2a rules, the navy player band, bold Courier, a yellow gap, blue and red aids */
+  --tp-bg: rgb(13 13 13 / 0.9);
+  --tp-bg-soft: rgb(22 22 22 / 0.9);
+  --tp-bg-deep: rgb(22 22 22 / 0.7);
+  --tp-bg-head: rgb(22 22 22 / 0.96);
+  --tp-row-a: transparent;
+  --tp-row-b: transparent;
+  --tp-border: #2a2a2a;
+  --tp-border-soft: #2a2a2a;
+  --tp-ink: #ffffff;
+  --tp-ink-soft: #d4d4d4;
+  --tp-ink-dim: #888888;
+  --tp-accent: #448aff;
+  --tp-accent-text: #facc15;
+  --tp-fill-ink: #0d0d0d;
+  --tp-player-bg: rgb(26 26 46 / 0.92);
+  --tp-player-ink: #ffffff;
+  --tp-player-box: transparent;
+  --tp-radius: 0px;
+  --tp-radius-sm: 0px;
+  --tp-btn-bg: transparent;
+  --tp-btn-bg-hover: rgb(255 255 255 / 0.05);
+  --tp-btn-edge: #2a2a2a;
+  --tp-btn-ink: #888888;
+  --tp-sel-bg: rgb(26 26 46 / 0.96);
+  --tp-sel-edge: #3a3a6a;
+  --tp-sel-ink: #facc15;
+  --tp-soft-bg: rgb(68 138 255 / 0.25);
+  --tp-soft-edge: #448aff;
+  --tp-soft-ink: #448aff;
+  font-family: "Courier New", Courier, monospace;
+}
+
+.skin_retro {
+  /* Warm graphite faces in cut-corner frames, bronze rules, cream instrument text, bronze caps labels */
+  --tp-bg: #0d0b09ee;
+  --tp-bg-soft: #15110df5;
+  --tp-bg-deep: #0b0907f5;
+  --tp-bg-head: #1a130ef2;
+  --tp-row-a: transparent;
+  --tp-row-b: transparent;
+  --tp-border: #76542c;
+  --tp-border-soft: #332519;
+  --tp-edge-mid: #604523;
+  --tp-ink: #f2dbae;
+  --tp-ink-soft: #d2b98a;
+  --tp-ink-dim: #987a4c;
+  --tp-accent: #ffc46b;
+  --tp-accent-text: #ffc46b;
+  --tp-fill-ink: #0b0907;
+  --tp-player-bg: #2c2112f0;
+  --tp-player-ink: #f2dbae;
+  --tp-player-box: transparent;
+  --tp-radius: 0px;
+  --tp-radius-sm: 0px;
+  --tp-btn-bg: #0b0907f5;
+  --tp-btn-bg-hover: #1a130ef2;
+  --tp-btn-edge: #332519;
+  --tp-btn-ink: #987a4c;
+  --tp-sel-bg: #1a130ef2;
+  --tp-sel-edge: #f2dbae;
+  --tp-sel-ink: #f2dbae;
+  --tp-soft-bg: #2c2112f0;
+  --tp-soft-edge: #76542c;
+  --tp-soft-ink: #ffc46b;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+.skin_blocks {
+  /* Flat black blocks at 50 %, near-solid header rows, white type that inverts to black over a white fill */
+  --tp-bg: rgb(0 0 0 / 0.5);
+  --tp-bg-soft: rgb(0 0 0 / 0.4);
+  --tp-bg-deep: rgb(0 0 0 / 0.45);
+  --tp-bg-head: rgb(0 0 0 / 0.82);
+  --tp-row-a: transparent;
+  --tp-row-b: transparent;
+  --tp-border: rgb(255 255 255 / 0.16);
+  --tp-border-soft: rgb(255 255 255 / 0.1);
+  --tp-ink: #ffffff;
+  --tp-ink-soft: #e5e5e5;
+  --tp-ink-dim: #bfbfbf;
+  --tp-accent: #05a666;
+  --tp-accent-text: #05a666;
+  --tp-fill-ink: #000000;
+  --tp-player-bg: transparent;
+  --tp-player-ink: #ffffff;
+  --tp-player-box: transparent;
+  --tp-player-tick: #d93333;
+  --tp-radius: 0px;
+  --tp-radius-sm: 0px;
+  --tp-btn-bg: rgb(0 0 0 / 0.82);
+  --tp-btn-bg-hover: rgb(40 40 40 / 0.9);
+  --tp-btn-edge: transparent;
+  --tp-btn-ink: #ffffff;
+  --tp-sel-bg: #ffffff;
+  --tp-sel-edge: #ffffff;
+  --tp-sel-ink: #000000;
+  --tp-soft-bg: rgb(255 255 255 / 0.16);
+  --tp-soft-edge: transparent;
+  --tp-soft-ink: #ffffff;
+  font-family: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+}
+
+/*
+ * The type of our own surfaces (never the layout's own panels, which sit under the same HUD root and set theirs): the
+ * weight, and the game's number face in the layout's, sans in irDashies and Blocks, Courier in Head to Head
+ */
+.skin_racevision:is(.panel, .banner) {
+  font-weight: 800;
+}
+.skin_h2h:is(.panel, .banner),
+.skin_blocks:is(.panel, .banner) {
+  font-weight: 700;
+}
+.skin_retro:is(.panel, .banner) {
+  font-weight: 400;
+}
+:is(.skin_irdashies, .skin_blocks):is(.panel, .banner) :is(:global(.lc-data), :global(.lc-mono)) {
+  font-family: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+.skin_irdashies:is(.panel, .banner) :global(.lc-data) {
+  font-weight: 500;
+}
+.skin_h2h:is(.panel, .banner) :is(:global(.lc-data), :global(.lc-mono)) {
+  font-family: "Courier New", Courier, monospace;
+  font-weight: 700;
+}
+.skin_racevision:is(.panel, .banner) :global(.lc-data) {
+  font-weight: 800;
+}
+.skin_retro:is(.panel, .banner) :global(.lc-data) {
+  font-weight: 500;
+}
+
+.tone_default {
+  --tp-tone: var(--tp-border);
+}
+.tone_accent {
+  --tp-tone: var(--tp-accent);
+}
+.tone_gain {
+  --tp-tone: var(--tp-gain);
+}
+.tone_caution {
+  --tp-tone: var(--tp-caution);
+}
+.tone_loss {
+  --tp-tone: var(--tp-loss);
+}
+.tone_info {
+  --tp-tone: var(--tp-info);
+}
+.tone_best {
+  --tp-tone: var(--tp-best);
+}
+
+.cut_sm {
+  --tp-cut: 5px;
+}
+.cut_md {
+  --tp-cut: 9px;
+}
+.cut_lg {
+  --tp-cut: 12px;
+}
+
+/* ---------------------------------------------------------------- Panel */
+
+.panel {
+  border-radius: var(--tp-radius);
+  background: var(--tp-bg);
+  color: var(--tp-ink);
+  overflow: hidden;
+}
+
+.panelInner {
+  width: 100%;
+  height: 100%;
+}
+
+/* irDashies: borderless rounded slate; a toned panel carries a hairline ring in its tone */
+.skin_irdashies.panel:not(.tone_default) {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tp-tone) 60%, transparent);
+  background: color-mix(in srgb, var(--tp-tone) 10%, var(--tp-bg));
+}
+
+/* RaceVision: a black window; toned, its border in the tone */
+.skin_racevision.panel:not(.tone_default) {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tp-tone) 75%, transparent);
+}
+
+/* Head to Head: a card in the #2a2a2a rule; toned, the source's lit cell (tone border over a tone tint) */
+.skin_h2h.panel {
+  box-shadow: inset 0 0 0 1px var(--tp-border);
+}
+.skin_h2h.panel:not(.tone_default) {
+  box-shadow: inset 0 0 0 1px var(--tp-tone);
+  background: color-mix(in srgb, var(--tp-tone) 16%, rgb(13 13 13 / 0.92));
+}
+
+/* Retro: the instruments' frame, a 1 px edge round the face, both cut to the same octagon */
+.skin_retro.panel {
+  padding: 1px;
+  border-radius: 0;
+  background: var(--tp-border);
+  clip-path: polygon(
+    var(--tp-cut) 0,
+    calc(100% - var(--tp-cut)) 0,
+    100% var(--tp-cut),
+    100% calc(100% - var(--tp-cut)),
+    calc(100% - var(--tp-cut)) 100%,
+    var(--tp-cut) 100%,
+    0 calc(100% - var(--tp-cut)),
+    0 var(--tp-cut)
+  );
+}
+.skin_retro.panel:not(.tone_default) {
+  background: var(--tp-tone);
+}
+.skin_retro.panel > .panelInner {
+  --tp-inner: calc(var(--tp-cut) - 0.6px);
+  background: var(--tp-bg);
+  clip-path: polygon(
+    var(--tp-inner) 0,
+    calc(100% - var(--tp-inner)) 0,
+    100% var(--tp-inner),
+    100% calc(100% - var(--tp-inner)),
+    calc(100% - var(--tp-inner)) 100%,
+    var(--tp-inner) 100%,
+    0 calc(100% - var(--tp-inner)),
+    0 var(--tp-inner)
+  );
+}
+.skin_retro.panel:not(.tone_default) > .panelInner {
+  background: color-mix(in srgb, var(--tp-tone) 12%, #0d0b09f2);
+}
+
+/* Blocks: a flat block; toned, a solid bar of the tone along its top */
+.skin_blocks.panel:not(.tone_default) {
+  box-shadow: inset 0 3px 0 var(--tp-tone);
+}
+
+/* Round where the layout's own pills are (irDashies' shift lights, RaceVision's input pill) */
+.skin_irdashies.pill,
+.skin_racevision.pill {
+  border-radius: 9999px;
+}
+
+/* Inside a pill, the cells round too */
+.skin_irdashies.pill .deepBox,
+.skin_racevision.pill .deepBox {
+  border-radius: 9999px;
+}
+
+/* Strike pips: round in irDashies and RaceVision, square in the others */
+.pip {
+  border-radius: 9999px;
+}
+.skin_h2h .pip,
+.skin_retro .pip,
+.skin_blocks .pip {
+  border-radius: 0;
+}
+.pipOff {
+  box-shadow: inset 0 0 0 1.5px var(--tp-border);
+}
+.skin_blocks .pipOff {
+  box-shadow: none;
+  background: rgb(255 255 255 / 0.22);
+}
+
+/* ---------------------------------------------------------------- Chrome (the frame behind a control or banner) */
+
+.chrome {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* Retro's chrome: the edge as the layer, the face as its inner octagon */
+.skin_retro:is(.btn, .banner) > .chrome {
+  --tp-c: var(--tp-chrome-cut, 4px);
+  background: var(--tp-chrome-edge);
+  clip-path: polygon(
+    var(--tp-c) 0,
+    calc(100% - var(--tp-c)) 0,
+    100% var(--tp-c),
+    100% calc(100% - var(--tp-c)),
+    calc(100% - var(--tp-c)) 100%,
+    var(--tp-c) 100%,
+    0 calc(100% - var(--tp-c)),
+    0 var(--tp-c)
+  );
+}
+.skin_retro:is(.btn, .banner) > .chrome::after {
+  --tp-ci: calc(var(--tp-c) - 0.6px);
+  content: "";
+  position: absolute;
+  inset: 1px;
+  background: var(--tp-chrome-face);
+  clip-path: polygon(
+    var(--tp-ci) 0,
+    calc(100% - var(--tp-ci)) 0,
+    100% var(--tp-ci),
+    100% calc(100% - var(--tp-ci)),
+    calc(100% - var(--tp-ci)) 100%,
+    var(--tp-ci) 100%,
+    0 calc(100% - var(--tp-ci)),
+    0 var(--tp-ci)
+  );
+}
+
+/* ---------------------------------------------------------------- Banner (notices, race control) */
+
+.banner {
+  position: relative;
+  isolation: isolate;
+  color: var(--tp-ink);
+  border-radius: var(--tp-radius);
+}
+.banner > .chrome {
+  background: color-mix(in srgb, var(--tp-tone) 14%, var(--tp-bg));
+}
+.banner.tone_default > .chrome {
+  background: var(--tp-bg);
+}
+
+.skin_irdashies.banner > .chrome {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tp-tone) 55%, transparent);
+}
+.skin_irdashies.banner.tone_default > .chrome {
+  box-shadow: none;
+}
+
+.skin_racevision.banner {
+  text-transform: uppercase;
+}
+.skin_racevision.banner > .chrome {
+  background: var(--tp-bg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tp-tone) 70%, transparent);
+}
+.skin_racevision.banner.tone_default > .chrome {
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.15);
+}
+
+.skin_h2h.banner > .chrome {
+  background: color-mix(in srgb, var(--tp-tone) 18%, rgb(13 13 13 / 0.92));
+  box-shadow: inset 0 0 0 1px var(--tp-tone);
+}
+.skin_h2h.banner.tone_default > .chrome {
+  background: rgb(22 22 22 / 0.92);
+  box-shadow: inset 0 0 0 1px var(--tp-border);
+}
+
+.skin_retro.banner {
+  border-radius: 0;
+  --tp-chrome-cut: calc(var(--tp-cut) + 2px);
+  --tp-chrome-edge: var(--tp-tone);
+  --tp-chrome-face: color-mix(in srgb, var(--tp-tone) 12%, #0d0b09f2);
+}
+.skin_retro.banner.tone_default {
+  --tp-chrome-edge: var(--tp-border);
+  --tp-chrome-face: var(--tp-bg);
+}
+
+/* Blocks: the flag row's construction, a block whose call is a solid cell of its colour from edge to edge */
+.skin_blocks.banner:has(> .tag) {
+  align-items: stretch;
+  padding-top: 0;
+  padding-bottom: 0;
+  padding-left: 0;
+}
+.skin_blocks.banner > .chrome {
+  background: rgb(0 0 0 / 0.62);
+}
+.skin_blocks.banner > :not(.chrome) {
+  align-self: center;
+}
+.skin_blocks.banner > .tag {
+  align-self: stretch;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+/* ---------------------------------------------------------------- Tag (chips and calls) */
+
+.tag {
+  --tp-tone-ink: var(--tp-tone);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: var(--tp-radius-sm);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tp-tone) 65%, transparent);
+  background: color-mix(in srgb, var(--tp-tone) 16%, var(--tp-bg-deep));
+  color: var(--tp-tone-ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.tag.tone_default {
+  --tp-tone-ink: var(--tp-ink-soft);
+  box-shadow: inset 0 0 0 1px var(--tp-border-soft);
+  background: var(--tp-bg-soft);
+}
+.tag.tone_accent {
+  --tp-tone-ink: var(--tp-accent-text);
+}
+/* Filled: the tone as the fill, the layout's dark ink over it (after the tone rules, which only set the ink variable) */
+.tag.tagFilled {
+  color: var(--tp-fill-ink);
+  background: var(--tp-tone);
+  box-shadow: none;
+}
+.tag.tagFilled.tone_default {
+  color: var(--tp-fill-ink);
+  background: var(--tp-ink);
+}
+
+.skin_irdashies.tag {
+  border-radius: 3px;
+}
+
+/* RaceVision: the class header's slanted pill, black italic */
+.skin_racevision.tag.tagFilled {
+  font-style: italic;
+  font-weight: 900;
+  padding-right: 0.7rem;
+  border-radius: 0;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 6px) 100%, 0 100%);
+}
+
+/* Head to Head: tracked caps, square */
+.skin_h2h.tag {
+  letter-spacing: 0.16em;
+  border-radius: 0;
+}
+
+/* Retro: small cut corners, the filled chip in the tone over the void */
+.skin_retro.tag {
+  border-radius: 0;
+  letter-spacing: 0.06em;
+  clip-path: polygon(3px 0, calc(100% - 3px) 0, 100% 3px, 100% calc(100% - 3px), calc(100% - 3px) 100%, 3px 100%, 0 calc(100% - 3px), 0 3px);
+}
+
+/* Blocks: square, black-weight caps */
+.skin_blocks.tag {
+  border-radius: 0;
+  font-weight: 900;
+  text-transform: uppercase;
+  box-shadow: none;
+}
+.skin_blocks.tag.tone_default {
+  background: var(--tp-bg-head);
+  color: var(--tp-ink);
+}
+
+/* ---------------------------------------------------------------- Button (tabs, steps, folds) */
+
+.btn {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  border: 0;
+  background: transparent;
+  border-radius: var(--tp-radius-sm);
+  color: var(--tp-btn-ink);
+  cursor: pointer;
+  transition: color 120ms ease, opacity 120ms ease;
+  --tp-chrome-edge: var(--tp-btn-edge);
+  --tp-chrome-face: var(--tp-btn-bg);
+}
+.btn > .chrome {
+  background: var(--tp-chrome-face);
+  box-shadow: inset 0 0 0 1px var(--tp-chrome-edge);
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+.btn:hover:not(:disabled) {
+  color: var(--tp-ink);
+  --tp-chrome-face: var(--tp-btn-bg-hover);
+}
+.btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.btn:focus-visible,
+:global([data-input="pad"]) .btn:focus {
+  outline: 2px solid var(--tp-accent);
+  outline-offset: 1px;
+}
+@media (pointer: coarse) {
+  .btn::before {
+    content: "";
+    position: absolute;
+    inset: -8px;
+  }
+}
+
+.btn.btnActive,
+.btn.btnActive:hover:not(:disabled) {
+  color: var(--tp-sel-ink);
+  --tp-chrome-face: var(--tp-sel-bg);
+  --tp-chrome-edge: var(--tp-sel-edge);
+}
+.btn.btnSoftActive,
+.btn.btnSoftActive:hover:not(:disabled) {
+  color: var(--tp-soft-ink);
+  --tp-chrome-face: var(--tp-soft-bg);
+  --tp-chrome-edge: var(--tp-soft-edge);
+}
+
+/* RaceVision: rounded grey rows; chosen is the white position box */
+.skin_racevision.btn {
+  border-radius: 8px;
+  font-weight: 800;
+}
+
+/* Head to Head: cells in the rule, tracked caps; chosen is the navy band with the yellow figure */
+.skin_h2h.btn {
+  letter-spacing: 0.16em;
+}
+
+/* Retro: a cut-corner instrument key; chosen wears the cream edge, as the layout's sector cell does */
+.skin_retro.btn {
+  border-radius: 0;
+  letter-spacing: 0.08em;
+  font-weight: 400;
+}
+.skin_retro.btn > .chrome {
+  box-shadow: none;
+}
+
+/* Blocks: header cells; chosen inverts to black on white */
+.skin_blocks.btn {
+  font-weight: 900;
+}
+
+/* ---------------------------------------------------------------- Pieces the panels place */
+
+/* A small caps label over a value */
+.label {
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--tp-ink-dim);
+  white-space: nowrap;
+}
+.skin_irdashies .label {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--tp-ink-soft);
+}
+.skin_racevision .label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: rgb(255 255 255 / 0.72);
+}
+.skin_h2h .label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.25em;
+  color: var(--tp-ink-dim);
+}
+/* In a narrow cell the tracking closes up, so a label fits its cell */
+.skin_h2h .deepBox .label {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+}
+.skin_retro .label {
+  font-weight: 400;
+  color: var(--tp-ink-dim);
+}
+.skin_blocks .label {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0;
+  color: var(--tp-ink);
+}
+
+/* A big reading (lap time, a dial's value, a temperature) */
+.skin_irdashies .readout,
+.skin_irdashies .readout:is(:global(.lc-data), :global(.lc-mono)) {
+  font-weight: 500;
+}
+.skin_racevision .readout,
+.skin_racevision .readout:is(:global(.lc-data), :global(.lc-mono)) {
+  font-weight: 800;
+}
+.skin_h2h .readout,
+.skin_h2h .readout:is(:global(.lc-data), :global(.lc-mono)) {
+  font-weight: 900;
+}
+.skin_retro .readout,
+.skin_retro .readout:is(:global(.lc-data), :global(.lc-mono)) {
+  font-weight: 400;
+}
+.skin_blocks .readout,
+.skin_blocks .readout:is(:global(.lc-data), :global(.lc-mono)) {
+  font-weight: 800;
+}
+
+/* A list row (relative, standings, laps) */
+.row {
+  border-radius: 0;
+}
+.skin_irdashies .row:nth-child(odd),
+.skin_irdashies tr.row:nth-child(odd) > td {
+  background: var(--tp-row-a);
+}
+.skin_irdashies .row:nth-child(even),
+.skin_irdashies tr.row:nth-child(even) > td {
+  background: var(--tp-row-b);
+}
+.skin_racevision .row {
+  border-radius: 8px;
+}
+.skin_racevision li.row:nth-child(even),
+.skin_racevision tr.row:nth-child(even) > td {
+  background: var(--tp-row-b);
+}
+.skin_racevision tr.row > td:first-child {
+  border-radius: 8px 0 0 8px;
+}
+.skin_racevision tr.row > td:last-child {
+  border-radius: 0 8px 8px 0;
+}
+.skin_h2h li.row,
+.skin_h2h tr.row > td {
+  border-bottom: 1px solid var(--tp-border);
+}
+.skin_retro li.row,
+.skin_retro tr.row > td {
+  border-bottom: 1px solid var(--tp-border-soft);
+}
+
+/* The player's row (also used without .row) */
+.playerRow,
+tr.playerRow > td {
+  background: var(--tp-player-bg);
+  color: var(--tp-player-ink);
+}
+.skin_irdashies .row.playerRow,
+.skin_irdashies tr.row.playerRow > td {
+  background: var(--tp-player-bg);
+}
+.skin_racevision .playerRow {
+  color: var(--tp-player-ink);
+}
+.skin_h2h li.playerRow,
+.skin_h2h tr.playerRow > td {
+  background: var(--tp-player-bg);
+  border-top: 1px solid #3a3a6a;
+  border-bottom: 1px solid #3a3a6a;
+}
+.skin_retro li.playerRow {
+  clip-path: polygon(4px 0, calc(100% - 4px) 0, 100% 4px, 100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%, 0 calc(100% - 4px), 0 4px);
+  border-bottom: 0;
+}
+.skin_blocks li.playerRow,
+.skin_blocks div.playerRow,
+.skin_blocks tr.playerRow > td:first-child {
+  box-shadow: inset 5px 0 0 var(--tp-player-tick);
+}
+
+/* The position cell: RaceVision's white box (gold for the player), irDashies' amber box for the player */
+.skin_racevision li.row > .pos {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  margin-left: -8px;
+  border-radius: 8px 0 0 8px;
+  background: #ffffff;
+  color: #000000;
+  font-size: 11px;
+}
+.skin_racevision li.row.playerRow > .pos {
+  background: var(--tp-player-box);
+}
+.skin_racevision tr.row > td.pos {
+  background: #ffffff;
+  color: #000000;
+  text-align: center;
+  padding-right: 0;
+}
+.skin_racevision tr.row.playerRow > td.pos {
+  background: var(--tp-player-box);
+}
+.skin_irdashies li.row > .pos {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  margin-left: -8px;
+  color: var(--tp-ink);
+  font-weight: 600;
+}
+.skin_irdashies li.row.playerRow > .pos {
+  background: var(--tp-player-box);
+  color: var(--tp-fill-ink);
+}
+.skin_irdashies tr.row > td.pos {
+  text-align: center;
+  padding-right: 0;
+  color: var(--tp-ink);
+  font-weight: 600;
+}
+.skin_irdashies tr.row.playerRow > td.pos {
+  background: var(--tp-player-box);
+  color: var(--tp-fill-ink);
+}
+
+/* A row of tabs: Head to Head joins its cells into one ruled strip */
+.skin_h2h.tablist,
+.skin_h2h .tablist {
+  gap: 0;
+}
+.skin_h2h .tablist > .btn + .btn {
+  margin-left: -1px;
+}
+
+/* A recessed cell (a stat, a tyre corner, a dial's well) */
+.deepBox {
+  background: var(--tp-bg-deep);
+  border-radius: var(--tp-radius-sm);
+}
+.skin_racevision .deepBox {
+  border-radius: 8px;
+}
+.skin_h2h .deepBox {
+  background: rgb(22 22 22 / 0.6);
+  box-shadow: inset 0 0 0 1px var(--tp-border);
+}
+.skin_retro .deepBox {
+  position: relative;
+  isolation: isolate;
+  background: none;
+}
+.skin_retro .deepBox::before,
+.skin_retro .deepBox::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+}
+.skin_retro .deepBox::before {
+  inset: 0;
+  background: var(--tp-edge-mid);
+  clip-path: polygon(6px 0, calc(100% - 6px) 0, 100% 6px, 100% calc(100% - 6px), calc(100% - 6px) 100%, 6px 100%, 0 calc(100% - 6px), 0 6px);
+}
+.skin_retro .deepBox::after {
+  inset: 1px;
+  background: var(--tp-bg-deep);
+  clip-path: polygon(5.4px 0, calc(100% - 5.4px) 0, 100% 5.4px, 100% calc(100% - 5.4px), calc(100% - 5.4px) 100%, 5.4px 100%, 0 calc(100% - 5.4px), 0 5.4px);
+}
+
+/* A slim bar (a live readout strip, a session bar) */
+.subBar {
+  background: var(--tp-bg-soft);
+}
+.skin_irdashies .subBar {
+  border-radius: 4px;
+}
+.skin_racevision .subBar {
+  border-radius: 9999px;
+}
+.skin_h2h .subBar {
+  background: transparent;
+  box-shadow: inset 0 1px 0 var(--tp-border);
+}
+.skin_retro .subBar {
+  background: transparent;
+  box-shadow: inset 0 1px 0 var(--tp-border-soft);
+}
+.skin_blocks .subBar {
+  background: var(--tp-bg-head);
+}
+
+.headerBar {
+  background: var(--tp-bg-head);
+  border-bottom: 1px solid var(--tp-border-soft);
+}
+
+.divider {
+  border-color: var(--tp-border-soft);
+}
+
+/* ---------------------------------------------------------------- Ink, fills, surfaces */
+
+.ink {
+  color: var(--tp-ink);
+}
+.inkSoft {
+  color: var(--tp-ink-soft);
+}
+.inkDim {
+  color: var(--tp-ink-dim);
+}
+.inkAccent {
+  color: var(--tp-accent-text);
+}
+.inkGain {
+  color: var(--tp-gain);
+}
+.inkCaution {
+  color: var(--tp-caution);
+}
+.inkLoss {
+  color: var(--tp-loss);
+}
+.inkInfo {
+  color: var(--tp-info);
+}
+.fillAccent {
+  background: var(--tp-accent);
+}
+.fillGain {
+  background: var(--tp-gain);
+}
+.fillCaution {
+  background: var(--tp-caution);
+}
+.fillLoss {
+  background: var(--tp-loss);
+}
+.fillInfo {
+  background: var(--tp-info);
+}
+.fillDim {
+  background: var(--tp-border);
+}
+.skin_retro .fillDim {
+  background: #2a2117;
+}
+.skin_blocks .fillDim {
+  background: rgb(255 255 255 / 0.18);
+}
+.bgSurface {
+  background: var(--tp-bg);
+}
+.bgDeep {
+  background: var(--tp-bg-deep);
+}
+.bgHead {
+  background: var(--tp-bg-head);
+}
+.borderLine {
+  border-color: var(--tp-border);
+}
+.borderSoft {
+  border-color: var(--tp-border-soft);
+}
+.radiusBox {
+  border-radius: var(--tp-radius);
+}
+.radiusSm {
+  border-radius: var(--tp-radius-sm);
+}

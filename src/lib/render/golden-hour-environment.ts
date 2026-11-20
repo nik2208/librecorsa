@@ -15,6 +15,7 @@ import {
 } from "postprocessing";
 import { patchShader } from "./shader-patch";
 import { PhysicalSky } from "./physical-sky";
+import type { RenderPlan } from "./adaptive-quality";
 import type { CloudsEffect } from "@takram/three-clouds";
 
 /*
@@ -37,7 +38,8 @@ import type { CloudsEffect } from "@takram/three-clouds";
  *     Its ENCODE_OUTPUT path ends in colorspace_fragment, which performs the
  *     single linear -> sRGB encode when the pass renders to screen.
  *   - Therefore AgX is applied by a ToneMappingEffect (mode AGX) placed in the
- *     same EffectPass as bloom. It reads the three.js toneMappingExposure
+ *     final EffectPass, after bloom (High only) and before the display grade.
+ *     It reads the three.js toneMappingExposure
  *     uniform, which WebGLRenderer pushes from renderer.toneMappingExposure
  *     (WebGLRenderer.js ~2751). Set exposure before the first render.
  *   - renderer.toneMapping is still set to AgX in configureRenderer, as
@@ -58,7 +60,8 @@ import type { CloudsEffect } from "@takram/three-clouds";
  *   the values above at 14 deg / 127 deg with a clear sky, so the default
  *   golden-hour look is unchanged. Lights and fog update every call (cheap);
  *   the PMREM environment is re-baked only when the sky has changed visibly
- *   (sun > 1 deg, cloud / rain > 0.05) and at most every 1.5 s.
+ *   (sun > 1 deg, cloud / rain > 0.05) and at most every 1.5 s, into the same
+ *   render target each time (SkyBaker).
  */
 
 // ---------------------------------------------------------------------------
@@ -150,6 +153,11 @@ export interface GoldenHourEnvironment {
   probeSky: { material: { uniforms: Record<string, { value: unknown }> } };
   /** Graphics preset: the physical sky on Medium and High, the classic sky on Low */
   setQuality(quality: "low" | "medium" | "high"): void;
+  /**
+   * With `deferPhysicalSky`: the physical sky may be built from now on (on Medium and High), once the loading's own GPU
+   * work is done. Its atmosphere precompute then never runs alongside the circuit's uploads and warm-up frame.
+   */
+  startPhysicalSky(): void;
   /** Weak warm-blue / olive fill; added to the scene by createGoldenHourEnvironment. */
   fillLight: THREE.HemisphereLight;
   /** Call once per frame before rendering: keeps the sky dome centred on the camera (the shadow cascades fit the rendering camera on their own) */
@@ -165,29 +173,33 @@ export interface PostFx {
   setSize(width: number, height: number): void;
   /** swap the camera used by the render pass (the sim uses a single camera, but keep it safe) */
   setCamera(camera: THREE.Camera): void;
-  /** Graphics preset: MSAA samples and bloom on / off */
-  setQuality(quality: "low" | "medium" | "high"): void;
+  /** Graphics preset: MSAA samples and bloom on / off; `msaa` false turns both off whatever the preset (the step-down) */
+  setQuality(quality: "low" | "medium" | "high", msaa?: boolean): void;
   /** Puts the physical sky's clouds into the chain, right after the scene render (once; later calls are no-ops) */
   setClouds(sky: { readonly clouds: CloudsEffect; readonly cloudsActive: boolean }): void;
+  /**
+   * The off-track edge glow: a CSS hex colour turns it on (breathing, or steady under reduced motion), null turns it
+   * off. A colour it cannot read keeps the last one.
+   */
+  setEdgeGlow(color: string | null): void;
   dispose(): void;
 }
 
 /**
- * Applies a graphics preset to the running renderer: resolution (device pixel ratio x the player's render scale),
- * the sun's shadow, MSAA and bloom. Cheap to call again; the caller re-sizes the composer afterwards.
+ * Applies a graphics plan to the running renderer: resolution (device pixel ratio x the render scale), the sun's
+ * shadow, MSAA and bloom, from the preset and what the automatic step-down turned down on top of it
+ * (adaptive-quality.ts). Cheap to call again; the caller re-sizes the composer afterwards.
  */
-export function applyGraphicsQuality(
-  renderer: THREE.WebGLRenderer,
-  postFx: PostFx,
-  env: GoldenHourEnvironment,
-  quality: "low" | "medium" | "high",
-  renderScale: number
-): void {
+export function applyGraphicsQuality(renderer: THREE.WebGLRenderer, postFx: PostFx, env: GoldenHourEnvironment, plan: RenderPlan): void {
+  const { quality, renderScale } = plan;
   const dprCap = quality === "low" ? 1 : 1.5;
   renderer.setPixelRatio(Math.max(0.35, Math.min(window.devicePixelRatio, dprCap) * renderScale));
   // Toggling the light's shadow recompiles the lit materials on their own (shadow count is part of the program key)
   env.sunLight.castShadow = quality !== "low";
-  postFx.setQuality(quality);
+  // Half the texels per side: three resizes the shadow map in place, with no shader change
+  const shadowSize = plan.shadows === "half" ? SHADOW_MAP_SIZE / 2 : SHADOW_MAP_SIZE;
+  env.sunLight.shadow.mapSize.set(shadowSize, shadowSize);
+  postFx.setQuality(quality, plan.msaa);
   env.setQuality(quality);
   if (env.physicalSky) postFx.setClouds(env.physicalSky);
   // Scenery noise and bump off on Low (the baked tree shading stays); fewer instanced trees and shrubs below High
@@ -358,11 +370,17 @@ class SkyBaker {
   private readonly groundSun = new THREE.DirectionalLight();
   private readonly groundFill = new THREE.HemisphereLight();
   private pmrem: THREE.PMREMGenerator | null;
+  /** The bake scene filmed from the origin, as PMREMGenerator.fromScene would (same size, near and far) */
+  private readonly cubeTarget = new THREE.WebGLCubeRenderTarget(ENV_SIZE, { type: THREE.HalfFloatType, generateMipmaps: false });
+  private readonly cubeCamera = new THREE.CubeCamera(0.1, 1000, this.cubeTarget);
+  /** The environment map: one target, filtered again in place by every bake */
+  private target: THREE.WebGLCubeRenderTarget | null = null;
+  private readonly clearColor = new THREE.Color();
 
   /** The physical sky's sun-less quad, baked in place of the classic sky while it shows */
   private physicalSky: THREE.Object3D | null = null;
 
-  constructor(renderer: THREE.WebGLRenderer) {
+  constructor(private readonly renderer: THREE.WebGLRenderer) {
     this.sky.scale.setScalar(1000);
     configureSkyUniforms(this.sky, false);
     this.scene.add(this.sky);
@@ -379,7 +397,8 @@ class SkyBaker {
     this.scene.add(quad);
   }
 
-  bake(sunDir: THREE.Vector3, look: SkyLook, sun: GroundLight, fill: THREE.HemisphereLight): THREE.WebGLCubeRenderTarget {
+  /** Bakes the sky into the environment map and returns its texture: the same texture on every call */
+  bake(sunDir: THREE.Vector3, look: SkyLook, sun: GroundLight, fill: THREE.HemisphereLight): THREE.Texture {
     applySkyLook(this.sky, sunDir, look);
     this.sky.visible = !this.physicalSky?.visible;
     // The ground takes the scene's own sun and sky light, so it sits at the brightness the real circuit has
@@ -389,10 +408,31 @@ class SkyBaker {
     this.groundFill.color.copy(fill.color);
     this.groundFill.groundColor.copy(fill.groundColor);
     this.groundFill.intensity = Math.max(fill.intensity, GROUND_SKY_LIGHT);
-    return this.pmrem!.fromScene(this.scene, 0, 0.1, 1000, { size: ENV_SIZE });
+    // Filmed here, then prefiltered into the same target every time: fromScene allocated a new one per bake, which
+    // handed every lit material a new environment map to look its program up for and churned GPU memory. Every face
+    // is cleared whatever the app's clear settings (the composer turns autoClear off), with the clear colour behind
+    // the sky, as fromScene does
+    const r = this.renderer;
+    const { autoClear, autoClearColor, autoClearDepth, autoClearStencil } = r;
+    r.autoClear = r.autoClearColor = r.autoClearDepth = r.autoClearStencil = true;
+    this.scene.background = r.getClearColor(this.clearColor);
+    try {
+      this.cubeCamera.update(r, this.scene);
+    } finally {
+      r.autoClear = autoClear;
+      r.autoClearColor = autoClearColor;
+      r.autoClearDepth = autoClearDepth;
+      r.autoClearStencil = autoClearStencil;
+      this.scene.background = null;
+    }
+    this.target = this.pmrem!.fromCubemap(this.cubeTarget.texture, this.target);
+    return this.target.texture;
   }
 
   dispose(): void {
+    this.target?.dispose();
+    this.target = null;
+    this.cubeTarget.dispose();
     this.pmrem?.dispose();
     this.pmrem = null;
     this.sky.geometry.dispose();
@@ -411,8 +451,11 @@ class SkyBaker {
 export function createGoldenHourEnvironment(
   renderer: THREE.WebGLRenderer,
   scene: THREE.Scene,
-  /** `physicalSky`: allow the physically based sky on Medium and High (default false: the classic sky everywhere) */
-  options: { physicalSky?: boolean } = {}
+  /**
+   * `physicalSky`: allow the physically based sky on Medium and High (default false: the classic sky everywhere).
+   * `deferPhysicalSky`: build it only after startPhysicalSky()
+   */
+  options: { physicalSky?: boolean; deferPhysicalSky?: boolean } = {}
 ): GoldenHourEnvironment {
   const sunDirection = sunDirectionUnit();
 
@@ -436,8 +479,8 @@ export function createGoldenHourEnvironment(
   const baker = new SkyBaker(renderer);
   const skyLook = skyLookFor(GOLDEN_HOUR_SKY, {} as SkyLook);
   const skySunDir = sunDirection.clone();
-  // The first bake, before the scene's lights exist: their starting values
-  let envTarget = baker.bake(
+  // The first bake, before the scene's lights exist: their starting values. Later bakes refresh this same texture
+  const envMap = baker.bake(
     skySunDir,
     skyLook,
     { color: new THREE.Color(SUN_COLOR), intensity: SUN_INTENSITY },
@@ -446,7 +489,7 @@ export function createGoldenHourEnvironment(
   let baked: SkyConditions = { ...GOLDEN_HOUR_SKY };
   let lastBakeMs = -Infinity;
   let pendingBake = false;
-  scene.environment = envTarget.texture;
+  scene.environment = envMap;
   scene.environmentIntensity = 1.0;
   scene.background = null;
 
@@ -486,10 +529,7 @@ export function createGoldenHourEnvironment(
   const tint = new THREE.Color();
 
   const rebake = () => {
-    const next = baker.bake(skySunDir, skyLook, sunLight, fillLight);
-    if (scene.environment === envTarget.texture) scene.environment = next.texture;
-    envTarget.dispose();
-    envTarget = next;
+    baker.bake(skySunDir, skyLook, sunLight, fillLight);
     baked = { ...current };
     lastBakeMs = performance.now();
     pendingBake = false;
@@ -501,9 +541,12 @@ export function createGoldenHourEnvironment(
     rebake();
   };
 
+  let physicalSkyHeld = options.deferPhysicalSky === true;
+  let qualityNow: "low" | "medium" | "high" = "high";
   const setQuality = (quality: "low" | "medium" | "high") => {
     if (disposed) return;
-    if (!physicalSky && options.physicalSky && quality !== "low") {
+    qualityNow = quality;
+    if (!physicalSky && options.physicalSky && !physicalSkyHeld && quality !== "low") {
       physicalSky = new PhysicalSky(renderer, applySkyChoice);
       scene.add(physicalSky.mesh);
       baker.setPhysicalSky(physicalSky.bakeMesh);
@@ -589,19 +632,24 @@ export function createGoldenHourEnvironment(
 
     setConditions,
     setQuality,
+    startPhysicalSky(): void {
+      if (!physicalSkyHeld) return;
+      physicalSkyHeld = false;
+      setQuality(qualityNow);
+    },
 
     dispose(): void {
       if (disposed) return;
       disposed = true;
 
       scene.remove(sky, fillLight, sunLight);
-      if (scene.environment === envTarget.texture) scene.environment = null;
+      if (scene.environment === envMap) scene.environment = null;
       if (scene.fog === fog) scene.fog = null;
 
       sky.geometry.dispose();
       sky.material.dispose();
       sunLight.shadow.dispose();
-      envTarget.dispose();
+      // The environment map with it
       baker.dispose();
       physicalSky?.dispose();
     },
@@ -612,7 +660,12 @@ export function createGoldenHourEnvironment(
 // Post-processing
 // ---------------------------------------------------------------------------
 
-/** Contrast about mid-grey and saturation about luma, on the tone-mapped image; alpha forced opaque */
+/**
+ * Contrast about mid-grey and saturation about luma, on the tone-mapped image; alpha forced opaque. Then the off-track
+ * edge glow, when on: the HUD's colour fading in from 62 % of the way to the corners to 32 % at them, on an ellipse
+ * the screen's shape. Drawn here, it costs a few instructions in a pass that runs anyway, where a full-screen page
+ * layer over the canvas, animated every frame, gave the browser the whole screen to composite again each frame.
+ */
 class DisplayGradeEffect extends Effect {
   constructor(contrast: number, saturation: number) {
     super(
@@ -620,19 +673,56 @@ class DisplayGradeEffect extends Effect {
       /* glsl */ `
 uniform float uContrast;
 uniform float uSaturation;
+uniform float uEdgeGlow;
+uniform vec3 uEdgeColor;
 void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
   // grade in a perceptual (gamma 2.2) space so the contrast pivots on mid-grey as seen, then back to linear
   vec3 c = pow(clamp(inputColor.rgb, 0.0, 1.0), vec3(1.0 / 2.2));
   c = (c - 0.5) * (1.0 + uContrast) + 0.5;
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
   c = mix(vec3(l), c, 1.0 + uSaturation);
+  if (uEdgeGlow > 0.0) {
+    // blended in the same display space the page's layer was composited in
+    float r = length((uv - 0.5) * 2.0) * 0.70710678;
+    c = mix(clamp(c, 0.0, 1.0), uEdgeColor, clamp((r - 0.62) / 0.38, 0.0, 1.0) * 0.32 * uEdgeGlow);
+  }
   outputColor = vec4(pow(clamp(c, 0.0, 1.0), vec3(2.2)), 1.0);
 }
 `,
-      { uniforms: new Map<string, THREE.Uniform>([["uContrast", new THREE.Uniform(contrast)], ["uSaturation", new THREE.Uniform(saturation)]]) }
+      {
+        uniforms: new Map<string, THREE.Uniform>([
+          ["uContrast", new THREE.Uniform(contrast)],
+          ["uSaturation", new THREE.Uniform(saturation)],
+          ["uEdgeGlow", new THREE.Uniform(0)],
+          ["uEdgeColor", new THREE.Uniform(new THREE.Vector3(1, 42 / 255, 60 / 255))],
+        ]),
+      }
     );
   }
+
+  /** 0 hides the edge glow; `color` is in display (sRGB) components */
+  setEdgeGlow(level: number, color?: THREE.Vector3): void {
+    (this.uniforms.get("uEdgeGlow") as THREE.Uniform<number>).value = level;
+    if (color) (this.uniforms.get("uEdgeColor") as THREE.Uniform<THREE.Vector3>).value.copy(color);
+  }
 }
+
+/** The page's breathing: 55 % to full and back over 1.8 s, eased at each end like CSS's ease-in-out */
+const EDGE_GLOW_PERIOD_MS = 1800;
+const edgeGlowLevel = (sinceMs: number): number => {
+  const p = (sinceMs % EDGE_GLOW_PERIOD_MS) / EDGE_GLOW_PERIOD_MS;
+  const u = p < 0.5 ? p * 2 : 2 - p * 2;
+  return 0.55 + 0.45 * u * u * (3 - 2 * u);
+};
+
+/** A CSS hex colour (#rgb or #rrggbb) as display components 0..1, else null */
+const hexColor = (css: string): THREE.Vector3 | null => {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(css.trim());
+  if (!m) return null;
+  const hex = m[1].length === 3 ? [...m[1]].map((d) => d + d).join("") : m[1];
+  const n = parseInt(hex, 16);
+  return new THREE.Vector3(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
+};
 
 export function createPostFx(
   renderer: THREE.WebGLRenderer,
@@ -661,20 +751,37 @@ export function createPostFx(
     levels: 5,
   });
 
-  // Single merged pass: bloom runs on linear HDR, then AgX as the last effect.
-  // AgX is applied here because EffectPass ignores renderer.toneMapping.
-  const toneMapping = new ToneMappingEffect({ mode: ToneMappingMode.AGX });
-  // AgX keeps highlights but reads flat and grey on its own (the scanned circuits' bland, hazy look): a light
-  // display-referred grade after it puts back some contrast and colour
-  const effectPass = new EffectPass(camera, bloom, toneMapping);
-  // Its own pass on the tone-mapped image, with alpha forced to 1 and the result clamped: postprocessing's stock
-  // BrightnessContrast / HueSaturation effects turned the low-alpha texels blended foliage, fences and decals leave
-  // in the buffer into white specks
-  const gradePass = new EffectPass(camera, new DisplayGradeEffect(GRADE_CONTRAST, GRADE_SATURATION));
+  // One merged pass to the screen: bloom runs on linear HDR, then AgX, then the grade.
+  // AgX is applied here because EffectPass ignores renderer.toneMapping. It keeps highlights but reads flat and grey on
+  // its own (the scanned circuits' bland, hazy look): a light display-referred grade after it puts back some contrast
+  // and colour, with alpha forced to 1 and the result clamped (postprocessing's stock BrightnessContrast /
+  // HueSaturation effects turned the low-alpha texels blended foliage, fences and decals leave in the buffer into
+  // white specks). The grade had a pass of its own; here it runs the same code without the round trip through a
+  // half-float buffer (whose rounding was the only difference), a full-screen write and read saved per frame,
+  // multisampled on High and Medium.
+  // The grade of each of the two passes below: the edge glow is set on both, as either may be the one running
+  const grades: DisplayGradeEffect[] = [];
+  const toneMapAndGrade = () => {
+    const grade = new DisplayGradeEffect(GRADE_CONTRAST, GRADE_SATURATION);
+    grades.push(grade);
+    return [new ToneMappingEffect({ mode: ToneMappingMode.AGX }), grade];
+  };
+  // When the edge glow came on (null: off), and whether it holds still for reduced motion
+  let edgeGlowSinceMs: number | null = null;
+  let edgeGlowSteady = false;
+  const bloomPass = new EffectPass(camera, bloom, ...toneMapAndGrade());
+  // Low and Medium have no bloom: the same pass without it. Bloom at intensity 0 left the picture as it was but still
+  // ran its luminance pass and mip-chain blur every frame
+  const plainPass = new EffectPass(camera, ...toneMapAndGrade());
+  plainPass.enabled = false;
+  // Both end the chain and one runs at a time (setQuality), so each draws to the screen itself. Set before they are
+  // added, this also stops the composer moving the screen output to whichever pass is last
+  bloomPass.renderToScreen = true;
+  plainPass.renderToScreen = true;
 
   composer.addPass(renderPass);
-  composer.addPass(effectPass);
-  composer.addPass(gradePass);
+  composer.addPass(bloomPass);
+  composer.addPass(plainPass);
 
   return {
     composer,
@@ -682,6 +789,10 @@ export function createPostFx(
     render(dtSeconds: number): void {
       // Off until the atmosphere is ready and on presets without clouds (their composite has no off switch of its own)
       if (cloudsPass && sky) cloudsPass.enabled = sky.cloudsActive;
+      if (edgeGlowSinceMs !== null) {
+        const level = edgeGlowSteady ? 1 : edgeGlowLevel(performance.now() - edgeGlowSinceMs);
+        for (const grade of grades) grade.setEdgeGlow(level);
+      }
       composer.render(dtSeconds);
     },
 
@@ -693,13 +804,14 @@ export function createPostFx(
       mainCamera = next;
       renderPass.mainCamera = next;
       if (cloudsPass) cloudsPass.mainCamera = next;
-      effectPass.mainCamera = next;
-      gradePass.mainCamera = next;
+      bloomPass.mainCamera = next;
+      plainPass.mainCamera = next;
     },
 
-    setQuality(quality: "low" | "medium" | "high"): void {
-      composer.multisampling = quality === "high" ? 4 : quality === "medium" ? 2 : 0;
-      bloom.intensity = quality === "high" ? 0.4 : 0;
+    setQuality(quality: "low" | "medium" | "high", msaa = true): void {
+      composer.multisampling = !msaa ? 0 : quality === "high" ? 4 : quality === "medium" ? 2 : 0;
+      bloomPass.enabled = msaa && quality === "high";
+      plainPass.enabled = !bloomPass.enabled;
     },
 
     setClouds(next): void {
@@ -712,14 +824,27 @@ export function createPostFx(
       composer.addPass(cloudsPass, 1);
     },
 
+    setEdgeGlow(color: string | null): void {
+      if (color === null) {
+        if (edgeGlowSinceMs === null) return;
+        edgeGlowSinceMs = null;
+        for (const grade of grades) grade.setEdgeGlow(0);
+        return;
+      }
+      const rgb = hexColor(color);
+      for (const grade of grades) grade.setEdgeGlow(1, rgb ?? undefined);
+      edgeGlowSinceMs = performance.now();
+      edgeGlowSteady = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    },
+
     dispose(): void {
-      // EffectPass.dispose() also disposes the bloom and tone-mapping effects, and the clouds (which the
+      // EffectPass.dispose() also disposes the bloom, tone-mapping and grade effects, and the clouds (which the
       // PhysicalSky disposes again: three's dispose calls are idempotent)
       composer.removeAllPasses();
       renderPass.dispose();
       cloudsPass?.dispose();
-      effectPass.dispose();
-      gradePass.dispose();
+      bloomPass.dispose();
+      plainPass.dispose();
       composer.dispose();
     },
   };

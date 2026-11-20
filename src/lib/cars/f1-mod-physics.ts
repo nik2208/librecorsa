@@ -9,23 +9,25 @@ import { carById, type CarId } from "@/lib/cars/car-registry";
  * GT3s have one model. The rigid-body model
  * has no car of its own in the list: a saved choice of it opens the Prototype.
  */
-export type F1ModPhysics = Extract<VehicleModelId, "f12026-car" | "vf26">;
+export type F1ModPhysics = Extract<VehicleModelId, "f12026-car" | "lc26">;
 
 export const F1_MOD_PHYSICS_OPTIONS: readonly { id: F1ModPhysics; title: string; sub: string }[] = [
   { id: "f12026-car", title: "Rigid-body", sub: "6-DOF multibody · track colliders · DRS" },
-  { id: "vf26", title: "2026 Prototype", sub: "The Prototype's car · active aero" },
+  { id: "lc26", title: "2026 Prototype", sub: "The Prototype's car · active aero" },
 ];
 
 const STORAGE_KEY = "librecorsa.f1ModPhysics";
 const DEFAULT: F1ModPhysics = "f12026-car";
 
-const isF1ModPhysics = (v: unknown): v is F1ModPhysics => v === "f12026-car" || v === "vf26";
+const isF1ModPhysics = (v: unknown): v is F1ModPhysics => v === "f12026-car" || v === "lc26";
 
 function load(): F1ModPhysics {
   try {
-    const fromUrl = new URLSearchParams(window.location.search).get("f1physics");
+    // A link or a choice saved before the car was renamed
+    const renamed = (v: string | null) => (v === "vf26" ? "lc26" : v); // keep-old-id
+    const fromUrl = renamed(new URLSearchParams(window.location.search).get("f1physics"));
     if (isF1ModPhysics(fromUrl)) return fromUrl;
-    const saved = localStorage.getItem(STORAGE_KEY);
+    const saved = renamed(localStorage.getItem(STORAGE_KEY));
     return isF1ModPhysics(saved) ? saved : DEFAULT;
   } catch {
     return DEFAULT;

@@ -28,11 +28,12 @@ CLAUDE.md
 
 # Python bytecode & local asset build pipelines
 __pycache__/
-/scripts/vf26/
-/public/vf26/
+/scripts/lc26/
 /scripts/gt3/
 /scripts/rwanda-2026/
-/scripts/tracks/
+# The circuit converters are tracked; where the mod sources sit on your machine is not
+/scripts/tracks/sources.local.json
+/scripts/tracks/*.bak*
 
 # Force-feedback helper, compiled on first `npm run ffb`
 /scripts/ffb-bridge/bin/
@@ -63,10 +64,14 @@ UI-RESEARCH-*.md
 !/public/tracks/index.json
 # Event branch: Monza and the Ferrari SF-26 are part of the kiosk (the fork's owner asked for them in the repository)
 !/public/tracks/monza/
+# RISE's KTX2 model for phones (src/lib/ktx2-models.ts) is hosted like the other circuits
+/public/tracks/rwanda_official/*.ktx2.*.glb
 /public/cars/*
 !/public/cars/f12026/
 !/public/cars/sf26/
 /public/gt3/
+# The soundtrack (src/lib/audio/music-catalog.ts): hosted like the circuits, never committed
+/public/music/
 
 # F1 2026 local reference datasets & headless Blender audit outputs
 /reference_data/

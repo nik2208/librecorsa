@@ -59,7 +59,7 @@ export interface DurableObjectStorage {
 
 /** The server end of a WebSocket accepted by a Durable Object */
 export interface ServerSocket {
-  send(message: string): void;
+  send(message: string | ArrayBuffer): void;
   close(code?: number, reason?: string): void;
   serializeAttachment(value: unknown): void;
   deserializeAttachment(): unknown;
@@ -100,8 +100,16 @@ export interface Env {
   /** The anonymous usage counter (usage.ts): its switch, and how often one address may report */
   ONLINE_USAGE?: string;
   USAGE_LIMIT?: RateLimit;
+  /** The live count (presence.ts): the one object that counts the heartbeats, its switch, and how often one address may beat */
+  PRESENCE?: DurableObjectNamespace;
+  ONLINE_LIVE?: string;
+  LIVE_LIMIT?: RateLimit;
   /** Key of the private admin numbers (admin.ts), a secret; without it the route does not answer */
   ADMIN_KEY?: string;
+  /** How often one address may call an admin route or a path the API doesn't serve (both answer alike) */
+  ADMIN_LIMIT?: RateLimit;
+  /** How often one address may upload a lap or change a driver name, before either touches the database */
+  BOARD_LIMIT?: RateLimit;
   /** Cloudflare's own numbers on the admin page (analytics.ts): a read-only analytics token (a secret), the account,
    * and optionally the boards' database and the site's zone */
   CF_ANALYTICS_TOKEN?: string;

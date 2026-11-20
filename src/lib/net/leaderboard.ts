@@ -3,33 +3,24 @@
  * API (cloudflare/api/board.ts) when it has one switched on (src/lib/net/online-config.ts).
  *
  * Online there is one board per circuit and car: every driver appears once, with their fastest lap and what it was
- * driven with (assists, realism, dry or wet). The board can be narrowed to laps of one kind ("no assists").
+ * driven with (assists, realism, dry or wet, and the input: keyboard, controller, wheel or touch). The board can be narrowed to laps of one kind ("no assists").
  * Only the LapRecording and the driver key are ever sent; answers are validated before use.
  */
-import { isVehicleModelId, type AssistPreset, type VehicleModelId } from "@/types/f1";
+import { isVehicleModelId, type VehicleModelId } from "@/types/f1";
 import { listBestLaps } from "@/lib/sim/ghost-store";
 import { lapPlausibilityProblem } from "@/lib/sim/lap-plausibility";
+import { isPointToPointTrack } from "@/lib/track-kinds";
 import { validateLapRecording } from "@/lib/sim/lap-recorder";
-import { lapBoardClass, lapPhysicsVersion, parseLapConditions, type LapConditions, type LapRecording, type LeaderboardEntry } from "@/lib/sim/lap-types";
-import type { SimRealism } from "@/lib/sim/sim-realism";
+import { isCurrentLapPhysics, lapBoardClass, lapPhysicsVersion, type LapConditions, type LapRecording, type LeaderboardEntry } from "@/lib/sim/lap-types";
 import { getOrCreateDriverKey } from "./driver-key";
-import { getOnlineConfig, onlineUrl } from "./online-config";
+import { getOnlineConfig, markOnlineAnswered, markOnlineUnreachable, onlineUrl, readOnlineConfig } from "./online-config";
+import { cappedString, clampLimit, fetchBoardPage, finiteNumber, parseBoardPage, requestJson, type BoardFilter } from "./board-client";
 
-const REQUEST_TIMEOUT_MS = 8000;
+export { boardLabel, driverNameKey, type BoardFilter } from "./board-client";
+
 const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 100;
 const MAX_ID_LENGTH = 64;
-const MAX_NAME_LENGTH = 64;
-const MAX_CODE_LENGTH = 16;
-const MAX_TRACK_ID_LENGTH = 64;
 const MAX_ERROR_LENGTH = 200;
-
-/** Narrows the online board to laps driven a certain way; absent fields take every lap */
-export interface BoardFilter {
-  assists?: AssistPreset;
-  realism?: SimRealism;
-  surface?: "dry" | "wet";
-}
 
 /** One online board as fetched: its fastest drivers, how many drivers it has, and where this player stands */
 export interface RemoteBoard {
@@ -38,9 +29,9 @@ export interface RemoteBoard {
   total: number;
   /**
    * This player's place and lap, and the best lap of the place above theirs (null at the top, or from a server that
-   * does not say); null when they have no lap here
+   * does not say); null when they have no lap here. `pos`: their place in the board's order (a tie shares the rank)
    */
-  me: { rank: number; entry: LeaderboardEntry; aboveMs: number | null } | null;
+  me: { rank: number; pos?: number; entry: LeaderboardEntry; aboveMs: number | null } | null;
   /** Physics revisions that have laps for this circuit and car, newest first */
   physics: number[];
 }
@@ -58,7 +49,18 @@ export interface SubmitResult {
   notFaster?: boolean;
   /** Refused because another driver holds the name */
   taken?: boolean;
+  /** Never reached the board (no answer from it): the game sends the lap again once it answers (board-queue.ts) */
+  unreachable?: boolean;
+  /** Turned away for too many uploads from this address: not sent again by itself */
+  limited?: boolean;
 }
+
+/** What the lap card says, and Your best laps, when a lap couldn't reach the board and will go up once it can */
+export const BOARD_UNREACHABLE = "Couldn't reach the online board, I'll keep trying";
+/** The same once the game has stopped trying by itself (Your best laps still has Retry) */
+export const BOARD_UNREACHABLE_GAVE_UP = "Couldn't reach the online board";
+/** A lap driven on an older physics version, or before its circuit's boards started again: that board is read only */
+export const OLDER_PHYSICS_LAP = "This lap is from an older version of the physics or the circuit, and that board is read only";
 
 export interface RenameResult {
   ok: boolean;
@@ -132,26 +134,133 @@ export function saveBoardBest(key: string, lapTimeMs: number): void {
   }
 }
 
-/** True when this site has an online lap board switched on (asked once, then remembered for a while) */
+const BOARD_MISS_KEY = "lc.boardMiss";
+
+/** A lap that didn't go on its board, and why: the last failed upload per board */
+interface BoardMiss {
+  lapTimeMs: number;
+  recordedAt: number;
+  error: string;
+  /**
+   * The board was out of reach, so the game sends the lap again once it answers: a lap posting sent by itself
+   * (`auto`), or one the player sent (`hand`). Absent for a lap the board (or the game's own check) turned down
+   */
+  retry?: "auto" | "hand";
+}
+
+/** A lap waiting to go up again: its board (circuit, car, class) and which lap it is */
+export interface QueuedMiss {
+  key: string;
+  trackId: string;
+  vehicle: VehicleModelId;
+  /** The board class (`lapBoardClass`) */
+  board: string;
+  lapTimeMs: number;
+  recordedAt: number;
+  retry: "auto" | "hand";
+}
+
+function readBoardMisses(): Record<string, unknown> {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(BOARD_MISS_KEY) ?? "null");
+    return isRecord(saved) ? saved : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeBoardMisses(misses: Record<string, unknown>): void {
+  try {
+    const keys = Object.keys(misses);
+    for (const old of keys.slice(0, Math.max(0, keys.length - MAX_BOARD_BESTS))) delete misses[old];
+    localStorage.setItem(BOARD_MISS_KEY, JSON.stringify(misses));
+  } catch {
+    // Storage blocked: the lap still shows as not on the board, without the reason
+  }
+}
+
+/**
+ * Remembers why a lap didn't go on its board (refused here or by the server, or the board was out of reach), so Your
+ * best laps can say so after the lap card is gone. One failure per board is kept: a slower lap's never replaces the
+ * reason a faster one (the best shown there) didn't go up. `retry`: the board was out of reach, and the lap goes up
+ * once it answers
+ */
+export function saveBoardMiss(
+  rec: Pick<LapRecording, "trackId" | "vehicle" | "conditions" | "lapTimeMs" | "recordedAt">,
+  error: string,
+  retry?: "auto" | "hand",
+): void {
+  const key = boardKeyOf(rec);
+  if (!key) return;
+  const misses = readBoardMisses();
+  const known = misses[key];
+  if (isRecord(known) && finiteNumber(known.lapTimeMs) !== null && (known.lapTimeMs as number) < rec.lapTimeMs) return;
+  delete misses[key];
+  const miss: BoardMiss = { lapTimeMs: rec.lapTimeMs, recordedAt: rec.recordedAt, error: error.slice(0, MAX_ERROR_LENGTH) };
+  if (retry) miss.retry = retry;
+  misses[key] = miss;
+  writeBoardMisses(misses);
+}
+
+/** The laps waiting for the board to answer again, oldest first (board-queue.ts sends them) */
+export function queuedBoardMisses(): QueuedMiss[] {
+  const queued: QueuedMiss[] = [];
+  for (const [key, miss] of Object.entries(readBoardMisses())) {
+    if (!isRecord(miss) || (miss.retry !== "auto" && miss.retry !== "hand")) continue;
+    const lapTimeMs = finiteNumber(miss.lapTimeMs);
+    const recordedAt = finiteNumber(miss.recordedAt);
+    const [trackId, vehicle, board, ...rest] = key.split("|");
+    if (lapTimeMs === null || recordedAt === null || !trackId || !board || rest.length > 0 || !isVehicleModelId(vehicle)) continue;
+    queued.push({ key, trackId, vehicle, board, lapTimeMs, recordedAt, retry: miss.retry });
+  }
+  return queued.sort((a, b) => a.recordedAt - b.recordedAt);
+}
+
+/** A queued lap the game stops sending by itself (it gave up, or the lap is gone): the reason stays, Retry with it */
+export function settleBoardMiss(key: string, recordedAt: number, error: string): void {
+  const misses = readBoardMisses();
+  const miss = misses[key];
+  if (!isRecord(miss) || miss.recordedAt !== recordedAt) return;
+  delete miss.retry;
+  miss.error = error.slice(0, MAX_ERROR_LENGTH);
+  writeBoardMisses(misses);
+}
+
+/** Forgets a board's failed upload once a lap as fast or faster has gone on it */
+export function clearBoardMiss(key: string, lapTimeMs: number): void {
+  const misses = readBoardMisses();
+  const miss = misses[key];
+  if (miss === undefined) return;
+  if (isRecord(miss) && finiteNumber(miss.lapTimeMs) !== null && (miss.lapTimeMs as number) < lapTimeMs) return;
+  delete misses[key];
+  writeBoardMisses(misses);
+}
+
+/**
+ * Whether a saved best is on its online board, as far as this browser knows: `posted` once the board took it (or has a
+ * faster lap of the driver's), else not, with the reason its last upload failed when it was this lap's. Null for a lap
+ * that can't go on a current board (no conditions, or an older physics revision)
+ */
+export function boardStatusOf(
+  lap: Pick<LeaderboardEntry, "trackId" | "vehicle" | "conditions" | "lapTimeMs" | "recordedAt">,
+): { posted: true } | { posted: false; error: string | null } | null {
+  if (!lap.conditions || lap.conditions.physicsVersion !== lapPhysicsVersion(lap.vehicle, lap.trackId)) return null;
+  const key = boardKeyOf(lap);
+  if (!key) return null;
+  const best = loadBoardBest(key);
+  if (best !== null && best <= lap.lapTimeMs) return { posted: true };
+  const miss = readBoardMisses()[key];
+  const mine = isRecord(miss) && miss.lapTimeMs === lap.lapTimeMs && miss.recordedAt === lap.recordedAt;
+  return { posted: false, error: mine ? cappedString(miss.error, MAX_ERROR_LENGTH) : null };
+}
+
+/** True when this site has an online lap board switched on (online-config.ts keeps the answer for a while) */
 export async function boardOnline(): Promise<boolean> {
   return (await getOnlineConfig()).board;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** A non-empty string no longer than max, or null */
-function cappedString(value: unknown, max: number): string | null {
-  return typeof value === "string" && value.length > 0 && value.length <= max ? value : null;
-}
-
-function finiteNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function clampLimit(limit: number): number {
-  return Number.isFinite(limit) ? Math.min(MAX_LIMIT, Math.max(1, Math.floor(limit))) : DEFAULT_LIMIT;
 }
 
 /** Board row for a lap: its driver, time and car, without the samples */
@@ -171,18 +280,6 @@ export function lapToEntry(rec: LapRecording, source: "local" | "remote", id?: s
   return entry;
 }
 
-const ASSIST_LABEL: Record<LapConditions["assists"], string> = { pro: "No assists", semi_pro: "Some assists", assisted: "Assisted" };
-const REALISM_LABEL: Record<LapConditions["realism"], string> = { casual: "Casual", standard: "Standard", full: "Full" };
-
-/** "No assists · Full · Dry": what a lap was driven with */
-export function boardLabel(c: Pick<LapConditions, "assists" | "realism" | "surface">): string {
-  return `${ASSIST_LABEL[c.assists]} · ${REALISM_LABEL[c.realism]} · ${c.surface === "wet" ? "Wet" : "Dry"}`;
-}
-
-/** The claim key of a driver name, as the board compares names: outer spaces off, inner runs as one, lower case */
-export function driverNameKey(name: string): string {
-  return name.replace(/^ +| +$/g, "").replace(/[ \t\n\r\f\v]+/g, " ").toLowerCase();
-}
 
 /** Local personal bests for this circuit (all cars, or one car), every class, fastest first */
 export async function localLeaderboard(trackId: string, vehicle?: VehicleModelId): Promise<LeaderboardEntry[]> {
@@ -193,67 +290,7 @@ export async function localLeaderboard(trackId: string, vehicle?: VehicleModelId
     .sort((a, b) => a.lapTimeMs - b.lapTimeMs);
 }
 
-/** Validates one remote board row; null when any field is missing or malformed, or it belongs on another board */
-function parseRemoteEntry(raw: unknown, trackId: string, vehicle: VehicleModelId, physics: number, filter: BoardFilter): LeaderboardEntry | null {
-  if (!isRecord(raw)) return null;
-  const name = cappedString(raw.name, MAX_NAME_LENGTH);
-  const code = cappedString(raw.code, MAX_CODE_LENGTH);
-  const entryTrack = cappedString(raw.trackId, MAX_TRACK_ID_LENGTH);
-  const lapTimeMs = finiteNumber(raw.lapTimeMs);
-  const recordedAt = finiteNumber(raw.recordedAt);
-  const sectors = Array.isArray(raw.sectorTimesMs) ? raw.sectorTimesMs : null;
-  if (!sectors || sectors.length !== 3) return null;
-  const s0 = finiteNumber(sectors[0]);
-  const s1 = finiteNumber(sectors[1]);
-  const s2 = finiteNumber(sectors[2]);
-  if (!name || !code || !entryTrack || lapTimeMs === null || lapTimeMs <= 0 || recordedAt === null) return null;
-  if (s0 === null || s1 === null || s2 === null || s0 < 0 || s1 < 0 || s2 < 0) return null;
-  // Rows for another circuit or car do not belong on this board
-  if (entryTrack !== trackId || raw.vehicle !== vehicle || !isVehicleModelId(raw.vehicle)) return null;
-  if (raw.id !== undefined && cappedString(raw.id, MAX_ID_LENGTH) === null) return null;
-  // Nor do rows from another physics revision, or outside what was asked for
-  const conditions = parseLapConditions(raw.conditions);
-  if (!conditions || conditions.physicsVersion !== physics) return null;
-  if (filter.assists && conditions.assists !== filter.assists) return null;
-  if (filter.realism && conditions.realism !== filter.realism) return null;
-  if (filter.surface && conditions.surface !== filter.surface) return null;
-
-  const entry: LeaderboardEntry = {
-    name,
-    code,
-    lapTimeMs,
-    sectorTimesMs: [s0, s1, s2],
-    vehicle,
-    trackId: entryTrack,
-    recordedAt,
-    source: "remote",
-    conditions,
-  };
-  if (typeof raw.id === "string") entry.id = raw.id;
-  return entry;
-}
-
-/** fetch() with an 8 s timeout; resolves null on network error, timeout or unreadable body */
-async function requestJson(url: string, init: RequestInit): Promise<{ status: number; body: unknown } | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, {
-      ...init,
-      signal: controller.signal,
-      credentials: "omit",
-      cache: "no-store",
-    });
-    const body: unknown = await res.json().catch(() => null);
-    return { status: res.status, body };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** An answer of GET /api/laps, validated; null when it is not one */
+/** An answer of GET /api/laps for one car's board, validated (board-client.ts); null when it is not one */
 export function parseRemoteBoard(
   body: unknown,
   trackId: string,
@@ -262,52 +299,21 @@ export function parseRemoteBoard(
   filter: BoardFilter,
   limit: number = DEFAULT_LIMIT,
 ): RemoteBoard | null {
-  if (!isRecord(body) || !Array.isArray(body.laps)) return null;
-  const entries: LeaderboardEntry[] = [];
-  for (const row of body.laps.slice(0, clampLimit(limit))) {
-    const entry = parseRemoteEntry(row, trackId, vehicle, physics, filter);
-    if (entry) entries.push(entry);
-  }
-  entries.sort((a, b) => a.lapTimeMs - b.lapTimeMs);
-  const total = finiteNumber(body.total);
-  let me: RemoteBoard["me"] = null;
-  if (isRecord(body.me)) {
-    const rank = finiteNumber(body.me.rank);
-    const entry = parseRemoteEntry(body.me.lap, trackId, vehicle, physics, filter);
-    const above = finiteNumber(body.me.aboveMs);
-    // Only a time faster than the player's own is the place above
-    const aboveMs = entry && above !== null && above > 0 && above < entry.lapTimeMs ? above : null;
-    if (entry && rank !== null && rank >= 1) me = { rank: Math.floor(rank), entry, aboveMs };
-  }
-  const revisions = Array.isArray(body.physics)
-    ? body.physics.filter((v): v is number => typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 1000).slice(0, 20)
-    : [];
-  return { entries, total: total !== null && total >= entries.length ? Math.floor(total) : entries.length, me, physics: revisions };
+  const page = parseBoardPage(body, trackId, vehicle, physics, filter, clampLimit(limit, DEFAULT_LIMIT));
+  return page ? { entries: page.entries, total: page.total, me: page.me, physics: page.physics } : null;
 }
 
 /**
- * One online board: the fastest drivers of a circuit and car (optionally only laps driven a certain way), and where
- * `name` stands on it. Null when there is no online board, or it could not be read.
+ * One online board: the fastest drivers of a circuit and car (optionally only laps driven a certain way, or under an
+ * older physics `version`), and where `name` stands on it. Null when there is no online board, or it could not be read.
  */
 export async function fetchRemoteBoard(
   trackId: string,
   vehicle: VehicleModelId,
-  opts: { filter?: BoardFilter; physics?: number; name?: string; event?: string; limit?: number } = {},
+  opts: { filter?: BoardFilter; physics?: number; version?: number; name?: string; event?: string; limit?: number } = {},
 ): Promise<RemoteBoard | null> {
-  const base = onlineUrl("/laps");
-  if (!base || !(await boardOnline())) return null;
-  const filter = opts.filter ?? {};
-  const physics = opts.physics ?? lapPhysicsVersion(vehicle);
-  const count = clampLimit(opts.limit ?? DEFAULT_LIMIT);
-  const query = new URLSearchParams({ track: trackId, vehicle, physics: String(physics), limit: String(count) });
-  if (filter.assists) query.set("assists", filter.assists);
-  if (filter.realism) query.set("realism", filter.realism);
-  if (filter.surface) query.set("surface", filter.surface);
-  if (opts.event) query.set("event", opts.event);
-  if (opts.name) query.set("name", opts.name.slice(0, MAX_NAME_LENGTH));
-  const res = await requestJson(`${base}?${query.toString()}`, { method: "GET" });
-  if (!res || res.status < 200 || res.status >= 300) return null;
-  return parseRemoteBoard(res.body, trackId, vehicle, physics, filter, count);
+  const page = await fetchBoardPage(trackId, vehicle, { ...opts, limit: clampLimit(opts.limit ?? DEFAULT_LIMIT, DEFAULT_LIMIT) });
+  return page ? { entries: page.entries, total: page.total, me: page.me, physics: page.physics } : null;
 }
 
 /** The wire form of a lap: exactly the LapRecording fields the board keeps and nothing else */
@@ -327,21 +333,34 @@ function toWirePayload(rec: LapRecording & { conditions: LapConditions }): LapRe
   };
 }
 
-/** Uploads a valid lap with its ghost (POST /api/laps), claiming the driver's name with this browser's key */
+/**
+ * Uploads a valid lap with its ghost (POST /api/laps), claiming the driver's name with this browser's key. A board out
+ * of reach (no answer to the switches, tried again now, or none to the upload) is `unreachable`, never "off"
+ */
 export async function submitLap(rec: LapRecording, opts: { event?: string } = {}): Promise<SubmitResult> {
   const url = onlineUrl("/laps");
-  if (!url || !(await boardOnline())) return { ok: false, error: "The online board is not available right now" };
+  if (!url) return { ok: false, error: "The online board is not available right now" };
+  const online = await readOnlineConfig({ fresh: true });
+  if (online.reach === "unreachable") return { ok: false, unreachable: true, error: BOARD_UNREACHABLE };
+  if (!online.config.board) return { ok: false, error: "The online board is not available right now" };
   const valid = validateLapRecording(rec);
   if (!valid) return { ok: false, error: "The lap recording is invalid" };
   // Without its assists, realism, surface and physics revision a lap can't be shown fairly
   if (!valid.conditions) return { ok: false, error: "This lap was recorded by an older version of the game" };
+  // Only the physics and the circuit as they are now take laps (a lap queued from before an update stays off)
+  if (!isCurrentLapPhysics(valid.vehicle, valid.conditions.physicsVersion, valid.trackId)) return { ok: false, error: OLDER_PHYSICS_LAP };
   // The board refuses a lap whose samples don't agree with each other; say so before uploading
-  const problem = lapPlausibilityProblem(valid.data);
+  const problem = lapPlausibilityProblem(valid.data, { open: isPointToPointTrack(valid.trackId) });
   if (problem) return { ok: false, error: problem };
   const body: Record<string, unknown> = { rec: toWirePayload({ ...valid, conditions: valid.conditions }), driverKey: getOrCreateDriverKey() };
   if (opts.event) body.event = opts.event;
   const res = await requestJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  if (!res) return { ok: false, error: "Could not reach the leaderboard" };
+  if (!res) {
+    // No answer at all: the server is out of reach until a read of the switches gets one (which sends the lap again)
+    markOnlineUnreachable();
+    return { ok: false, unreachable: true, error: BOARD_UNREACHABLE };
+  }
+  markOnlineAnswered();
   const answer: Record<string, unknown> = isRecord(res.body) ? res.body : {};
   if (res.status >= 200 && res.status < 300 && answer.ok === true) {
     const result: SubmitResult = { ok: true };
@@ -355,20 +374,29 @@ export async function submitLap(rec: LapRecording, opts: { event?: string } = {}
   const result: SubmitResult = { ok: false, error: message ?? `Leaderboard rejected the lap (HTTP ${res.status})` };
   if (answer.notFaster === true) result.notFaster = true;
   if (answer.taken === true) result.taken = true;
+  if (res.status === 429) result.limited = true;
   return result;
 }
 
 /**
  * Moves the driver's laps from `from` to `to` on the online boards (POST /api/drivers/rename), claiming `to` with this
  * browser's key, so the boards never list them twice. Without an online board there is nothing to move: the name only
- * changes here.
+ * changes here. With the board out of reach it doesn't change at all: laps sent later under the new name would stand
+ * beside the old ones.
  */
 export async function renameOnBoard(from: string, to: string, code?: string): Promise<RenameResult> {
   const url = onlineUrl("/drivers/rename");
-  if (!url || !(await boardOnline())) return { ok: true };
+  if (!url) return { ok: true };
+  const online = await readOnlineConfig({ fresh: true });
+  if (online.reach === "unreachable") return { ok: false, error: "Couldn't reach the online board. Try again in a moment" };
+  if (!online.config.board) return { ok: true };
   const body = JSON.stringify({ from, to, ...(code ? { code } : {}), driverKey: getOrCreateDriverKey() });
   const res = await requestJson(url, { method: "POST", headers: { "Content-Type": "application/json" }, body });
-  if (!res) return { ok: false, error: "Could not reach the leaderboard. Try again" };
+  if (!res) {
+    markOnlineUnreachable();
+    return { ok: false, error: "Couldn't reach the online board. Try again in a moment" };
+  }
+  markOnlineAnswered();
   const answer: Record<string, unknown> = isRecord(res.body) ? res.body : {};
   if (res.status >= 200 && res.status < 300 && answer.ok === true) return { ok: true };
   return {
