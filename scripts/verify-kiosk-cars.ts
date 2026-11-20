@@ -17,6 +17,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import sharp from 'sharp';
 import { KIOSK_CARS } from '../src/lib/kiosk/kiosk-types';
 
@@ -29,9 +30,10 @@ const check = (name: string, ok: boolean, detail = '') => {
   if (!ok) failures.push(name);
 };
 const sha256 = (buf: Buffer) => createHash('sha256').update(buf).digest('hex');
-/** A child's environment with nothing of this run's (run-verify sets NEXT_PUBLIC_HOSTED_CONTENT=1) but PATH and HOME */
+/** A child's environment with nothing of this run's (run-verify sets NEXT_PUBLIC_HOSTED_CONTENT=1) but PATH and HOME,
+ * and with the fetch's waits between attempts and rounds at zero, so the outage cases run in seconds */
 const cleanEnv = (extra: Record<string, string> = {}) =>
-  ({ PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...extra }) as unknown as NodeJS.ProcessEnv;
+  ({ PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', KIOSK_CARS_RETRY_MS: '0,0,0', KIOSK_CARS_ROUND_MS: '0', ...extra }) as unknown as NodeJS.ProcessEnv;
 type LockFile = { path: string; size: number; sha256: string };
 type Lock = { base: string; cars: Record<string, { files: LockFile[] }> };
 
@@ -186,6 +188,37 @@ async function main() {
     } finally {
       server.close();
       rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  console.log('\n== A connection that drops, then comes back');
+  {
+    // The fake server cuts the first two connections for the file mid-way, then serves it (the build PC once lost a car
+    // to a drop like this, with three attempts one after the other)
+    const body = Buffer.from('a car file\n'.repeat(5000));
+    let cuts = 0;
+    const server = createServer((req, res) => {
+      if (cuts < 2) {
+        cuts++;
+        res.writeHead(200, { 'content-length': String(body.length) });
+        res.write(body.subarray(0, 1000));
+        setTimeout(() => res.socket?.destroy(), 20);
+        return;
+      }
+      res.end(body);
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    try {
+      const code = `import(${JSON.stringify(pathToFileURL(join(process.cwd(), 'scripts/kiosk/fetch-kiosk-cars.mjs')).href)}).then((m) => m.get('cars/x/file.bin')).then((b) => console.log('got', b.length), (e) => console.log('lost', e.message))`;
+      const out = await new Promise<string>((done) => {
+        const child = spawn(process.execPath, ['--input-type=module', '-e', code], { env: cleanEnv({ KIOSK_CARS_BASE: `http://127.0.0.1:${(server.address() as AddressInfo).port}` }) });
+        let text = '';
+        child.stdout.on('data', (d) => (text += d));
+        child.on('close', () => done(text.trim()));
+      });
+      check('the file comes through on a later attempt', out === `got ${body.length}`, `${out}, after ${cuts} cut connections`);
+    } finally {
+      server.close();
     }
   }
 
