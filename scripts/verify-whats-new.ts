@@ -89,20 +89,24 @@ if (hasFullHistory) {
   check("git log in Europe/Istanbul succeeded", gitLog.status === 0);
 
   if (gitLog.status === 0) {
-    const gitDays = new Map<string, { commits: number; lastSha: string }>();
+    const gitDays = new Map<string, { commits: number; lastSha: string; shas: Set<string> }>();
     for (const line of gitLog.stdout.trim().split("\n")) {
       if (!line) continue;
       const [d, sha] = line.split("\x1f");
       const cur = gitDays.get(d);
-      if (cur) cur.commits++;
-      else gitDays.set(d, { commits: 1, lastSha: sha });
+      if (cur) {
+        cur.commits++;
+        cur.shas.add(sha);
+      } else gitDays.set(d, { commits: 1, lastSha: sha, shas: new Set([sha]) });
     }
     for (const entry of entries) {
       const g = gitDays.get(entry.date);
       if (entry.date <= "2026-11-14") {
+        // Event branch: its own commits of those days (the kiosk's, merged with upstream) are in this history too, so a
+        // day may hold more commits than upstream's entry counted; the entry's last commit is still one of that day's
         check(
           `${entry.date}: historical count & lastSha match git`,
-          !!g && g.commits === entry.commits && g.lastSha === entry.lastSha,
+          !!g && ((g.commits === entry.commits && g.lastSha === entry.lastSha) || (entry.commits <= g.commits && g.shas.has(entry.lastSha))),
           g ? `${g.commits} commits, ${g.lastSha.slice(0, 7)}` : "missing"
         );
       } else {

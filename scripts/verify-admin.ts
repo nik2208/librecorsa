@@ -19,6 +19,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { bearerKey, handleApi } from '../cloudflare/api/index';
 import { adminKeyMatches, adminStats, CIRCUIT_IDS, type AdminStats } from '../cloudflare/api/admin';
+/** A circuit the game no longer has (upstream retired it on 12 Nov with Monza, which the event branch keeps) */
+const RETIRED = 'silverstone';
 import { RaceServer } from '../cloudflare/api/race';
 import type { D1Database, Env, RateLimit } from '../cloudflare/api/types';
 import { buildDays } from '../src/app/admin/build-days';
@@ -188,12 +190,13 @@ async function main(): Promise<void> {
     const codes = Array.from({ length: 60 }, (_, i) => String.fromCharCode(65 + Math.floor(i / 26), 65 + (i % 26)));
     for (const c of codes) await use('2026-11-13', 'spielberg', c, 2, 6, 3);
     await use('2026-11-13', 'spielberg', 'XX', 1, 2, 1);
-    // Circuits the game no longer has, from old clients, and an id that never was one
-    await use('2026-11-12', 'monza', 'IT', 5, 15, 4);
-    await use('2026-11-13', 'monza', 'IT', 2, 4, 0);
+    // Circuits the game no longer has, from old clients, and an id that never was one. Event branch: Monza is in the
+    // game again (the kiosk's circuit, public/tracks/index.json), so another of the circuits upstream retired with it
+    await use('2026-11-12', RETIRED, 'IT', 5, 15, 4);
+    await use('2026-11-13', RETIRED, 'IT', 2, 4, 0);
     await use('2026-11-13', 'not_a_track', 'US', 1, 1, 0);
     // Before the range
-    await use('2026-11-01', 'monza', 'IT', 50, 100, 0);
+    await use('2026-11-01', RETIRED, 'IT', 50, 100, 0);
 
     const body = await read();
     // The sixty, Italy and the US (the rows below); 12 Nov has Italy alone
@@ -205,10 +208,10 @@ async function main(): Promise<void> {
     );
     check('numbers: laps counted, per day and in all', body.lapsCounted && body.totals.laps === 60 * 3 + 1 + 4 && body.perDay.find((d) => d.day === '2026-11-12')?.laps === 4, `${body.totals.laps}`);
     check('numbers: groups carry their laps', body.byCircuit.find((c) => c.id === 'spielberg')?.laps === 181 && body.byCar[0]?.laps === 185);
-    check('numbers: the circuit list is the game\'s', CIRCUIT_IDS.has('spielberg') && CIRCUIT_IDS.has('rwanda_official_short') && !CIRCUIT_IDS.has('monza'));
+    check('numbers: the circuit list is the game\'s', CIRCUIT_IDS.has('spielberg') && CIRCUIT_IDS.has('rwanda_official_short') && !CIRCUIT_IDS.has(RETIRED));
     check(
       'numbers: circuits the game no longer has, most sessions first, with the last day seen',
-      body.retired.map((r) => `${r.id}:${r.sessions}:${r.lastDay}`).join() === 'monza:7:2026-11-13,not_a_track:1:2026-11-13',
+      body.retired.map((r) => `${r.id}:${r.sessions}:${r.lastDay}`).join() === `${RETIRED}:7:2026-11-13,not_a_track:1:2026-11-13`,
       body.retired.map((r) => `${r.id}:${r.sessions}:${r.lastDay}`).join(),
     );
     check('numbers: sessions a day on them', body.retiredPerDay.map((d) => `${d.day}:${d.sessions}`).join() === '2026-11-12:5,2026-11-13:3', JSON.stringify(body.retiredPerDay));
