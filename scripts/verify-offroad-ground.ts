@@ -1,6 +1,6 @@
 /**
- * Cars that leave the road stay on the ground they are drawn on. At each corner a car (the f12026-car, the SF-26's
- * physics) comes down the straight, misses its braking point and goes straight on, or turns in too far and runs out
+ * Cars that leave the road stay on the ground they are drawn on. At each corner a car (each of the kiosk's two, both
+ * on the rigid-body engine: the f12026-car, the SF-26's physics, and the LC26 on its own profile) comes down the straight, misses its braking point and goes straight on, or turns in too far and runs out
  * the other side, onto the run-off, grass, gravel and beyond. A car that falls through the ground (into the lost-car
  * rescue, 15 m down) fails, and so does a tyre hanging over drawn ground with nothing under it. Past the verge (more
  * than VERGE_M beyond the road's edge) every tyre is held to the drawn ground under it (scripts/lib/drawn-ground.ts):
@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import * as THREE from 'three';
 import { getActiveTrackData, getActiveTrackMetadata, setActiveTrack, type RawTrackJson } from '../src/lib/track-data';
 import { F12026CarSim } from '../src/lib/sim/f12026-car/F12026CarSim';
+import { createLc26Sim } from '../src/lib/sim/f12026-car/Lc26Sim';
 import { loadGlbGeometry } from './lib/glb-geometry';
 import { buildDrawnGround, nodeMaterialNames } from './lib/drawn-ground';
 import { skipSuiteWithout } from './lib/hosted-files';
@@ -25,6 +26,8 @@ const opt = (name: string, fallback: string) => {
   return i >= 0 && argv[i + 1] !== undefined ? argv[i + 1] : fallback;
 };
 const trackId = opt('track', 'monza');
+/** `--car sf26|lc26`: one of the kiosk's cars (default: both) */
+const carOpt = opt('car', 'all');
 const verbose = argv.includes('--verbose');
 // Monza is on the event branch only; elsewhere the default circuit's files may be missing
 skipSuiteWithout(`public/tracks/${trackId}/track_data.json`);
@@ -39,14 +42,18 @@ const track = getActiveTrackData(1200);
 const glbPath = `public${track.meshUrl}`;
 const root = loadGlbGeometry(glbPath);
 const mats = nodeMaterialNames(glbPath);
-const sim = new F12026CarSim(track, root);
-// The drawn ground is read after the car is built: a fitted circuit moves its surfaces while its colliders are built
+// The kiosk's two cars: the SF-26 (its physics pinned to the rigid-body f12026-car) and the LC26 (the 2026 Prototype,
+// which upstream moved onto the rigid-body engine too: lc26-engine.ts)
+const CARS: { id: string; make: () => F12026CarSim }[] = [
+  { id: 'sf26', make: () => new F12026CarSim(track, root) },
+  { id: 'lc26', make: () => createLc26Sim(track, root) },
+].filter((c) => carOpt === 'all' || c.id === carOpt);
+const sims = CARS.map((c) => ({ id: c.id, sim: c.make() }));
+// The drawn ground is read after the cars are built: a fitted circuit moves its surfaces while its colliders are built
 const drawn = buildDrawnGround(root, {
   materialOf: (m) => (m.userData.materialName as string | undefined) || mats.get(m.name) || '',
   cutMaterials: getActiveTrackMetadata().mesh?.cutMaterials,
 });
-sim.assistPreset = 'semi_pro';
-const v = sim.vehicle;
 const L = track.totalLengthM;
 
 interface Scenario {
@@ -85,9 +92,14 @@ for (const t of turns) {
 }
 
 const floor = { y: 0, label: 0 };
+let totalFailures = 0;
+for (const { id: carId, sim } of sims) {
+sim.assistPreset = 'semi_pro';
+const v = sim.vehicle;
 let failures = 0;
 let worstSink = 0;
 let worstAt = '';
+console.log(`\n${carId}:`);
 for (const sc of scenarios) {
   const smp = track.getSampleAtDistance(sc.s);
   const b = smp.binormal;
@@ -168,5 +180,7 @@ for (const sc of scenarios) {
     );
   }
 }
-console.log(`\n${trackId}: ${scenarios.length - failures} / ${scenarios.length} off-road runs on the drawn ground; deepest tyre past the verge ${(worstSink * 100).toFixed(0)} cm under it${worstAt ? ` (${worstAt})` : ''}`);
-process.exitCode = failures ? 1 : 0;
+console.log(`${trackId} · ${carId}: ${scenarios.length - failures} / ${scenarios.length} off-road runs on the drawn ground; deepest tyre past the verge ${(worstSink * 100).toFixed(0)} cm under it${worstAt ? ` (${worstAt})` : ''}`);
+totalFailures += failures;
+}
+process.exitCode = totalFailures ? 1 : 0;
