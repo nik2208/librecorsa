@@ -18,6 +18,7 @@ import { DEFAULT_KIOSK_CONFIG, sanitizeKioskConfig } from "../src/lib/kiosk/kios
 import { kioskSettingsFor } from "../src/lib/kiosk/kiosk-settings";
 import { DEFAULT_PLAYER_SETTINGS } from "../src/lib/settings/player-settings";
 import { LIVERIES } from "../src/lib/track-data";
+import { BUMPER_SHIFT_BUTTONS, GT_STYLE_BUTTONS } from "../src/lib/input/bindings";
 
 let failures = 0;
 const check = async (name: string, fn: () => void | Promise<void>) => {
@@ -131,6 +132,16 @@ async function main() {
     const livery = LIVERIES.find((l) => l.id === "applikat");
     assert.ok(livery?.decals, "the Applikat livery has its pictures");
     assert.ok(existsSync(join(__dirname, "../public", livery!.decals!.atlas)), "its atlas is in public/");
+  });
+  await check("the controller layout the stand was tested with, unless this browser saved its own", () => {
+    // A browser with no saved map has upstream's new default (GT style: gears on A and X): the kiosk keeps the bumpers
+    const fresh = kioskSettingsFor(sanitizeKioskConfig({}))({ ...DEFAULT_PLAYER_SETTINGS, padButtons: { ...GT_STYLE_BUTTONS } }).padButtons;
+    assert.deepEqual([fresh.shiftUp, fresh.shiftDown, fresh.boost], [BUMPER_SHIFT_BUTTONS.shiftUp, BUMPER_SHIFT_BUTTONS.shiftDown, BUMPER_SHIFT_BUTTONS.boost]);
+    assert.deepEqual([fresh.mfd, fresh.hud, fresh.board, fresh.flyingLap, fresh.mfdPage], [null, null, null, null, null], "the staff-only buttons stay blank");
+    // A map the staff saved in the full game is theirs
+    const custom = { ...BUMPER_SHIFT_BUTTONS, boost: 3, camera: 0 };
+    const own = kioskSettingsFor(sanitizeKioskConfig({}))({ ...DEFAULT_PLAYER_SETTINGS, padButtons: custom }).padButtons;
+    assert.deepEqual([own.boost, own.camera], [3, 0]);
   });
   await check("the soundtrack is off on the kiosk, every other sound as saved", () => {
     const a = kioskSettingsFor(sanitizeKioskConfig({}))(DEFAULT_PLAYER_SETTINGS).audio;

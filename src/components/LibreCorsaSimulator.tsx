@@ -1553,7 +1553,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   // does a DualShock 4 connected for gyro steering. Kiosk mode opens them only while the staff have tilt steering on:
   // off, a PlayStation pad drives through the browser's own gamepad, as on the kiosk before (the distro's WebHID policy
   // would otherwise open any of them, and over Bluetooth hand its input to upstream's untested DualShock 4 parser)
-  const kioskGyro = kioskOn && settings.dualSense.gyroSteer;
+  // From the kiosk's config alone: between the save's hydration and the kiosk's overlay the settings state briefly holds
+  // the browser's own (a gyro turned on in /play), which must not open a pad the staff left off
+  const kioskGyro = useMemo(() => kioskOn && (kioskSettings?.(DEFAULT_PLAYER_SETTINGS).dualSense.gyroSteer ?? false), [kioskOn, kioskSettings]);
   useEffect(() => {
     if (kioskOn && !kioskGyro) return;
     void dualSenseHid.restore();

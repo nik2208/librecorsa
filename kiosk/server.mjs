@@ -755,14 +755,15 @@ async function serveStatic(req, res, url) {
 // ---------------------------------------------------------------------------------------------------------------
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://kiosk.local");
   try {
+    // Inside the try: a request target such as "//" is no URL, and an error out here would end the whole server
+    const url = new URL(req.url ?? "/", "http://kiosk.local");
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
     return await serveStatic(req, res, url);
   } catch (err) {
-    const status = err && typeof err.status === "number" ? err.status : 500;
+    const status = err && err.code === "ERR_INVALID_URL" ? 400 : err && typeof err.status === "number" ? err.status : 500;
     if (status === 500) console.error("[kiosk]", err);
-    if (!res.headersSent) sendJson(res, status, { error: status === 500 ? "Errore del server" : err.message });
+    if (!res.headersSent) sendJson(res, status, { error: status === 500 ? "Errore del server" : status === 400 && err.code === "ERR_INVALID_URL" ? "Indirizzo non valido" : err.message });
     else res.destroy();
   }
 });

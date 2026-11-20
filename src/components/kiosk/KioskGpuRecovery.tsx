@@ -16,6 +16,8 @@ const SLOW_S = 60;
 
 export const KioskGpuRecovery: React.FC = () => {
   const [left, setLeft] = useState<number | null>(null);
+  /** Reloading has not helped (three within ten minutes): the staff can restart the browser */
+  const [stuck, setStuck] = useState(false);
   useEffect(() => {
     const now = Date.now();
     let recent: number[] = [];
@@ -26,6 +28,7 @@ export const KioskGpuRecovery: React.FC = () => {
       recent = [];
     }
     const waitS = recent.length >= 3 ? SLOW_S : QUICK_S;
+    setStuck(recent.length >= 3);
     setLeft(waitS);
     const id = window.setInterval(() => {
       const remaining = Math.max(0, waitS - Math.floor((Date.now() - now) / 1000));
@@ -47,6 +50,12 @@ export const KioskGpuRecovery: React.FC = () => {
       <p className="font-f1-italic text-xl text-white/80">
         La grafica si è bloccata: il gioco riparte da solo{left !== null ? ` tra ${left} s` : ""}.
       </p>
+      {stuck ? (
+        <p className="max-w-2xl font-f1-italic text-base text-white/60">
+          Per lo staff: se continua, il browser ha bloccato la grafica per questa pagina. Premi Alt+F4: la console lo
+          riapre da solo; se non basta, riavvia il PC.
+        </p>
+      ) : null}
     </div>
   );
 };

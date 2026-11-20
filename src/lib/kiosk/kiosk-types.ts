@@ -33,7 +33,8 @@ export const KIOSK_FALLBACK_TRACK_ID = "rwanda_official_short";
 
 /**
  * The car a kiosk runs: LibreCorsa's 2026 Prototype, in Applikat's livery (the sponsor's with its logo on). The Ferrari
- * SF-26 it ran before is gone: the event can't use it (a config or result that names it falls back to this one)
+ * SF-26 it ran before is gone: the event can't use it. A config that names it runs this one; a result saved with it
+ * stays on its own board (carId "sf26"), which no screen shows
  */
 export const KIOSK_CARS = [{ id: "lc26", label: "Monoposto 2026", extra: false }] as const;
 export type KioskCarId = (typeof KIOSK_CARS)[number]["id"];

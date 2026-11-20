@@ -22,6 +22,8 @@ import {
 } from "@/lib/kiosk/kiosk-api";
 import { formatClock, formatLapTime } from "@/lib/kiosk/kiosk-score";
 import { withBasePath } from "@/lib/base-path";
+import { isDualSensePadId } from "@/lib/input/dualsense-protocol";
+import { isDualShock4PadId } from "@/lib/input/dualshock4-protocol";
 import {
   DEFAULT_KIOSK_CONFIG,
   KIOSK_MOTTO_MAX,
@@ -85,12 +87,19 @@ const PadStatus: React.FC = () => {
     const id = window.setInterval(read, 1000);
     return () => window.clearInterval(id);
   }, []);
-  const sony = pads.some((id) => /054c|wireless controller|dualshock|dualsense/i.test(id));
+  // The game's own tests (an Xbox pad's "Xbox Wireless Controller" is not a DualShock 4's "Wireless Controller")
+  const sony = pads.filter((id) => isDualShock4PadId(id) || isDualSensePadId(id)).length;
+  const verdict =
+    sony === 0
+      ? "Nessun controller PlayStation: lo sterzo inclinando non agisce"
+      : sony > 1
+        ? "Più controller PlayStation collegati: con lo sterzo inclinando lasciane uno solo (l'inclinazione potrebbe venire dall'altro)"
+        : "Controller PlayStation collegato";
   return (
     <p className="font-f1-italic text-xs text-white/55">
       {pads.length === 0
         ? "Nessun controller visto da questo PC (premi un pulsante del controller)."
-        : `${sony ? "Controller PlayStation collegato" : "Nessun controller PlayStation: lo sterzo inclinando non agisce"} · ${pads.map((id) => id.replace(/\s*\(.*\)\s*$/, "")).join(", ")}`}
+        : `${verdict} · ${pads.map((id) => id.replace(/\s*\(.*\)\s*$/, "")).join(", ")}`}
     </p>
   );
 };

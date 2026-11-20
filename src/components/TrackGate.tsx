@@ -128,7 +128,7 @@ export const TrackGate: React.FC<TrackGateProps> = ({ kiosk, trackId: wantedTrac
         role="alert"
         className="lc-ui-zoom pointer-events-none fixed right-[max(1rem,env(safe-area-inset-right))] bottom-[calc(env(safe-area-inset-bottom,0px)+1rem)] left-[max(1rem,env(safe-area-inset-left))] z-(--z-lc-notice) mx-auto flex w-fit max-w-[calc(100%-2rem)] justify-center"
       >
-        {error ? <Toast tone="bad">{error}</Toast> : null}
+        {error && !kiosk ? <Toast tone="bad">{error}</Toast> : null}
       </div>
       {/* At the top: the loading screen's own prompt sits along the bottom */}
       <div

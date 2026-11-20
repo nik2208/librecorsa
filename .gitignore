@@ -62,13 +62,13 @@ UI-RESEARCH-*.md
 !/public/tracks/rwanda_official/
 !/public/tracks/rwanda_official_short/
 !/public/tracks/index.json
-# Event branch: Monza and the Ferrari SF-26 are part of the kiosk (the fork's owner asked for them in the repository)
+# Event branch: Monza is part of the kiosk (the fork's owner asked for it in the repository). The Ferrari SF-26 is not:
+# the event can't use it, and public/cars/sf26 stays ignored like every hosted car
 !/public/tracks/monza/
 # RISE's KTX2 model for phones (src/lib/ktx2-models.ts) is hosted like the other circuits
 /public/tracks/rwanda_official/*.ktx2.*.glb
 /public/cars/*
 !/public/cars/f12026/
-!/public/cars/sf26/
 /public/gt3/
 # The soundtrack (src/lib/audio/music-catalog.ts): hosted like the circuits, never committed
 /public/music/

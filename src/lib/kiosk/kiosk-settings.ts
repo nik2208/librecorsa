@@ -5,9 +5,19 @@
  */
 
 import { MUSIC_TRACK_IDS } from "@/lib/audio/music-catalog";
+import { BUMPER_SHIFT_BUTTONS, GT_STYLE_BUTTONS, type PadButtonBindings } from "@/lib/input/bindings";
 import type { PlayerSettings } from "@/lib/settings/player-settings";
 import type { AssistPreset } from "@/types/f1";
 import { KIOSK_LIVERY_ID, KIOSK_NEUTRAL_LIVERY_ID, type KioskConfig } from "@/lib/kiosk/kiosk-types";
+
+/**
+ * The controller's buttons on the stand: the staff's own map when this browser saved one, else the layout the kiosk was
+ * tested with (gears on the bumpers, boost on A), not upstream's newer default (GT style: gears on A and X)
+ */
+function standLayout(own: PadButtonBindings): PadButtonBindings {
+  const isGtDefault = (Object.keys(GT_STYLE_BUTTONS) as (keyof PadButtonBindings)[]).every((k) => own[k] === GT_STYLE_BUTTONS[k]);
+  return isGtDefault ? BUMPER_SHIFT_BUTTONS : own;
+}
 
 /** `eventLivery`: the sponsor's livery (its logo is on, src/lib/kiosk/kiosk-logos.ts sponsorShown), else the game's own */
 export function kioskSettingsFor(
@@ -46,7 +56,7 @@ export function kioskSettingsFor(
     // Upstream's newer keys too: the MFD (O), the HUD layouts (H), the online board (J) and the next music track (K)
     keys: { ...own.keys, autopilot: [], mute: [], replay: [], flyingLap: [], mouseSteer: [], mfdPage: [], mfd: [], hud: [], board: [], nextTrack: [] },
     // Nor the MFD (its dials change the assists of the level picked), hiding the HUD or the online board
-    padButtons: { ...own.padButtons, flyingLap: null, mfd: null, mfdPage: null, hud: null, board: null },
+    padButtons: { ...standLayout(own.padButtons), flyingLap: null, mfd: null, mfdPage: null, hud: null, board: null },
     // The lap card has buttons (save a ghost file …) a visitor has no use for; the kiosk shows its own lap times
     hud: { ...own.hud, lapSummary: false, deltaBar: false, boardWidget: "closed" },
     // Nothing goes to the online boards from the stand (there are none offline: belt and braces)
