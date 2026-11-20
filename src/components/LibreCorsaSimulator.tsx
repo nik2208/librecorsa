@@ -44,7 +44,7 @@ import { timeTrialRules } from "@/lib/sim/time-trial";
 import { challengeTarget, type ChallengeTarget } from "@/lib/net/challenge-target";
 import { isTouchDevice, resetTouchInput } from "@/lib/input/touch-input";
 import { isFatalHidStatus } from "@/lib/input/webhid-ffb";
-import { SIM_REALISM_FLAGS, type SimRealism } from "@/lib/sim/sim-realism";
+import { simRealismFlagsFor, type SimRealism } from "@/lib/sim/sim-realism";
 import type { SessionConditions } from "@/lib/sim/weather";
 import { getTrackInfo, LISTED_TRACKS, TRACKS } from "@/lib/track-registry";
 import { F1TelemetryHud } from "@/components/F1TelemetryHud";
@@ -635,8 +635,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     }
   }, [conditionsKey, getTrackEnv, session, handleTireCompoundChange]);
   useEffect(() => {
-    getTrackEnv().setSimRealism(SIM_REALISM_FLAGS[settings.realism]);
-  }, [settings.realism, getTrackEnv]);
+    // With the kiosk's simple driving on top when it is on (the full game never has it)
+    getTrackEnv().setSimRealism(simRealismFlagsFor(settings.realism, settings.simpleDrive));
+  }, [settings.realism, settings.simpleDrive, getTrackEnv]);
 
   const handleOffTrackGlow = useCallback((on: boolean) => session?.setOffTrackGlow(on), [session]);
 

@@ -83,6 +83,12 @@ export interface PlayerSettings {
   race: RaceSetup;
   /** Simulation realism: tyre wear, temperature grip, fuel use and how hard rain bites (Full = the whole model) */
   realism: SimRealism;
+  /**
+   * Kiosk mode's simple driving («Guida semplice», src/lib/kiosk/kiosk-settings.ts): the energy store never runs down
+   * and Straight Mode works itself (`simRealismFlagsFor`). The full game has no such setting: off, and never read back
+   * from a save
+   */
+  simpleDrive: boolean;
   /** Weather, time of day and time multiplier for offline sessions (the host's apply online) */
   conditions: SessionConditions;
   /** Starred and recently chosen cars and circuits (the car and circuit browsers) */
@@ -539,6 +545,7 @@ export const DEFAULT_PLAYER_SETTINGS: PlayerSettings = {
   aiSkill: AI_SKILL_DEFAULT,
   race: DEFAULT_RACE_SETUP,
   realism: "full",
+  simpleDrive: false,
   conditions: DEFAULT_SESSION_CONDITIONS,
   library: DEFAULT_CONTENT_LIBRARY,
   audio: DEFAULT_AUDIO_SETTINGS,
@@ -937,6 +944,8 @@ export function parsePlayerSettings(raw: unknown): PlayerSettings {
     aiSkill: Math.round(num(raw.aiSkill, 0, 100, d.aiSkill)),
     race: parseRaceSetup(raw.race),
     realism: oneOf(raw.realism, SIM_REALISM_LEVELS, d.realism),
+    // The kiosk's alone, which never saves: the full game on the stand's PC never picks it up from storage
+    simpleDrive: false,
     conditions: sanitizeConditions(raw.conditions),
     library: parseLibrary(raw.library),
     audio: parseAudio(raw.audio),

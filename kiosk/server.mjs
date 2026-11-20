@@ -70,6 +70,7 @@ const DEFAULT_CONFIG = {
   trackId: "monza",
   carId: "lc26",
   difficulty: "assisted",
+  simpleDrive: true,
   device: "controller",
   gyroSteer: false,
   gyroLockDeg: 45,
@@ -110,6 +111,8 @@ function sanitizeConfig(raw) {
     trackId: TRACK_IDS.includes(r.trackId) ? r.trackId : d.trackId,
     carId: CAR_IDS.includes(carIdOf(r.carId)) ? carIdOf(r.carId) : d.carId,
     difficulty: DIFFICULTIES.includes(r.difficulty) ? r.difficulty : d.difficulty,
+    // «Guida semplice» (src/lib/kiosk/kiosk-types.ts): a config.json from before the switch has none, and comes out on
+    simpleDrive: typeof r.simpleDrive === "boolean" ? r.simpleDrive : d.simpleDrive,
     device: DEVICES.includes(r.device) ? r.device : d.device,
     // Tilt steering (src/lib/kiosk/kiosk-types.ts): the game's ranges
     gyroSteer: typeof r.gyroSteer === "boolean" ? r.gyroSteer : d.gyroSteer,

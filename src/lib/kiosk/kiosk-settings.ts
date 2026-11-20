@@ -32,6 +32,9 @@ export function kioskSettingsFor(
     assistPreset: difficulty,
     // No tyre wear or fuel to manage, milder rain (and the weather is dry anyway)
     realism: "casual",
+    // «Guida semplice» as the staff set it, for every level: no energy to manage, the flaps working themselves (the
+    // simulator turns it into the cars' realism flags, `simRealismFlagsFor`)
+    simpleDrive: config.simpleDrive,
     // Shifting is one thing too many for most visitors; the hardest level leaves it as the staff set it
     autoGearbox: difficulty === "pro" ? own.autoGearbox : true,
     racingLine: config.racingLine,

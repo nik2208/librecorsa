@@ -24,10 +24,18 @@ Classifica:
 - per ogni nome resta il risultato migliore, con la difficoltà scelta (F/M/D accanto al nome);
 - una classifica per ogni combinazione di circuito e auto.
 
+**Guida semplice** (Impostazioni → Sessione di gioco, accesa di default): batteria sempre carica e ala mobile (Straight
+Mode) automatica, che si apre da sola sui rettilinei a gas pieno e si chiude in frenata. Il visitatore non ha energia da
+gestire né tasti da imparare (il tasto X dell'ala funziona ancora). Vale per tutti i giocatori e tutti i livelli, che
+cambiano solo aiuti e cambio: la classifica resta una sola. Spenta, l'auto è quella del gioco completo, con l'energia
+da gestire e l'ala da aprire col tasto X: chi non lo fa, a Monza dal secondo giro non supera i 257 km/h circa.
+Cambiandola i tempi non sono più confrontabili con quelli già registrati: conviene azzerare la classifica. Vale dopo
+*Salva*, come le altre impostazioni.
+
 | Pagina | Cosa fa |
 | :-- | :-- |
 | `/` | **Il kiosk** (anche `/kiosk` e `/kiosk/play`, per i vecchi link). |
-| `/kiosk/admin` | Impostazioni (PIN, dal pulsante *Impostazioni* del menu): giri o minuti, circuito, auto, difficoltà proposta, **motto**, comandi (controller USB / volante / tastiera), qualità grafica; **loghi** (quali mostrare, ordine, caricarne di nuovi); risultati, eliminazione, azzeramento, export CSV; **indirizzo della classifica in rete locale**. |
+| `/kiosk/admin` | Impostazioni (PIN, dal pulsante *Impostazioni* del menu): giri o minuti, circuito, auto, difficoltà proposta, **guida semplice**, **motto**, comandi (controller USB / volante / tastiera), qualità grafica; **loghi** (quali mostrare, ordine, caricarne di nuovi); risultati, eliminazione, azzeramento, export CSV; **indirizzo della classifica in rete locale**. |
 | `/kiosk/classifica` | Classifica pubblica per un secondo schermo o un telefono sulla stessa rete (si aggiorna da sola). |
 | `/play` | Il simulatore completo: serve solo allo staff per abbinare un volante (da *Impostazioni* → *Configura volante*). |
 

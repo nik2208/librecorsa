@@ -1801,6 +1801,12 @@ export class F12026CarSim implements SimulatorCar {
     this.vehicle.realism = { ...flags };
   }
 
+  /** The energy store full and the lap's deploy and harvest totals cleared (`SimRealismFlags.unlimitedEnergy`) */
+  private fillErsStore(): void {
+    this.vehicle.ersEnergyJ = this.config.ers.ERS_MAX_CHARGE;
+    this.vehicle.resetLapEnergy();
+  }
+
   /** Car-to-car contact as world deltas (see `SimulatorCar.applyRigidBodyCollision` for the convention) */
   public applyRigidBodyCollision(
     posDeltaX: number,
@@ -1985,6 +1991,11 @@ export class F12026CarSim implements SimulatorCar {
       this.boostRemainingS = Math.max(0, this.boostRemainingS - steppedS);
       if (this.boostRemainingS === 0) this.boostCooldownS = BOOST_COOLDOWN_S;
     }
+    // The kiosk's simple driving (`SimRealismFlags.unlimitedEnergy`): the store full and the lap's totals cleared before
+    // the push decision and after every tick (so before each tick's deployment), so neither the ERS mode's floor nor the
+    // per-lap allowance ever stops the motor, and the HUD reads the store full. Push itself is decided as ever
+    const bottomless = this.profile.hasErs && this.realism.unlimitedEnergy === true;
+    if (bottomless) this.fillErsStore();
     // 2026: the override is Overtake Mode, earned in a race within 1 s at the detection point for the lap after it
     // (with its extra energy); an AI car spends it in the zones, where it overtakes
     const overtakeOk = this.overtakeAvailable;
@@ -2039,6 +2050,7 @@ export class F12026CarSim implements SimulatorCar {
       this.steerCmd = Number.isFinite(cmd.steer) ? cmd.steer : 0;
       _v.copy(v.velocity);
       v.step(CONTROL_DT_S, vin);
+      if (bottomless) this.fillErsStore();
       // Barrier contact this tick, while moving: every fixed step is counted, not only a frame's last
       if (v.telemetry.wallContact && v.velocity.length() > WALL_CONTACT_MIN_SPEED_MS) this.wallContactS += v.lastStepTimeS;
       this.updateBrakes(CONTROL_DT_S);
@@ -2092,15 +2104,31 @@ export class F12026CarSim implements SimulatorCar {
     h: number
   ): { throttle: number; ignitionCut: number; brake: number; brakeWheelScale?: readonly [number, number, number, number]; steer: number; drs: boolean } {
     const want = THREE.MathUtils.clamp(this.steeringAssist.steer(inputs, this.gamepadAssistEnabled, this.steeringAssistState, h), -1, 1);
+    const aids = this.electronicAids(inputs.throttle, inputs.brake, h, this);
+    const drs = this.realism.autoStraightMode === true && this.autoFlapPress(aids.throttle, aids.brake);
     // A steering wheel's rim goes to the rack as the driver's hands turn it, however fast the catch
     if (inputs.steerRim && this.steeringAssist.source === 'direct') {
-      return { ...this.electronicAids(inputs.throttle, inputs.brake, h, this), steer: want, drs: false };
+      return { ...aids, steer: want, drs };
     }
     // Any other device: the rack turns no faster than hands turn a wheel (900°/s at the rim, as the LC26's): a stick
     // flick, a mouse or a phone tilt otherwise reached the tyres as an instant step, which snaps a car at speed
     const maxStep = (DRIVER_RIM_SPEED_DEG_S / this.rimLockDeg) * h;
     const steer = this.steerCmd + THREE.MathUtils.clamp(want - this.steerCmd, -maxStep, maxStep);
-    return { ...this.electronicAids(inputs.throttle, inputs.brake, h, this), steer, drs: false };
+    return { ...aids, steer, drs };
+  }
+
+  /**
+   * The driver's flaps working themselves (`SimRealismFlags.autoStraightMode`): the autopilot's press (`autopilot`),
+   * made where the flaps may open and are shut, on full throttle; VehiclePhysics takes it on its rising edge. A driver
+   * can also have the brake on with the throttle down, where the press would be dropped and then held, with no edge to
+   * come once the brake is let go (nor for the flap button, which shares the input): so none on the brake. Nor while a
+   * button press is kept for the stretch ahead, which a second press would take back. They close by themselves as
+   * ever: on the brake, a lift under `drsCloseThrottle` or at the stretch's end. Shut with the button, they stay shut
+   * until the throttle comes off and back (the press is held meanwhile)
+   */
+  private autoFlapPress(throttle: number, brake: number): boolean {
+    const v = this.vehicle;
+    return this.profile.hasDrs && v.telemetry.drsAvailable && !v.drsOpen && !v.telemetry.drsQueued && throttle > 0.95 && brake <= 0.05;
   }
 
   /** The car as the steering assist reads it */

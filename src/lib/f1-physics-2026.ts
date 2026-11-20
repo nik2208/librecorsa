@@ -808,7 +808,11 @@ export class F1Physics2026 {
     }
   }
 
-  /** Simulation realism: tyre wear, temperature grip, fuel use and wet severity */
+  /**
+   * Simulation realism: tyre wear, temperature grip, fuel use and wet severity. The kiosk's simple driving
+   * (`unlimitedEnergy`, `autoStraightMode`) is the rigid-body engine's alone: this one, kept to compare the two,
+   * ignores it
+   */
   public setSimRealism(flags: SimRealismFlags): void {
     this.realism = { ...flags };
     for (const w of this.wheels) {

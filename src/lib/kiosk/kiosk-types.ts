@@ -97,6 +97,12 @@ export interface KioskConfig {
   carId: KioskCarId;
   /** The level picked at first on the start screen (each player can change it) */
   difficulty: AssistPreset;
+  /**
+   * «Guida semplice»: the energy store always full and Straight Mode working itself (src/lib/sim/sim-realism.ts
+   * `unlimitedEnergy`, `autoStraightMode`), so a visitor has no energy to manage. For every player on every level,
+   * which keep their own assists and gearbox: the board stays one, but its times change with it
+   */
+  simpleDrive: boolean;
   /** What the visitors drive with */
   device: KioskInputDevice;
   /**
@@ -133,6 +139,9 @@ export const DEFAULT_KIOSK_CONFIG: KioskConfig = {
   trackId: "monza",
   carId: "lc26",
   difficulty: "assisted",
+  // On: without it a visitor who never learns the battery and the flaps (button X) is held near 257 km/h from the
+  // second lap, the store at its 20 % floor
+  simpleDrive: true,
   device: "controller",
   // Off until the staff try it on the stand's pads; a wider lock and a calmer centre than the game's own (35°, 1) for
   // first-time players
@@ -183,6 +192,8 @@ export function sanitizeKioskConfig(raw: unknown): KioskConfig {
     trackId,
     carId,
     difficulty,
+    // A config saved before the switch existed has none: on, as for a new kiosk
+    simpleDrive: typeof r.simpleDrive === "boolean" ? r.simpleDrive : d.simpleDrive,
     device,
     gyroSteer: typeof r.gyroSteer === "boolean" ? r.gyroSteer : d.gyroSteer,
     gyroLockDeg: num(r.gyroLockDeg, KIOSK_GYRO_LOCK_DEG.min, KIOSK_GYRO_LOCK_DEG.max, d.gyroLockDeg),
