@@ -228,9 +228,12 @@ in cache. Senza un'immagine il gioco scrive il nome del marchio nei suoi colori.
 
 **Monza** è nel repository su questo branch (`public/tracks/monza/`), recuperata dalla storia di LibreCorsa (commit
 `7b009d9`) su richiesta del proprietario del fork, ed è il circuito predefinito del kiosk. Upstream l'ha rimossa il
-12/11/2026 per motivi di diritti: il modello viene da una conversione di Assetto Corsa e contiene uno striscione "Kunos
-Simulazioni". Una build con `NEXT_PUBLIC_EXTRA_CONTENT=""` la esclude; le impostazioni permettono di tornare a RISE
-Motordrome.
+12/11/2026 per motivi di diritti: il modello viene da una conversione di Assetto Corsa. Su questo branch i marchi di
+altre aziende nelle sue texture (striscioni, bandiere, insegne, pannelli delle tribune, scritte dipinte) sono sostituiti
+da Applikat, con la stessa grafica della monoposto; dove un logo non avrebbe senso (un graffito, una centralina) resta
+la superficie com'era sotto. Il nome ufficiale del circuito è diventato «Monza». Lo fa `scripts/kiosk/unbrand-monza.mjs`,
+che cambia solo le immagini: geometria e collisioni sono identiche. Questo non risolve i diritti sul modello stesso.
+Una build con `NEXT_PUBLIC_EXTRA_CONTENT=""` la esclude; le impostazioni permettono di tornare a RISE Motordrome.
 
 L'auto è la **Monoposto 2026** di LibreCorsa (id `vf26`), in **livrea Applikat**: carrozzeria nera, alettoni rosso
 Applikat, il gatto e APPLIKAT su pance, muso e alettone, applikat.it sul cofano (`src/lib/kiosk/applikat-livery.ts`,
