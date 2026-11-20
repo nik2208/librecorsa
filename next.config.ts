@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { NextConfig } from "next";
 
 const basePath = (process.env.NEXT_PUBLIC_BASE_PATH || "").replace(/\/+$/, "");
@@ -12,6 +13,11 @@ const assetVersion = (process.env.GITHUB_SHA || "").slice(0, 12) || String(Date.
 // main checkout here (NEXT_TURBOPACK_ROOT=/path/to/librecorsa) to build or run a worktree with Turbopack
 const turbopackRoot = process.env.NEXT_TURBOPACK_ROOT;
 
+// Event branch: the kiosk's extra car, if scripts/kiosk/fetch-kiosk-cars.mjs (`prebuild`) fetched and dressed it. Only a
+// complete one has its .kiosk-ready, and only then is it listed (src/lib/hosted-content.ts)
+const KIOSK_EXTRA_CARS = ["mtr-496r"];
+const fetchedCars = KIOSK_EXTRA_CARS.filter((id) => existsSync(`public/cars/${id}/.kiosk-ready`));
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   ...(turbopackRoot ? { turbopack: { root: turbopackRoot } } : {}),
@@ -19,6 +25,7 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_ASSET_VERSION: assetVersion,
     // Event branch: always defined, so a normal build compiles the kiosk's test hooks out (src/components/kiosk)
     NEXT_PUBLIC_KIOSK_TEST_HOOKS: process.env.NEXT_PUBLIC_KIOSK_TEST_HOOKS === "1" ? "1" : "0",
+    NEXT_PUBLIC_KIOSK_FETCHED_CARS: fetchedCars.join(","),
   },
   ...(devOrigins.length ? { allowedDevOrigins: devOrigins } : {}),
   output: "export",

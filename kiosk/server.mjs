@@ -51,10 +51,11 @@ const MAX_BODY_BYTES = 256 * 1024;
 // ---------------------------------------------------------------------------------------------------------------
 // Config (src/lib/kiosk/kiosk-types.ts)
 
-// Monza is the event's circuit (a build can leave it out: NEXT_PUBLIC_EXTRA_CONTENT); the 2026 Prototype its one car
-// (the Ferrari SF-26 it ran before is gone: a config naming it takes the default)
+// Monza is the event's circuit (a build can leave it out: NEXT_PUBLIC_EXTRA_CONTENT); the 2026 Prototype its car, and the
+// one a kiosk build fetches (scripts/kiosk/fetch-kiosk-cars.mjs; a build without it runs the Prototype instead). The
+// Ferrari SF-26 it ran before is gone: a config naming it takes the default
 const TRACK_IDS = ["monza", "rwanda_official_short", "rwanda_official"];
-const CAR_IDS = ["vf26"];
+const CAR_IDS = ["vf26", "mtr-496r"];
 // The same car is "lc26" on the kiosk built from upstream's newer game (event/gaming-week-2026-updated): a stand that
 // falls back to this build keeps the results that one saved on the same board
 const CAR_ALIASES = { lc26: "vf26" };
@@ -285,10 +286,19 @@ function placeOf(results, result, query) {
 }
 
 /** The ranking a config shows by default (src/lib/kiosk/kiosk-types.ts rankingModeFor) */
+/**
+ * The extra cars a kiosk build fetches (scripts/kiosk/fetch-kiosk-cars.mjs) are in this build only when their folder has
+ * its .kiosk-ready. A config naming one the build lacks runs the Prototype (src/lib/kiosk/kiosk-types.ts runnableCarId):
+ * the board a request gets by default (the projected screen names no car) is then the Prototype's too
+ */
+const FETCHED_CAR_IDS = ["mtr-496r"];
+const runnableCarId = (id) =>
+  FETCHED_CAR_IDS.includes(id) && !fs.existsSync(path.join(STATIC_DIR, "cars", id, ".kiosk-ready")) ? DEFAULT_CONFIG.carId : id;
+
 const queryFor = (config, params) => {
   const mode = params.get("mode") === "total" || params.get("mode") === "best" ? params.get("mode") : config.limitMode === "laps" ? "total" : "best";
   const trackId = params.get("track") && ID_RE.test(params.get("track")) ? params.get("track") : config.trackId;
-  const carId = params.get("car") && ID_RE.test(params.get("car")) ? carIdOf(params.get("car")) : config.carId;
+  const carId = params.get("car") && ID_RE.test(params.get("car")) ? carIdOf(params.get("car")) : runnableCarId(config.carId);
   const laps = num(params.get("laps") ?? config.laps, 1, 50, config.laps);
   return { mode, trackId, carId, laps, limit: params.get("limit") ?? 20, unique: params.get("unique") !== "0" };
 };

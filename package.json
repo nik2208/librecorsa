@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/kiosk/fetch-kiosk-cars.mjs",
     "build": "next build",
     "start": "node kiosk/server.mjs",
     "typecheck": "tsc --noEmit",

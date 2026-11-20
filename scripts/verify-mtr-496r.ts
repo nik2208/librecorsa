@@ -25,7 +25,7 @@ import { downshiftTakenAt, measureDownshift, measureUpshift } from './lib/upshif
 import { evaluateBrakePadMuFactor } from '../src/lib/sim/brake-physics';
 import { DEFAULT_CHASSIS_SETUP } from '../src/lib/sim/car-setup';
 import { hasFile, noteSkip } from './lib/hosted-files';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const failures: string[] = [];
 const check = (name: string, ok: boolean, detail: string) => {
@@ -367,8 +367,13 @@ console.log('\n== Ported body');
     const files = [...new Set(Object.values(skinMaps))];
     const skins = def.skins ?? [];
     const missing = skins.flatMap((s) => files.map((f) => `public/cars/mtr-496r/skins/${s.id}/${f}`)).filter((f) => !hasFile(f));
-    check('20 liveries, each with its paint, decals and sunstrip', skins.length === 20 && files.length === 3 && missing.length === 0,
-      missing.length ? `missing ${missing.slice(0, 3).join(', ')}` : `${files.join(', ')}`);
+    // Event branch: a kiosk build fetches the car with its own paint only (scripts/kiosk/fetch-kiosk-cars.mjs), no liveries
+    if (existsSync('public/cars/mtr-496r/.kiosk-ready') && !existsSync('public/cars/mtr-496r/skins')) {
+      check('20 liveries in the registry (the kiosk fetched the car without them)', skins.length === 20 && files.length === 3, `${files.join(', ')}`);
+    } else {
+      check('20 liveries, each with its paint, decals and sunstrip', skins.length === 20 && files.length === 3 && missing.length === 0,
+        missing.length ? `missing ${missing.slice(0, 3).join(', ')}` : `${files.join(', ')}`);
+    }
     check('Under 9 MB before meshopt', buf.length < 9e6, `${fmt(buf.length / 1e6)} MB`);
   }
 }

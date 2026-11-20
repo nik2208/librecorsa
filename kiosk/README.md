@@ -245,6 +245,16 @@ Applikat, il gatto e APPLIKAT su pance, muso e alettone, applikat.it sul cofano 
 immagine `public/cars/f12026/liveries/applikat/decals.png` dal logo di applikat.it e dal carattere Martian Mono). Con il
 logo HUAWEI acceso indossa la livrea Huawei.
 
+**Un'altra auto**, da scegliere in *Impostazioni → Auto* (ha la sua classifica): il **Prototipo V8** (`mtr-496r`,
+l'MTRacing 496R), senza batteria né ala mobile da gestire, ma neanche ABS. I marchi di altre aziende (gomme, freni, mozzi, abitacolo, badge) sono tolti, e dove c'era il nome della squadra (parabrezza, portiere) c'è Applikat. L'Hypercar LMDh del branch
+`event/gaming-week-2026-updated` qui non c'è: le serve il motore fisico più recente.
+
+Non è nel repository: `scripts/kiosk/fetch-kiosk-cars.mjs` la scarica da librecorsa.org e la veste, e `npm run build`
+lo lancia prima della build (`prebuild`, come fa la ISO di GamerLive). Ogni file è controllato con
+`scripts/kiosk/kiosk-cars.lock.json`, e la build la elenca solo se è completa: senza rete, o con un file cambiato su
+librecorsa.org, la build riesce lo stesso, senza di lei. `KIOSK_CARS=none` la esclude; `node
+scripts/kiosk/fetch-kiosk-cars.mjs --lock` registra di nuovo i file. Le Pages (`npx next build`) non ce l'hanno.
+
 La **Ferrari SF-26** che il kiosk usava prima non c'è più: l'evento non può usarla (la carrozzeria è estratta da un
 videogioco di F1, con i marchi Ferrari e degli sponsor reali). I suoi file sono stati tolti dal branch; una
 configurazione che la nomina usa la Monoposto 2026, mentre i risultati registrati con la Ferrari restano su una classifica
@@ -256,6 +266,9 @@ a parte (`carId` `sf26`) che nessuno schermo mostra: per toglierli, *Impostazion
 - **Monza**: senza licenza (vedi sopra).
 - **Circuito RISE Motordrome** (alternativo): CC BY-NC-SA 4.0, non commerciale; serve il permesso dell'autore
   (Alp Yalay, LibreCorsa).
+- **Prototipo V8 (MTRacing 496R)**: modello, suoni e dati di munyuturbo, che ha dato il permesso a LibreCorsa, non a
+  questo fork: per questo il fork non ne ripubblica i file. Per l'evento conviene chiederlo anche per noi, o non
+  sceglierla.
 - **Monoposto 2026 Prototype**: Qvist Designs, CC BY 4.0. I suoni dei motori hanno autori e licenze non
   indicati (CREDITS.md).
 - **Marchi Huawei, WINDTRE e Milan Games Week**: usare solo l'artwork fornito dai titolari. I file scaricati da

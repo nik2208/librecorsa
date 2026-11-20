@@ -1,0 +1,269 @@
+{
+ "base": "https://librecorsa.org",
+ "cars": {
+  "mtr-496r": {
+   "files": [
+    {
+     "path": "cars/mtr-496r/model/mtr-496r.glb",
+     "size": 3930364,
+     "sha256": "d3f101491ab33c4cfec55a979ce825b2cb6191d03c3224ed26bf3633e4a15c25"
+    },
+    {
+     "path": "cars/mtr-496r/audio/manifest.json",
+     "size": 10060,
+     "sha256": "65cfe8122a9d182c914857885ed20cd1a03a0dafcf537e2cc58b1118832f07b4"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_ext_off_10000.ogg",
+     "size": 30640,
+     "sha256": "bc4a050eff88279eab441d3e2adf908c45d6457c54d2248a6f4c272421ea162b"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_ext_off_2200.ogg",
+     "size": 29738,
+     "sha256": "69e8351029a8e4adbdf3d6af40f90f994b8ebc0975976b64fdafa1981e992180"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_ext_off_2500.ogg",
+     "size": 29757,
+     "sha256": "043157130bdc1d0642a3ed32e766cc988d7fab63656142e8d5d533f093e7577e"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_ext_off_3500.ogg",
+     "size": 28333,
+     "sha256": "df5230f92a13475f2a95b31877230d0196b750494970aab4e9fe2b8281935bcc"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_ext_on_10000.ogg",
+     "size": 30845,
+     "sha256": "cdca7a605cb094e6d519c835e2ec3cad943a0779bc086d6ca24eebd8b5275d53"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_ext_on_2000.ogg",
+     "size": 29504,
+     "sha256": "9bbf884865645914691b8f47d34777c600d5b88729e8797378ccb2d2fbb7ce9d"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_ext_on_2500.ogg",
+     "size": 29762,
+     "sha256": "3dc13bead97a481264a0c40c3ebf5be7af30f08b19e358311142103571db74cf"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_ext_on_3000.ogg",
+     "size": 29727,
+     "sha256": "efbaa671680b55ce632d2e0ab302152e11f12e2dacadee5ad2ac6aa80d2b4b98"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_ext_on_3500.ogg",
+     "size": 28386,
+     "sha256": "4d2093b8e7efc4f3a559f825005ac063b2b93ff65d0511459c0fe326cadde83b"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_ext_on_4500.ogg",
+     "size": 29435,
+     "sha256": "7f26f1dc28f484c61c76e422dfe6df82e8988109984b4e5df68d8412e1536241"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_ext_on_5500.ogg",
+     "size": 29901,
+     "sha256": "246b700ec6ef5158fcd4d9caa63249fac6ae490b97f6ffc7db26542834dc94f1"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_ext_on_6000.ogg",
+     "size": 28972,
+     "sha256": "b17826f8e74ba49113ccf59ca93946fc9e22d1a16ce8955564594ebf18179fa9"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_ext_on_7500.ogg",
+     "size": 29090,
+     "sha256": "0e54ec8b4e06ca50a5bcab20bdedcf839087e3068dac0bd73c22bf7726501284"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_int_off_10000.ogg",
+     "size": 37991,
+     "sha256": "63d8ad1dce7de50aca3f4ad22d136c085e7ed45ebfce95cf740c30cbdbcbca9d"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_int_off_2200.ogg",
+     "size": 37850,
+     "sha256": "3fa080277c954daa4f12d6ddc608d37377903439ddc701e9f428cd73f03be02d"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_int_off_3000.ogg",
+     "size": 35307,
+     "sha256": "00559851ec8f781320d38486502a990a6e1fd25621d361941ddeae855f1b3a15"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_int_off_4000.ogg",
+     "size": 35560,
+     "sha256": "8ed97b50db2bae313c3feb87e635d5b4c68fdcf3e4361bde30584587e72fc563"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_int_off_5000.ogg",
+     "size": 35211,
+     "sha256": "315bd8c192f2eb830a239dc98866a1dd065b6f71b08747d210b052c3a97faa12"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_int_on_10000.ogg",
+     "size": 37315,
+     "sha256": "a8bdb72bc97917253d84ddd2fac783efcabffb7b541a7eefbba45a15dcb822a5"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_int_on_2000.ogg",
+     "size": 37529,
+     "sha256": "6cce701955e9f08a89670ed001d3b35432246dba446e01e0e5fb4b565a76ff4d"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_int_on_3000.ogg",
+     "size": 35617,
+     "sha256": "9c7e2129c514bf98bed0c60648deef3df01b6cb39b6f713fde21520d74fdb254"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_int_on_4000.ogg",
+     "size": 35274,
+     "sha256": "624580644f86225100e4b7bbefa513aada78afabfdddcffd3c8c31bb298668c3"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_int_on_5000.ogg",
+     "size": 35030,
+     "sha256": "550238d04db4c3eb7e29b7922ff9a01b88c444fcb58957a43bc814488235cd64"
+    },
+    {
+     "path": "cars/mtr-496r/audio/engine_int_on_6000.ogg",
+     "size": 36125,
+     "sha256": "233aec7e9796a71743693099feb73cd824c6d6c41e8f87854fa55d68c4e537f5"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_ext_1.ogg",
+     "size": 15166,
+     "sha256": "204be624d89e6933b6eadf5115748d2a82bf94bb3d3e9b87438a427d0d344bf6"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_ext_2.ogg",
+     "size": 7425,
+     "sha256": "fa805803391f85853b4f6f46c3ee7fd17b31ab03b3426265fc7b2b1f66df035f"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_ext_3.ogg",
+     "size": 8505,
+     "sha256": "38f3df056d433f50d01c125cb02230d1cdc0caefc1855d26f454b545159220b7"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_ext_4.ogg",
+     "size": 14283,
+     "sha256": "a7f6a5784e6408b2bce4bed2bbf6d7221e0339973748721289758af33546dc5f"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_ext_5.ogg",
+     "size": 10674,
+     "sha256": "59c9e0be6cf06cf75def906671730c8af5072192c113462ecd31e06a965987a1"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_ext_6.ogg",
+     "size": 15316,
+     "sha256": "b864895997927247b800e56d1d1564c5ee83a9c3abe943195adb0c38d28eff67"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_ext_7.ogg",
+     "size": 6808,
+     "sha256": "d35e15236026968afa56d4ec27e525ae914c2141e01c3713811ff60194fd5925"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_ext_8.ogg",
+     "size": 6808,
+     "sha256": "4790301253bd262c1d489cf9da3ccc06b00da6c8a5358c44460b7f8cf945ac23"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_ext_9.ogg",
+     "size": 7613,
+     "sha256": "6569abcd8053ef98eceff4fe36f8438b6f8271a78ff6c3ba0fedc1c73b02e05c"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_int_1.ogg",
+     "size": 6562,
+     "sha256": "f1e8a413d7db836dc9d96eb01f2b7d01c4a2bd3dbd2b5dcfc48647e6797c2f1e"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_int_2.ogg",
+     "size": 6386,
+     "sha256": "30307bea68836ef707c6a1af581d8a5dece8404612268658aab305e18ea695e7"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_int_3.ogg",
+     "size": 5119,
+     "sha256": "36e6e09b79aee521b7f5b80f62aa1c972fff109b81a47fd816c7a0cf2c2876f0"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_int_4.ogg",
+     "size": 5523,
+     "sha256": "270fcd53e6936086343d1026d3232689a6b93dd74a9ed3d2f75a5780b8663638"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_backfire_int_5.ogg",
+     "size": 7153,
+     "sha256": "9a3137eaf80d6dc1ec9858c5ec245e196c184c1311994b7d46073ddbd434562b"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_gear_down.ogg",
+     "size": 5698,
+     "sha256": "445f99c241ca6414ec4be924d1563918441627a0b45d6aef83a89c1c24827e01"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_gear_up.ogg",
+     "size": 5461,
+     "sha256": "1bd3e5e23b63585b437f2aab4a423dcf91d568c40c88673aafa19b93a49ddd8c"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_limiter.ogg",
+     "size": 11626,
+     "sha256": "d133b79c3cc63c946955e10d3092ae4e102aca73ecc96bbfe76bc9d3576b1010"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_shift_cut_1.ogg",
+     "size": 5862,
+     "sha256": "acb6c1264ea97142676d431cb434c3790a9a0cc5405d14ebbe24e96c5a3f87e9"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_shift_cut_2.ogg",
+     "size": 5901,
+     "sha256": "b95138d679b54e4c91067f2b480c0834241430d2b531060d9f63644fe3359169"
+    },
+    {
+     "path": "cars/mtr-496r/audio/oneshot_shift_cut_3.ogg",
+     "size": 5879,
+     "sha256": "29ca1c289372d1f254a3aad5ca04fefc7ad004766aef4f00d138691de94ec002"
+    },
+    {
+     "path": "cars/mtr-496r/audio/skid_ext.ogg",
+     "size": 23086,
+     "sha256": "d1c2db7426d8e72246fbdd26a1562c1e0fb56f26586d047a6166216eda3fb17d"
+    },
+    {
+     "path": "cars/mtr-496r/audio/skid_int.ogg",
+     "size": 23833,
+     "sha256": "94886e5f1f231f4913378632de86faf407316beb40036bbad2f682f685a23c8a"
+    },
+    {
+     "path": "cars/mtr-496r/audio/tc.ogg",
+     "size": 17355,
+     "sha256": "9d138524c429522f1589976637f49e882cdcf81c9ebdef4180ac3e6578edff70"
+    },
+    {
+     "path": "cars/mtr-496r/audio/trans_off_160.ogg",
+     "size": 26816,
+     "sha256": "444de164054954222b26487f2c6379e66171762e7cb4536700de8923061956a0"
+    },
+    {
+     "path": "cars/mtr-496r/audio/trans_on_160.ogg",
+     "size": 26839,
+     "sha256": "425142fd03fd5cadd3797f7909e901a8e0b290ca794c8b40f618e4b733f24068"
+    },
+    {
+     "path": "cars/mtr-496r/thumb.webp",
+     "size": 22950,
+     "sha256": "8decd42317e82bd26bc21f3c9929822d99f0d45a33c5d0706baf48a763e471b3"
+    }
+   ]
+  }
+ }
+}
