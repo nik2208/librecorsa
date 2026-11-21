@@ -72,7 +72,7 @@ export const difficultyLabel = (id: string | null | undefined): string | null =>
 /** What the visitors drive with: set once by the staff (the kiosk ignores what the full game saved) */
 export type KioskInputDevice = "controller" | "wheel" | "keyboard";
 export const KIOSK_DEVICES: readonly { id: KioskInputDevice; label: string; hint: string }[] = [
-  { id: "controller", label: "Controller USB", hint: "Gamepad standard (Xbox, PlayStation…): RT accelera, LT frena, levetta sinistra sterza" },
+  { id: "controller", label: "Controller", hint: "Gamepad via cavo o Bluetooth (Xbox, PlayStation…): RT accelera, LT frena, levetta sinistra sterza" },
   { id: "wheel", label: "Volante", hint: "Volante e pedaliera: vanno abbinati una volta in «Configura volante»" },
   { id: "keyboard", label: "Tastiera", hint: "Frecce per guidare (per le prove)" },
 ];
