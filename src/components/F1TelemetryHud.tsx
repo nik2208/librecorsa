@@ -598,12 +598,16 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
           the screen, and in portrait the notices wrapped to three lines and spilled out of their pills */}
       <div
         className={`absolute left-1/2 w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 ${phone ? "top-[96px] portrait:top-[208px]" : "top-4"}`}
+        // Kiosk mode keeps its own bar (time left, laps, best) at the very top of this column: while it is up the
+        // notices start under it (--lc-kiosk-top, set by KioskOverlay), not behind it. Unset, nothing moves
         style={
           mirrorTop !== null
             ? { top: `calc(${mirrorTop + Math.round(topClearance * scale)}px - env(safe-area-inset-top, 0px))` }
             : topClearance
-              ? { top: `${16 + Math.round(topClearance * scale)}px` }
-              : undefined
+              ? { top: `max(${16 + Math.round(topClearance * scale)}px, var(--lc-kiosk-top, 0px))` }
+              : phone
+                ? undefined
+                : { top: "max(1rem, var(--lc-kiosk-top, 0px))" }
         }
       >
       <div className="flex flex-col items-center gap-2" style={corner("top center")}>

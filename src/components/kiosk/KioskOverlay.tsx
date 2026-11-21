@@ -617,7 +617,7 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
       ) : null}
 
       {(stage === "running" || stage === "countdown") && run ? (
-        <div className="pointer-events-none fixed left-1/2 top-[max(0.75rem,env(safe-area-inset-top))] z-[65] -translate-x-1/2">
+        <TopCentre>
           <div className="flex items-stretch overflow-hidden rounded-xl border border-white/15 bg-black/75 text-white shadow-[0_10px_40px_rgba(0,0,0,0.5)] backdrop-blur-md">
             {brands.length > 0 ? (
               <div className="flex flex-col justify-center bg-[#C7000B] px-3 py-1 font-f1-display text-[10px] font-black uppercase leading-tight tracking-[0.15em]">
@@ -665,11 +665,9 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
           {remainingMs !== null && remainingMs < 60_000 && remainingMs > 0 && stage === "running" ? (
             <p className="mt-2 text-center font-f1-display text-lg font-black uppercase tracking-[0.2em] text-[#FF3B30] drop-shadow">Ultimo minuto!</p>
           ) : null}
-        </div>
-      ) : null}
-
-      {lapToast && stage === "running" ? (
-        <div className="pointer-events-none fixed left-1/2 top-28 z-[65] -translate-x-1/2 rounded-xl border border-white/15 bg-black/80 px-6 py-3 text-center text-white backdrop-blur-md">
+          {/* The lap just done, under the bar and in the same block: the game's notices then start under it too */}
+          {lapToast && stage === "running" ? (
+            <div className="mt-3 rounded-xl border border-white/15 bg-black/80 px-6 py-3 text-center text-white backdrop-blur-md">
           <p className="font-f1-italic text-xs font-bold uppercase tracking-[0.3em] text-white/60">Giro {lapToast.n}</p>
           <p className="font-f1-mono text-4xl font-bold tabular-nums">{formatLapTime(lapToast.lap.lapMs)}</p>
           <p className={`font-f1-italic text-sm font-bold uppercase ${lapToast.lap.valid ? "text-[#4ADE80]" : "text-[#FFB300]"}`}>
@@ -680,8 +678,10 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
               : c.invalidLaps === "penalty"
                 ? `Fuori dai limiti: +${c.penaltyS} s`
                 : "Fuori dai limiti: non conta"}
-          </p>
-        </div>
+              </p>
+            </div>
+          ) : null}
+        </TopCentre>
       ) : null}
 
       {showPause ? (
@@ -758,6 +758,36 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
 };
 
 /** While the circuit and the car load: the event's screen with the progress (the game's own loading screen is not shown) */
+/**
+ * The kiosk's block at the top centre of the screen while a session runs: the bar (time left, laps, best lap), the
+ * last-lap and last-minute calls and the card of the lap just done. The game puts its own notices in the same place
+ * (track limits, the flaps, the graphics quality, the launch hint): while this block is up it tells the game's HUD
+ * where it ends (--lc-kiosk-top, read by F1TelemetryHud), so they start under it instead of behind it.
+ */
+const TopCentre: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const root = document.documentElement;
+    const tell = () => root.style.setProperty("--lc-kiosk-top", `${Math.ceil(el.getBoundingClientRect().bottom) + 8}px`);
+    tell();
+    const sized = typeof ResizeObserver !== "undefined" ? new ResizeObserver(tell) : null;
+    sized?.observe(el);
+    window.addEventListener("resize", tell);
+    return () => {
+      sized?.disconnect();
+      window.removeEventListener("resize", tell);
+      root.style.removeProperty("--lc-kiosk-top");
+    };
+  }, []);
+  return (
+    <div ref={ref} className="pointer-events-none fixed left-1/2 top-[max(0.75rem,env(safe-area-inset-top))] z-[65] flex -translate-x-1/2 flex-col items-center">
+      {children}
+    </div>
+  );
+};
+
 const KioskBootScreen: React.FC<{ progress: AssetProgressSnapshot; downloadFailed: boolean; motto: string }> = ({ progress, downloadFailed, motto }) => {
   const challenge = challengeName(useKioskLogos());
   const [startedAt] = useState(() => Date.now());
