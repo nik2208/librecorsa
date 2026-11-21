@@ -90,6 +90,13 @@ serve, e le indica al gioco (senza, i loghi compaiono come testo).
 
 1. Collega il **controller USB** (gamepad standard, Xbox o PlayStation): è già impostato, non serve configurarlo.
    RT accelera, LT frena, la levetta sinistra sterza.
+   - La levetta sterza sempre attraverso l'aiuto di sterzo del gioco, che la rende graduale. Vale anche quando il
+     browser non dà al controller la disposizione standard (capita con vari controller Bluetooth): senza l'aiuto la
+     corsa della levetta varrebbe tutto lo sterzo, cioè tutto o niente. Con un controller così i pulsanti possono
+     però non corrispondere.
+   - In *Impostazioni → Controlli e grafica* ogni controller visto dal browser ha una riga con la sua levetta dal
+     vivo: muovendola piano il segno deve seguirla per gradi. Se salta da un estremo all'altro è il controller (o il
+     browser) a mandare solo tutto o niente: prova via cavo o con un altro browser.
 2. Avvia il server e apri il kiosk. Dal menu: **Impostazioni** → PIN → imposta minuti o giri.
    - Su un PC senza scheda video dedicata lascia la qualità grafica su *Media* o *Bassa*: con *Alta* il caricamento
      può bloccarsi.

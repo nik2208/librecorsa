@@ -42,6 +42,11 @@ export function kioskSettingsFor(
     ghost: false,
     liveryId: eventLivery ? KIOSK_LIVERY_ID : KIOSK_NEUTRAL_LIVERY_ID,
     mouseSteer: false,
+    // The stick always steers through the steering assist on the stand, whatever this browser's full game saved:
+    // without it a thumbstick turns the rack 1:1, all or nothing. And with the staff's device a controller, a pad the
+    // browser does not call standard (many Bluetooth pads) is still one, not an uncalibrated wheel
+    gamepadAssist: true,
+    padIsController: config.device === "controller",
     // Tilt steering as the staff set it, never as this browser's full game saved it (both ways: the kiosk never saves);
     // only with the controller
     dualSense: {
