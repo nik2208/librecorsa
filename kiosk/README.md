@@ -252,6 +252,17 @@ la superficie com'era sotto. Il nome ufficiale del circuito è diventato «Monza
 che cambia solo le immagini: geometria e collisioni sono identiche. Questo non risolve i diritti sul modello stesso.
 Una build con `NEXT_PUBLIC_EXTRA_CONTENT=""` la esclude; le impostazioni permettono di tornare a RISE Motordrome.
 
+**RISE Motordrome** (il circuito alternativo: due tracciati, un solo modello) porta la pubblicità dello stand come
+Monza. Su questo branch lo striscione «KIGALI», uno dei tre che si alternano lungo muretti e cartelloni (è anche su un
+ponte e sul retro delle tribune), è lo striscione Applikat: il gatto, APPLIKAT e applikat.it su fondo carbonio, fra le
+due testate a strisce dell'originale. Gli striscioni RWANDA e BUGESERA, quello di LibreCorsa, i cartelli di frenata, il
+maxischermo e tutto il resto restano quelli dell'autore. Lo fa `scripts/kiosk/brand-rise.mjs`, che cambia solo
+quell'immagine: geometria e collisioni sono identiche. È lo striscione che RISE mostra con tutti i loghi nascosti; con
+un logo acceso il gioco copre i tre striscioni come prima (vedi [Loghi](#loghi)). Il circuito resta sotto
+CC BY-NC-SA 4.0 con il suo credito, «RISE Motordrome by Alp Yalay (LibreCorsa), https://librecorsa.org»
+(`public/tracks/rwanda_official/LICENSE.md`); la modifica è annotata anche nel modello (`asset.extras`) e in
+`CREDITS.md`.
+
 L'auto è la **Monoposto 2026** di LibreCorsa (id `lc26`, `vf26` prima del cambio di nome di upstream: configurazioni e
 risultati salvati con il vecchio nome valgono ancora), in **livrea Applikat**: carrozzeria nera, alettoni rosso Applikat,
 il gatto e APPLIKAT su pance, muso e alettone, applikat.it sul cofano (`src/lib/kiosk/applikat-livery.ts`, immagine
@@ -284,6 +295,7 @@ a parte (`carId` `sf26`) che nessuno schermo mostra: per toglierli, *Impostazion
 - **Monza**: senza licenza (vedi sopra).
 - **Circuito RISE Motordrome** (alternativo): CC BY-NC-SA 4.0, non commerciale; serve il permesso dell'autore
   (Alp Yalay, LibreCorsa).
+  Su questo branch è modificato (uno striscione, vedi sopra): stessa licenza, stesso credito.
 - **Monoposto 2026 Prototype**: Qvist Designs, CC BY 4.0. I suoni dei motori hanno autori e licenze non
   indicati (CREDITS.md).
 - **Hypercar LMDh**: carrozzeria di kilianhoffmann13, CC BY 4.0 (nei crediti del gioco); il suono non ha licenza
