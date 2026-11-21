@@ -201,6 +201,29 @@ check('uncalibrated non-standard device keeps the original raw path', () => {
   near(f.analogSteer!, 0.3);
   near(f.throttle, 0.5);
 });
+check('a non-standard pad steers through the assist when the player\'s device is a controller (the kiosk)', () => {
+  const settings = { wheel: DEFAULT_WHEEL_SETTINGS, padButtons: DEFAULT_PAD_BUTTONS, padIsController: true };
+  // The stick is handed to the assist raw (its dead zone and curve are the assist's), never to the rack
+  const f = new DeviceInputReader().read([pad('Bluetooth Gamepad (Vendor: 2dc8 Product: 6001)', '', [0.3, 0], [], { 7: 0.5 })], settings, 1 / 60);
+  assert.equal(f.analogSteer, undefined, 'not the rack');
+  near(f.padSteer!, 0.3);
+  near(f.throttle, 0.5);
+  assert.equal(f.source, 'legacy', 'buttons and pedals are still read by index');
+  const small = new DeviceInputReader().read([pad('Bluetooth Gamepad', '', [0.02, 0])], settings, 1 / 60);
+  near(small.padSteer!, 0.02);
+  assert.equal(small.analogSteer, undefined);
+  // A device named like a wheel keeps the rack, and so does every device without the flag
+  const wheel = new DeviceInputReader().read([pad('Generic wheel', '', [0.3, 0])], settings, 1 / 60);
+  near(wheel.analogSteer!, 0.3);
+  assert.equal(wheel.padSteer, undefined);
+  const off = new DeviceInputReader().read([pad('Bluetooth Gamepad', '', [0.3, 0])], { ...settings, padIsController: false }, 1 / 60);
+  near(off.analogSteer!, 0.3);
+  assert.equal(off.padSteer, undefined);
+  // A standard pad is what it was
+  const std = new DeviceInputReader().read([pad('Xbox', 'standard', [0.3, 0, 0, 0])], settings, 1 / 60);
+  assert.equal(std.source, 'controller');
+  near(std.padSteer!, 0.3);
+});
 check('calibrated wheel with pedals and paddles on separate devices', () => {
   const reader = new DeviceInputReader();
   const wheel = {

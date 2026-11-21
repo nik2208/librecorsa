@@ -76,6 +76,12 @@ export interface PlayerSettings {
    * game never has it
    */
   simpleDrive?: boolean;
+  /**
+   * Kiosk mode with the staff's device set to a controller (kiosk-settings.ts): a pad the browser does not call
+   * standard steers through the steering assist too, instead of turning the rack 1:1 like an uncalibrated wheel
+   * (`DeviceInputSettings.padIsController`). Only the kiosk sets it, and it is never saved or read back
+   */
+  padIsController?: boolean;
   /** Weather, time of day and time multiplier for offline sessions (the host's apply online) */
   conditions: SessionConditions;
   /** Starred and recently chosen cars and circuits (the car and circuit browsers) */

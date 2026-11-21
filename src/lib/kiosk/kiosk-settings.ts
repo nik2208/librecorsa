@@ -32,6 +32,11 @@ export function kioskSettingsFor(
     ghost: false,
     liveryId: eventLivery ? KIOSK_LIVERY_ID : KIOSK_NEUTRAL_LIVERY_ID,
     mouseSteer: false,
+    // The stick always steers through the steering assist on the stand, whatever this browser's full game saved:
+    // without it a thumbstick turns the rack 1:1, all or nothing. And with the staff's device a controller, a pad the
+    // browser does not call standard (many Bluetooth pads) is still one, not an uncalibrated wheel
+    gamepadAssist: true,
+    padIsController: config.device === "controller",
     conditions: { ...own.conditions, weather: "clear", weatherNodes: undefined, timeScale: 0 },
     // Controls a visitor must not reach: the autopilot (it would set lap times), mute, replays, the flying restart and
     // mouse steering. Restart stays: it puts a stuck car back on the grid (the lap in progress is lost)

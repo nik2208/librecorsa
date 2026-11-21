@@ -105,6 +105,18 @@ async function main() {
     assert.deepEqual([d.trackId, d.carId, d.device, d.graphics], ["monza", "vf26", "controller", "medium"], "the event's defaults");
     assert.deepEqual([sanitizeKioskConfig({ device: "wheel" }).device, sanitizeKioskConfig({ graphics: "high" }).graphics], ["wheel", "high"]);
   });
+  await check("the stick steers through the assist on the stand, whatever the browser saved or makes of the pad", () => {
+    const own = { ...DEFAULT_PLAYER_SETTINGS, gamepadAssist: false };
+    const pad = kioskSettingsFor(sanitizeKioskConfig({}))(own);
+    assert.equal(pad.gamepadAssist, true, "the full game's switch does not reach the stand");
+    assert.equal(pad.padIsController, true, "a pad without the standard mapping is still a controller");
+    for (const device of ["wheel", "keyboard"] as const) {
+      const other = kioskSettingsFor(sanitizeKioskConfig({ device }))(own);
+      assert.equal(other.padIsController, false, `${device}: an unknown device keeps the rack`);
+      assert.equal(other.gamepadAssist, true);
+    }
+    assert.equal(DEFAULT_PLAYER_SETTINGS.padIsController ?? false, false, "the full game never has it");
+  });
   await check("the car wears Applikat's livery, the sponsor's only with its logo on", () => {
     assert.equal(kioskSettingsFor(sanitizeKioskConfig({}))(DEFAULT_PLAYER_SETTINGS).liveryId, "applikat");
     assert.equal(kioskSettingsFor(sanitizeKioskConfig({}), "assisted", true)(DEFAULT_PLAYER_SETTINGS).liveryId, "huawei_mgw");

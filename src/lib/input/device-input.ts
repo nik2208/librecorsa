@@ -203,6 +203,13 @@ export const PAD_SENSITIVITY: Record<PadSensitivity, { steeringRate: number; dea
 export interface DeviceInputSettings {
   wheel: WheelSettings;
   padButtons: PadButtonBindings;
+  /**
+   * The player's device is a controller whatever the browser makes of it (the kiosk, when the staff set a controller).
+   * A pad without the standard mapping (many Bluetooth pads, and most pads in some browsers) then steers through the
+   * steering assist like a standard one, from the same axis 0. Without this it is taken for an uncalibrated wheel and
+   * its stick turns the rack 1:1: on a thumbstick that is all or nothing. A device named like a wheel keeps the rack.
+   */
+  padIsController?: boolean;
 }
 
 /** Minimal Gamepad shape (the real Gamepad satisfies it; tests pass plain objects) */
@@ -423,7 +430,10 @@ export class DeviceInputReader {
           // 4 % dead zone, then a short ramp that rejoins the raw value at 8 %: the output no longer jumps from 0 to
           // 0.04 at the edge, and past the ramp the axis stays 1:1 (this path is often an uncalibrated wheel)
           const a = Math.abs(rawStickX);
-          if (a > 0.04) frame.analogSteer = Math.sign(rawStickX) * (a >= 0.08 ? a : (a - 0.04) * 2);
+          // A controller the browser has no standard layout for: its stick still goes through the assist (the stick's
+          // dead zone is applied there, as for a standard pad); buttons and pedals stay where they were
+          if (settings.padIsController && !isWheelId(pad.id)) frame.padSteer = rawStickX;
+          else if (a > 0.04) frame.analogSteer = Math.sign(rawStickX) * (a >= 0.08 ? a : (a - 0.04) * 2);
           const tPad = wheel.throttle ? findPad(pads, wheel.throttle.padId) : undefined;
           const bPad = wheel.brake ? findPad(pads, wheel.brake.padId) : undefined;
           frame.throttle =

@@ -66,6 +66,63 @@ const Segmented = <T extends string>({ value, options, onChange }: { value: T; o
   </div>
 );
 
+/**
+ * The pads this PC's browser sees, each with its left stick as the browser reports it, live, and whether its layout is
+ * the standard one. A stick the mark follows by degrees is analogue; one whose mark jumps from end to end sends all or
+ * nothing, and no setting of the game can make its steering gradual.
+ */
+const PadStatus: React.FC = () => {
+  const [seen, setSeen] = useState<{ id: string; standard: boolean; x: number }[]>([]);
+  useEffect(() => {
+    let last = "";
+    const read = () => {
+      let list: { id: string; standard: boolean; x: number }[] = [];
+      try {
+        const all = typeof navigator !== "undefined" && navigator.getGamepads ? [...navigator.getGamepads()] : [];
+        list = all
+          .filter((p): p is Gamepad => p !== null && p.connected)
+          .map((p) => ({ id: p.id, standard: p.mapping === "standard", x: Math.max(-1, Math.min(1, Math.round((p.axes[0] ?? 0) * 100) / 100)) }));
+      } catch {
+        list = [];
+      }
+      const key = JSON.stringify(list);
+      if (key !== last) {
+        last = key;
+        setSeen(list);
+      }
+    };
+    read();
+    const id = window.setInterval(read, 50);
+    return () => window.clearInterval(id);
+  }, []);
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-white/10 bg-black/30 p-4">
+      {seen.length === 0 ? (
+        <p className="font-f1-italic text-xs text-white/55">Nessun controller visto da questo PC (premi un pulsante del controller).</p>
+      ) : null}
+      {seen.map((p, i) => (
+        <div key={`${i}-${p.id}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 font-f1-italic text-xs text-white/70">
+          <span className="max-w-[16rem] truncate font-bold text-white/85">{p.id.replace(/\s*\(.*\)\s*$/, "")}</span>
+          <span className="relative h-3 w-40 shrink-0 rounded-full bg-white/10" role="img" aria-label={`Levetta sinistra: ${p.x.toFixed(2)}`}>
+            <span className="absolute inset-y-0 left-1/2 w-px bg-white/30" />
+            <span className="absolute top-1/2 h-4 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#FFB300]" style={{ left: `${50 + p.x * 50}%` }} />
+          </span>
+          <span className="w-12 font-f1-mono tabular-nums text-white/85">{(p.x > 0 ? "+" : "") + p.x.toFixed(2)}</span>
+          <span className={p.standard ? "text-white/55" : "text-[#FFB300]"}>
+            {p.standard ? "disposizione standard" : "disposizione non standard: la levetta sterza comunque con l'aiuto di sterzo, i pulsanti possono non corrispondere"}
+          </span>
+        </div>
+      ))}
+      {seen.length > 0 ? (
+        <p className="font-f1-italic text-xs text-white/55">
+          Prova della levetta sinistra: muovila piano, il segno deve seguirla per gradi. Se salta da un estremo all&apos;altro, è il controller (o il
+          browser) a mandare solo tutto o niente: lo sterzo non può essere graduale, prova via cavo o con un altro browser.
+        </p>
+      ) : null}
+    </div>
+  );
+};
+
 export const KioskAdmin: React.FC = () => {
   const [pin, setPin] = useState<string | null>(null);
   const [checking, setChecking] = useState(true);
@@ -329,6 +386,7 @@ export const KioskAdmin: React.FC = () => {
           <Field label="Comandi dei giocatori" hint={KIOSK_DEVICES.find((d) => d.id === config.device)?.hint}>
             <Segmented value={config.device} options={KIOSK_DEVICES} onChange={(v) => update("device", v)} />
           </Field>
+          {config.device === "controller" ? <PadStatus /> : null}
           {config.device === "wheel" ? (
             <div className="flex flex-col gap-2 rounded-lg border border-white/10 bg-black/30 p-4">
               <p className="font-f1-italic text-sm text-white/70">
