@@ -328,7 +328,8 @@ export const KioskCredits: React.FC<{ className?: string }> = ({ className = "" 
   <p className={`font-f1-italic text-xs leading-snug text-white/50 ${className}`}>
     Motore di gioco: LibreCorsa di KhazP (MIT, github.com/KhazP/librecorsa) · Monza: scansione di Dave Love (Sketchfab,
     CC BY 4.0), modificata: i marchi di altre aziende sostituiti da Applikat; diritti incerti (vedi kiosk/README.md) ·
-    RISE Motordrome di Alp Yalay, CC BY-NC-SA 4.0 · Monoposto 2026 di Qvist Designs, CC BY 4.0, in livrea Applikat
+    RISE Motordrome di Alp Yalay (LibreCorsa, librecorsa.org), CC BY-NC-SA 4.0, modificato: lo striscione «KIGALI»
+    sostituito da quello Applikat · Monoposto 2026 di Qvist Designs, CC BY 4.0, in livrea Applikat
     (applikat.it) · Prototipo V8 (MTRacing 496R) di munyuturbo, con il permesso dato a LibreCorsa · Loghi HUAWEI e
     WINDTRE: marchi dei rispettivi titolari (file da Wikimedia Commons) · Evento non affiliato a Formula 1 o FIA.
   </p>

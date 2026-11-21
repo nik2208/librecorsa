@@ -249,6 +249,16 @@ la superficie com'era sotto. Il nome ufficiale del circuito è diventato «Monza
 che cambia solo le immagini: geometria e collisioni sono identiche. Questo non risolve i diritti sul modello stesso.
 Una build con `NEXT_PUBLIC_EXTRA_CONTENT=""` la esclude; le impostazioni permettono di tornare a RISE Motordrome.
 
+**RISE Motordrome** (il circuito alternativo: due tracciati, un solo modello) porta la pubblicità dello stand come
+Monza. Su questo branch lo striscione «KIGALI», uno dei tre che si alternano lungo muretti e cartelloni (è anche su un
+ponte e sul retro delle tribune), è lo striscione Applikat: il gatto, APPLIKAT e applikat.it su fondo carbonio, fra le
+due testate a strisce dell'originale. Gli striscioni RWANDA e BUGESERA, i cartelli di frenata, il maxischermo e tutto
+il resto restano quelli dell'autore. Lo fa `scripts/kiosk/brand-rise.mjs`, che cambia solo quell'immagine: geometria e
+collisioni sono identiche. È lo striscione che RISE mostra con tutti i loghi nascosti; con un logo acceso il gioco
+copre i tre striscioni come prima (vedi [Loghi](#loghi)). Il circuito resta sotto CC BY-NC-SA 4.0 con il suo credito,
+«RISE Motordrome by Alp Yalay (LibreCorsa), https://librecorsa.org» (`public/tracks/rwanda_official/LICENSE.md`); la
+modifica è annotata anche nel modello (`asset.extras`) e in `CREDITS.md`.
+
 L'auto è la **Monoposto 2026** di LibreCorsa (id `vf26`), in **livrea Applikat**: carrozzeria nera, alettoni rosso
 Applikat, il gatto e APPLIKAT su pance, muso e alettone, applikat.it sul cofano (`src/lib/kiosk/applikat-livery.ts`,
 immagine `public/cars/f12026/liveries/applikat/decals.png` dal logo di applikat.it e dal carattere Martian Mono). Con il
@@ -275,6 +285,7 @@ a parte (`carId` `sf26`) che nessuno schermo mostra: per toglierli, *Impostazion
 - **Monza**: senza licenza (vedi sopra).
 - **Circuito RISE Motordrome** (alternativo): CC BY-NC-SA 4.0, non commerciale; serve il permesso dell'autore
   (Alp Yalay, LibreCorsa).
+  Su questo branch è modificato (uno striscione, vedi sopra): stessa licenza, stesso credito.
 - **Prototipo V8 (MTRacing 496R)**: modello, suoni e dati di munyuturbo, che ha dato il permesso a LibreCorsa, non a
   questo fork: per questo il fork non ne ripubblica i file. Per l'evento conviene chiederlo anche per noi, o non
   sceglierla.
