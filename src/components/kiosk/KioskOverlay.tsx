@@ -524,6 +524,11 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
               <Settings className="h-4 w-4" aria-hidden /> Impostazioni
             </button>
           </div>
+          {/* Where the game comes from and under which licence: plain, small, for whoever asks */}
+          <p className="mt-3 font-f1-italic text-xs leading-snug text-white/45">
+            Questo gioco è una versione adattata di LibreCorsa di KhazP (github.com/KhazP/librecorsa), software libero pubblicato con
+            licenza AGPL-3.0. Sorgenti di questa versione: github.com/nik2208/librecorsa
+          </p>
         </div>
       ) : null}
 
