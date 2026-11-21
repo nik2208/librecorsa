@@ -14,6 +14,8 @@ raggiunge con i pulsanti a schermo, il controller o il touch.
    **Via!**. Con il controller: frecce per la difficoltà, A per partire, B per tornare al menu. Dopo 90 s senza
    nessuno torna al menu.
 4. **Gara**: conto alla rovescia e cronometro con il limite delle impostazioni, in **minuti** o in **giri completati**.
+   La barra del kiosk (tempo rimasto, giri, miglior giro) sta in alto al centro, con sotto il riquadro del giro appena
+   fatto; gli avvisi del gioco (limiti di pista, ala mobile, qualità grafica) compaiono sotto, non dietro.
 5. **Risultato**: tempi, posizione e classifica. Il risultato viene registrato sul server, poi si torna al **menu**
    (pulsante o in automatico).
 

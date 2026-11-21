@@ -382,7 +382,15 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
       {/* Top-centre: start lights and race-control notifications (under the Phone HUD's speed pod) */}
       <div
         className={`absolute left-1/2 -translate-x-1/2 ${phone ? "top-[96px] portrait:top-[208px]" : "top-4"}`}
-        style={mirrorTop !== null ? { top: `calc(${mirrorTop}px - env(safe-area-inset-top, 0px))` } : undefined}
+        // Kiosk mode keeps its own bar (time left, laps, best) at the very top of this column: while it is up the
+        // notices start under it (--lc-kiosk-top, set by KioskOverlay), not behind it. Unset, nothing moves
+        style={
+          mirrorTop !== null
+            ? { top: `calc(${mirrorTop}px - env(safe-area-inset-top, 0px))` }
+            : phone
+              ? undefined
+              : { top: "max(1rem, var(--lc-kiosk-top, 0px))" }
+        }
       >
       <div className="flex flex-col items-center gap-2" style={corner("top center")}>
         {style && !(phone && props.touchControls) ? menuButton : null}
