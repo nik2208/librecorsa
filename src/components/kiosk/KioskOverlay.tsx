@@ -505,6 +505,15 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
                 <p className="font-f1-italic text-2xl font-bold">{rules.headline}</p>
                 <p className="mt-1 max-w-2xl font-f1-italic text-base text-white/70">{rules.detail}</p>
               </div>
+              {/* The time to beat, by name: the first of the board beside it, said where the player decides to play */}
+              {board && board.rows.length > 0 ? (
+                <p className="font-f1-italic text-xl font-bold text-white/85 2xl:text-2xl">
+                  Da battere: <span className="text-white">{board.rows[0].name}</span>{" "}
+                  <span className="font-f1-mono tabular-nums text-[#FFB300]">
+                    {formatLapTime(board.mode === "total" ? board.rows[0].totalTimeMs : board.rows[0].bestLapMs)}
+                  </span>
+                </p>
+              ) : null}
               <KioskButton big autoFocus onClick={goToEntry} disabled={!api.ready} className="mt-1 self-start !px-16 !py-5 !text-5xl 2xl:!px-20 2xl:!py-7 2xl:!text-6xl">
                 Gioca
               </KioskButton>
