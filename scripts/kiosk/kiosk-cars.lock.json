@@ -260,8 +260,8 @@
     },
     {
      "path": "cars/mtr-496r/thumb.webp",
-     "size": 22950,
-     "sha256": "8decd42317e82bd26bc21f3c9929822d99f0d45a33c5d0706baf48a763e471b3"
+     "size": 22478,
+     "sha256": "6b6a742234a63469aeb27297776172945bd8ee551f91656441a268363ae25770"
     }
    ]
   },
@@ -414,8 +414,8 @@
     },
     {
      "path": "cars/lc-lmdh/thumb.webp",
-     "size": 20940,
-     "sha256": "1cdbe90bab30be60882ee46a966f6515e0cd8f87793247a41060b672ff2eaf85"
+     "size": 20934,
+     "sha256": "3010b3d9cf27b9200f6c71c5221e0aead8ea9503556ba6feb21a089dd977842e"
     }
    ]
   }
