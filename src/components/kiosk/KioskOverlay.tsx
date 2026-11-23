@@ -505,22 +505,26 @@ export const KioskOverlay: React.FC<KioskOverlayProps> = ({ api, config, configS
                 <p className="font-f1-italic text-2xl font-bold">{rules.headline}</p>
                 <p className="mt-1 max-w-2xl font-f1-italic text-base text-white/70">{rules.detail}</p>
               </div>
-              {/* The time to beat, by name: the first of the board beside it, said where the player decides to play */}
-              {board && board.rows.length > 0 ? (
-                <p className="font-f1-italic text-xl font-bold text-white/85 2xl:text-2xl">
-                  Da battere: <span className="text-white">{board.rows[0].name}</span>{" "}
-                  <span className="font-f1-mono tabular-nums text-[#FFB300]">
-                    {formatLapTime(board.mode === "total" ? board.rows[0].totalTimeMs : board.rows[0].bestLapMs)}
-                  </span>
-                </p>
-              ) : null}
               <KioskButton big autoFocus onClick={goToEntry} disabled={!api.ready} className="mt-1 self-start !px-16 !py-5 !text-5xl 2xl:!px-20 2xl:!py-7 2xl:!text-6xl">
                 Gioca
               </KioskButton>
               <p className="font-f1-italic text-base text-white/60">Tocca GIOCA o premi un pulsante del controller</p>
             </section>
-            <aside className="w-full max-w-xl rounded-2xl border border-white/10 bg-black/55 p-5 backdrop-blur-sm">
-              <LeaderboardTable board={board} limit={10} emptyText={boardError ? "Classifica non disponibile" : undefined} />
+            {/* The time to beat and who set it: the board's first, alone (the full board is on the results screen) */}
+            <aside className="w-full max-w-xl rounded-2xl border border-white/10 bg-black/55 p-6 text-center backdrop-blur-sm 2xl:p-8">
+              <p className="font-f1-italic text-sm font-bold uppercase tracking-[0.3em] text-white/60">Da battere</p>
+              {board && board.rows.length > 0 ? (
+                <>
+                  <p className="mt-2 truncate font-f1-display text-4xl font-black uppercase tracking-[0.04em] 2xl:text-6xl">{board.rows[0].name}</p>
+                  <p className="mt-1 font-f1-mono text-5xl font-bold tabular-nums text-[#FFB300] 2xl:text-7xl">
+                    {formatLapTime(board.mode === "total" ? board.rows[0].totalTimeMs : board.rows[0].bestLapMs)}
+                  </p>
+                </>
+              ) : (
+                <p className="mt-3 font-f1-italic text-xl font-bold text-white/80">
+                  {boardError ? "Classifica non disponibile" : "Nessun tempo ancora: sii il primo!"}
+                </p>
+              )}
             </aside>
           </div>
           <div className="mt-4 flex items-end justify-between gap-4">
